@@ -4,8 +4,10 @@
 # Data files
 data/
 
-./sbatch
+# SLURM batch scripts
+sbatch
 
+# Neptune logs
 neptune/
 
 # OS files
