@@ -15,7 +15,7 @@ def evaluate_model_irregular(real_sig, gen_sig, args, calc_other_metrics=False):
     """
 
     # proceed with short term evaluation
-    metric_iteration = 1
+    metric_iteration = 10
 
     ## for deterministic results
     torch.backends.cudnn.deterministic = True

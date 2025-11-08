@@ -4,6 +4,10 @@
 # Data files
 data/
 
+./sbatch
+
+neptune/
+
 # OS files
 .DS_Store
 

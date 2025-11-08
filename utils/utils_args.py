@@ -15,7 +15,7 @@ def parse_args_irregular():
                         help='Number of workers to use for dataloader')
     parser.add_argument('--resume', type=bool, default=False, help='resume from checkpoint')
     parser.add_argument('--log_dir', default='./logs', help='path to save logs')
-    parser.add_argument('--neptune', type=bool, default=False, help='use neptune logger')
+    parser.add_argument('--neptune', type=bool, default=True, help='use neptune logger')
     parser.add_argument('--missing_rate', type=float, default=0.3)
     parser.add_argument('--tags', type=str, default=['30 missing rate'], help='tags for neptune logger', nargs='+')
 
