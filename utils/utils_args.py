@@ -17,6 +17,10 @@ def parse_args_irregular():
     parser.add_argument('--log_dir', default='./logs', help='path to save logs')
     parser.add_argument('--neptune', type=bool, default=True, help='use neptune logger')
     parser.add_argument('--missing_rate', type=float, default=0.3)
+    parser.add_argument('--delta_probability', type=float, default=0.1, 
+                        help='probability of further corruption (Ambient Diffusion style)')
+    parser.add_argument('--use_ambient_style', type=bool, default=True,
+                        help='use Ambient Diffusion style training (no TST completion)')
     parser.add_argument('--tags', type=str, default=['30 missing rate'], help='tags for neptune logger', nargs='+')
 
     # --- diffusion process --- #
@@ -65,7 +69,7 @@ def parse_args_irregular():
     parser.add_argument('--hidden_dim', type=int, default=40, help='dimension of the hidden layer')
     parser.add_argument('--r_layer', type=int, default=2, help='number of RNN layers')
     parser.add_argument('--last_activation_r', type=str, default='sigmoid', help='last activation function for RNN layers')
-    parser.add_argument('--first_epoch', type=int, default=2, help='number of first epoch to start training')
+    parser.add_argument('--first_epoch', type=int, default=0, help='number of first epoch to start training (0 = no TST pre-training, default for Ambient mode)')
     parser.add_argument('--x_hidden', type=int, default=48, help='dimension of x hidden layer')
     parser.add_argument('--input_size', type=int, default=1, help='input size of the model')
 

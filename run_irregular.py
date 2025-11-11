@@ -11,7 +11,7 @@ from itertools import chain
 
 from metrics import evaluate_model_irregular
 from utils.loggers import NeptuneLogger, PrintLogger, CompositeLogger
-from utils.utils import restore_state, create_model_name_and_dir, print_model_params, log_config_and_tags
+from utils.utils import restore_state, create_model_name_and_dir, print_model_params, log_config_and_tags, create_further_corruption
 from utils.utils_data import gen_dataloader
 from utils.utils_args import parse_args_irregular
 from models.our import TS2img_Karras
@@ -69,6 +69,7 @@ def propagate_values(tensor):
 def save_checkpoint(args, our_model, our_optimizer, ema_model, encoder, decoder, tst_optimizer, disc_score, pred_score=None, fid_score=None, correlation_score=None):
     """
     Saves the model checkpoint to the specified directory based on args and disc_score.
+    Handles both original mode (with TST) and Ambient mode (without TST).
     """
     try:
         main_path = args.model_save_path
@@ -77,7 +78,13 @@ def save_checkpoint(args, our_model, our_optimizer, ema_model, encoder, decoder,
         missing_rate = int(args.missing_rate * 100)
 
         # Build the directory structure
-        full_path = os.path.join(main_path, f'seq_len_{seq_len}', data_set_name, f'missing_rate_{missing_rate}')
+        use_ambient_style = getattr(args, 'use_ambient_style', False)
+        if use_ambient_style:
+            full_path = os.path.join(main_path, f'seq_len_{seq_len}', data_set_name, 
+                                   f'missing_rate_{missing_rate}_ambient')
+        else:
+            full_path = os.path.join(main_path, f'seq_len_{seq_len}', data_set_name, 
+                                   f'missing_rate_{missing_rate}')
         os.makedirs(full_path, exist_ok=True)
 
         # ---- Remove old files ----
@@ -94,20 +101,27 @@ def save_checkpoint(args, our_model, our_optimizer, ema_model, encoder, decoder,
 
         filepath = os.path.join(full_path, filename)
 
-        # Save the checkpoint
-        torch.save({
+        # Prepare checkpoint dict
+        checkpoint = {
             'our_model_state_dict': our_model.state_dict(),
             'our_optimizer_state_dict': our_optimizer.state_dict(),
-            'ema_model': ema_model.state_dict(),
-            'tst_encoder': encoder.state_dict(),
-            'tst_decoder': decoder.state_dict(),
-            'tst_optimizer': tst_optimizer.state_dict(),
+            'ema_model': ema_model.state_dict() if ema_model is not None else None,
             'disc_score': disc_score,
             'pred_score': pred_score,
             'fid_score': fid_score,
             'correlation_score': correlation_score,
-            'args': vars(args)
-        }, filepath)
+            'args': vars(args),
+            'use_ambient_style': use_ambient_style
+        }
+        
+        # Add TST components only if they exist (original mode)
+        if encoder is not None and decoder is not None and tst_optimizer is not None:
+            checkpoint['tst_encoder'] = encoder.state_dict()
+            checkpoint['tst_decoder'] = decoder.state_dict()
+            checkpoint['tst_optimizer'] = tst_optimizer.state_dict()
+        
+        # Save the checkpoint
+        torch.save(checkpoint, filepath)
 
         print(f"Checkpoint saved at: {filepath}")
 
@@ -154,77 +168,116 @@ def main(args):
         # print model parameters
         print_model_params(logger, model)
 
-        tst_config = {
-            'feat_dim': args.input_size,
-            'max_len': args.seq_len,
-            'd_model': args.hidden_dim,
-            'n_heads': args.n_heads,  # Number of attention heads
-            'num_layers': args.num_layers,  # Number of transformer layers
-            'dim_feedforward': args.dim_feedforward,
-            'dropout': args.dropout,
-            'pos_encoding': args.pos_encoding,  # or 'learnable'
-            'activation': args.activation,
-            'norm': args.norm,
-            'freeze': args.freeze
-        }
-        # Initialize the TST model
-        embedder = TSTransformerEncoder(
-            feat_dim=tst_config['feat_dim'],
-            max_len=tst_config['max_len'],
-            d_model=tst_config['d_model'],
-            n_heads=tst_config['n_heads'],
-            num_layers=tst_config['num_layers'],
-            dim_feedforward=tst_config['dim_feedforward'],
-            dropout=tst_config['dropout'],
-            pos_encoding=tst_config['pos_encoding'],
-            activation=tst_config['activation'],
-            norm=tst_config['norm'],
-            freeze=tst_config['freeze']
-        ).to(args.device)
+        # Initialize TST components ONLY if not using Ambient style
+        use_ambient_style = getattr(args, 'use_ambient_style', False)
+        
+        if use_ambient_style:
+            print("\n" + "="*80)
+            print("🚀 AMBIENT DIFFUSION MODE ENABLED")
+            print("="*80)
+            print("✓ TST encoder/decoder: DISABLED")
+            print("✓ Dual corruption (A, Ã): ENABLED")
+            print(f"✓ Delta probability (δ): {args.delta_probability}")
+            print(f"✓ Network input: 2 × {args.input_channels} = {args.input_channels * 2} channels")
+            print("="*80 + "\n")
+            
+            # Set dummy TST components (not used)
+            embedder = None
+            decoder = None
+            optimizer_er = None
+        else:
+            print("\n" + "="*80)
+            print("🔧 ORIGINAL MODE (TST + Masking)")
+            print("="*80)
+            print("✓ TST encoder/decoder: ENABLED")
+            print("✓ Single mask from NaN: ENABLED")
+            print(f"✓ Network input: {args.input_channels} channels")
+            print("="*80 + "\n")
+            
+            tst_config = {
+                'feat_dim': args.input_size,
+                'max_len': args.seq_len,
+                'd_model': args.hidden_dim,
+                'n_heads': args.n_heads,  # Number of attention heads
+                'num_layers': args.num_layers,  # Number of transformer layers
+                'dim_feedforward': args.dim_feedforward,
+                'dropout': args.dropout,
+                'pos_encoding': args.pos_encoding,  # or 'learnable'
+                'activation': args.activation,
+                'norm': args.norm,
+                'freeze': args.freeze
+            }
+            # Initialize the TST model
+            embedder = TSTransformerEncoder(
+                feat_dim=tst_config['feat_dim'],
+                max_len=tst_config['max_len'],
+                d_model=tst_config['d_model'],
+                n_heads=tst_config['n_heads'],
+                num_layers=tst_config['num_layers'],
+                dim_feedforward=tst_config['dim_feedforward'],
+                dropout=tst_config['dropout'],
+                pos_encoding=tst_config['pos_encoding'],
+                activation=tst_config['activation'],
+                norm=tst_config['norm'],
+                freeze=tst_config['freeze']
+            ).to(args.device)
 
-        decoder = TST_Decoder(
-            inp_dim=args.hidden_dim,
-            hidden_dim=int(args.hidden_dim + (args.input_size - args.hidden_dim) / 2),
-            layers=3,
-            args=args
-        ).to(args.device)
-        optimizer_er = optim.Adam(chain(embedder.parameters(), decoder.parameters()))
-        embedder.train()
-        decoder.train()
+            decoder = TST_Decoder(
+                inp_dim=args.hidden_dim,
+                hidden_dim=int(args.hidden_dim + (args.input_size - args.hidden_dim) / 2),
+                layers=3,
+                args=args
+            ).to(args.device)
+            optimizer_er = optim.Adam(chain(embedder.parameters(), decoder.parameters()))
+            embedder.train()
+            decoder.train()
 
         # --- train model ---
         logging.info(f"Continuing training loop from epoch {init_epoch}.")
         best_disc_score = float('inf')
 
         print('logging_iter', args.logging_iter)
-        for step in range(1, args.first_epoch + 1):
-            for i, data in enumerate(train_loader, 1):
-                x = data[0].to(args.device)
-                x = x[:, :, :-1]
-                x = propagate_values(x)
-                padding_masks = ~torch.isnan(x).any(dim=-1)
-                h = embedder(x, padding_masks)
+        
+        # TST Pre-training (ONLY if not using Ambient style)
+        if not use_ambient_style:
+            print("\n" + "="*80)
+            print("📚 PHASE 1: TST PRE-TRAINING")
+            print("="*80)
+            for step in range(1, args.first_epoch + 1):
+                for i, data in enumerate(train_loader, 1):
+                    x = data[0].to(args.device)
+                    x = x[:, :, :-1]
+                    x = propagate_values(x)
+                    padding_masks = ~torch.isnan(x).any(dim=-1)
+                    h = embedder(x, padding_masks)
 
-                # Decoder forward pass with time information
-                x_tilde = decoder(h)
+                    # Decoder forward pass with time information
+                    x_tilde = decoder(h)
 
-                x_no_nan = x[~torch.isnan(x)]
-                x_tilde_no_nan = x_tilde[~torch.isnan(x)]
-                loss_e_t0 = _loss_e_t0(x_tilde_no_nan, x_no_nan)
-                loss_e_0 = _loss_e_0(loss_e_t0)
-                optimizer_er.zero_grad()
-                loss_e_0.backward()
-                optimizer_er.step()
-                torch.cuda.empty_cache()
+                    x_no_nan = x[~torch.isnan(x)]
+                    x_tilde_no_nan = x_tilde[~torch.isnan(x)]
+                    loss_e_t0 = _loss_e_t0(x_tilde_no_nan, x_no_nan)
+                    loss_e_0 = _loss_e_0(loss_e_t0)
+                    optimizer_er.zero_grad()
+                    loss_e_0.backward()
+                    optimizer_er.step()
+                    torch.cuda.empty_cache()
 
-            print(
-                "step: "
-                + str(step)
-                + "/"
-                + str(args.first_epoch)
-                + ", loss_e: "
-                + str(np.round(np.sqrt(loss_e_t0.item()), 4))
-            )
+                print(
+                    "step: "
+                    + str(step)
+                    + "/"
+                    + str(args.first_epoch)
+                    + ", loss_e: "
+                    + str(np.round(np.sqrt(loss_e_t0.item()), 4))
+                )
+            print("="*80)
+            print("✓ TST pre-training complete")
+            print("="*80 + "\n")
+        else:
+            print("\n" + "="*80)
+            print("⏭️  SKIPPING TST PRE-TRAINING (Ambient mode)")
+            print("="*80 + "\n")
 
 
         for epoch in range(init_epoch, args.epochs):
@@ -238,14 +291,47 @@ def main(args):
                 x = data[0].to(args.device)
                 x_ts = x[:, :, :-1]
 
-                x_ts = propagate_values(x_ts)
-                padding_masks = ~torch.isnan(x_ts).any(dim=-1)
-                x_img = model.ts_to_img(x_ts)
-                mask = torch.isnan(x_img).float() * -1 + 1
-                h = embedder(x_ts, padding_masks)
-                x_recon = decoder(h)
-                x_tilde_img = model.ts_to_img(x_recon)
-                loss = model.loss_fn_irregular(x_tilde_img, mask)
+                if use_ambient_style:
+                    # ============== AMBIENT DIFFUSION MODE ==============
+                    # No TST completion, use dual corruption (A, Ã)
+                    
+                    # Step 1: Transform irregular time series (with NaN) to image
+                    x_img = model.ts_to_img(x_ts)
+                    
+                    # Step 2: Create corruption_matrix (A) from NaN detection
+                    corruption_matrix = torch.isnan(x_img).float() * -1 + 1
+                    # corruption_matrix: 1 = observed (not NaN), 0 = missing (is NaN)
+                    
+                    # Step 3: Create hat_corruption_matrix (Ã) by further corruption
+                    hat_corruption_matrix = create_further_corruption(
+                        corruption_matrix, 
+                        args.delta_probability, 
+                        device=args.device
+                    )
+                    
+                    # Step 4: Replace NaN with 0 (like Ambient normalizes corrupted pixels)
+                    x_img = torch.nan_to_num(x_img, nan=0.0)
+                    
+                    # Step 5: Ambient-style loss with dual masks
+                    # Sigma is sampled from log-normal distribution (same as original)
+                    loss = model.loss_fn_ambient(
+                        x_img, 
+                        corruption_matrix, 
+                        hat_corruption_matrix
+                    )
+                    
+                else:
+                    # ============== ORIGINAL MODE (TST + Masking) ==============
+                    x_ts = propagate_values(x_ts)
+                    padding_masks = ~torch.isnan(x_ts).any(dim=-1)
+                    x_img = model.ts_to_img(x_ts)
+                    mask = torch.isnan(x_img).float() * -1 + 1
+                    h = embedder(x_ts, padding_masks)
+                    x_recon = decoder(h)
+                    x_tilde_img = model.ts_to_img(x_recon)
+                    loss = model.loss_fn_irregular(x_tilde_img, mask)
+                
+                # Common optimization steps
                 optimizer.zero_grad()
                 if len(loss) == 2:
                     loss, to_log = loss
@@ -257,19 +343,20 @@ def main(args):
                 optimizer.step()
                 model.on_train_batch_end()
 
-                # #############Recovery######################
-                h = embedder(x_ts, padding_masks)
-                x_tilde = decoder(h)
-                x_no_nan = x_ts[~torch.isnan(x_ts)]
-                x_tilde_no_nan = x_tilde[~torch.isnan(x_ts)]
-                loss_e_t0 = _loss_e_t0(x_tilde_no_nan, x_no_nan)
+                # TST Recovery step (ONLY if not using Ambient style)
+                if not use_ambient_style:
+                    h = embedder(x_ts, padding_masks)
+                    x_tilde = decoder(h)
+                    x_no_nan = x_ts[~torch.isnan(x_ts)]
+                    x_tilde_no_nan = x_tilde[~torch.isnan(x_ts)]
+                    loss_e_t0 = _loss_e_t0(x_tilde_no_nan, x_no_nan)
 
-                loss_e_0 = _loss_e_0(loss_e_t0)
-                loss_e = loss_e_0
-                optimizer_er.zero_grad()
-                loss_e.backward()
-                optimizer_er.step()
-                torch.cuda.empty_cache()
+                    loss_e_0 = _loss_e_0(loss_e_t0)
+                    loss_e = loss_e_0
+                    optimizer_er.zero_grad()
+                    loss_e.backward()
+                    optimizer_er.step()
+                    torch.cuda.empty_cache()
 
             # --- evaluation loop ---
             if epoch % args.logging_iter == 0:
@@ -299,17 +386,17 @@ def main(args):
                 # --- save checkpoint ---
                 curr_disc_score = scores['disc_mean']
 
-                # Du tu time consumption, we calculate predictive, fid and correlation only if we have an improvement in the disc score
-                if curr_disc_score < best_disc_score:
-                    new_scores = evaluate_model_irregular(real_sig, gen_sig, args, calc_other_metrics=True)
-
-                    pred_score = new_scores['pred_score_mean']
-                    fid_score = new_scores['fid_score_mean']
-                    correlation_score = new_scores['correlation_score_mean']
-
-                    best_disc_score = curr_disc_score
-                    ema_model = model.model_ema if args.ema else None
-                    save_checkpoint(args=args, our_model=model, our_optimizer=optimizer, ema_model=ema_model, encoder=embedder, decoder=decoder, tst_optimizer=optimizer_er, disc_score=best_disc_score, pred_score=pred_score, fid_score=fid_score, correlation_score=correlation_score)
+                # # Du tu time consumption, we calculate predictive, fid and correlation only if we have an improvement in the disc score
+                # if curr_disc_score < best_disc_score:
+                #     new_scores = evaluate_model_irregular(real_sig, gen_sig, args, calc_other_metrics=True)
+                #
+                #     pred_score = new_scores['pred_score_mean']
+                #     fid_score = new_scores['fid_score_mean']
+                #     correlation_score = new_scores['correlation_score_mean']
+                #
+                #     best_disc_score = curr_disc_score
+                #     ema_model = model.model_ema if args.ema else None
+                #     save_checkpoint(args=args, our_model=model, our_optimizer=optimizer, ema_model=ema_model, encoder=embedder, decoder=decoder, tst_optimizer=optimizer_er, disc_score=best_disc_score, pred_score=pred_score, fid_score=fid_score, correlation_score=correlation_score)
 
         logging.info("Training is complete")
 

@@ -23,7 +23,20 @@ class TS2img_Karras(nn.Module):
         self.T = args.diffusion_steps
 
         self.device = device
-        self.net = EDMPrecond(args.img_resolution, args.input_channels, channel_mult=args.ch_mult,
+        
+        # Determine number of input channels based on training style
+        self.use_ambient_style = getattr(args, 'use_ambient_style', False)
+        if self.use_ambient_style:
+            # Ambient style: network receives [image, mask] concatenated = 2*C channels
+            network_input_channels = args.input_channels * 2
+            print(f"🔧 Ambient Diffusion mode: Network expects {network_input_channels} input channels")
+            print(f"   ({args.input_channels} for image + {args.input_channels} for mask)")
+        else:
+            # Original style: network receives only image = C channels
+            network_input_channels = args.input_channels
+            print(f"🔧 Original mode: Network expects {network_input_channels} input channels")
+        
+        self.net = EDMPrecond(args.img_resolution, network_input_channels, channel_mult=args.ch_mult,
                               model_channels=args.unet_channels, attn_resolutions=args.attn_resolution)
 
         self.delay = args.delay
@@ -52,6 +65,7 @@ class TS2img_Karras(nn.Module):
 
     def loss_fn_irregular(self, x, mask=None):
         '''
+        ORIGINAL METHOD: Uses TST completion + single mask
         x          : real data if idx==None else perturbation data
         idx        : if None (training phase), we perturbed random index.
         '''
@@ -66,8 +80,55 @@ class TS2img_Karras(nn.Module):
         loss = (weight * (output - x).square()).mean()
         to_log['karras loss'] = loss.detach().item()
         return loss, to_log
+    
+    def loss_fn_ambient(self, x, corruption_matrix, hat_corruption_matrix):
+        '''
+        AMBIENT DIFFUSION STYLE LOSS: No TST completion, dual corruption masks
+        
+        Args:
+            x: Clean/completed image [B, C, H, W] (NaN replaced with 0)
+            corruption_matrix (A): Original corruption from data [B, C, H, W] (1=observed, 0=missing)
+            hat_corruption_matrix (Ã): Further corrupted version [B, C, H, W]
+        
+        Returns:
+            val_loss: Loss on A pixels (USED FOR BACKPROP)
+            to_log: Dictionary with all three losses
+                - train_loss: Loss on Ã pixels (monitoring)
+                - val_loss: Loss on A pixels (training objective)
+                - test_loss: Loss on all pixels (evaluation)
+        '''
+        to_log = {}
+        
+        # Forward pass with Ambient-style noise and masking
+        # Sigma is sampled from log-normal distribution (same as original)
+        output, weight = self.forward_ambient(x, hat_corruption_matrix)
+        
+        # Unpad for loss computation
+        x_unpad = self.unpad(x, x.shape)
+        output_unpad = self.unpad(output, x.shape)
+        corruption_matrix_unpad = self.unpad(corruption_matrix, corruption_matrix.shape)
+        hat_corruption_matrix_unpad = self.unpad(hat_corruption_matrix, hat_corruption_matrix.shape)
+        
+        # Compute THREE losses (like Ambient Diffusion)
+        # 1. train_loss: on Ã (further corrupted) - for monitoring
+        train_loss = (weight * (hat_corruption_matrix_unpad * (output_unpad - x_unpad)).square()).mean()
+        
+        # 2. val_loss: on A (original corruption) - USED FOR TRAINING
+        val_loss = (weight * (corruption_matrix_unpad * (output_unpad - x_unpad)).square()).mean()
+        
+        # 3. test_loss: on ALL pixels - for evaluation
+        test_loss = (weight * (output_unpad - x_unpad).square()).mean()
+        
+        # Log all three
+        to_log['train_loss'] = train_loss.detach().item()
+        to_log['val_loss'] = val_loss.detach().item()
+        to_log['test_loss'] = test_loss.detach().item()
+        
+        # Return val_loss for backprop (like Ambient Diffusion paper)
+        return val_loss, to_log
 
     def forward_irregular(self, x, mask, labels=None, augment_pipe=None):
+        '''ORIGINAL METHOD: Masks noise before adding to image'''
         rnd_normal = torch.randn([x.shape[0], 1, 1, 1], device=x.device)
         sigma = (rnd_normal * self.P_std + self.P_mean).exp()
         weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
@@ -75,6 +136,50 @@ class TS2img_Karras(nn.Module):
         n = torch.randn_like(y) * sigma
         masked_noise = n * (mask)
         D_yn = self.net(y + masked_noise, sigma, labels, augment_labels=augment_labels)
+        return D_yn, weight
+    
+    def forward_ambient(self, x, hat_corruption_matrix, labels=None, augment_pipe=None):
+        '''
+        AMBIENT DIFFUSION STYLE FORWARD: Applies corruption to noisy image
+        
+        Args:
+            x: Input image [B, C, H, W]
+            hat_corruption_matrix: Corruption mask Ã [B, C, H, W] (1=visible, 0=corrupted)
+            labels: Class labels (optional)
+            augment_pipe: Data augmentation (optional)
+        
+        Returns:
+            D_yn: Network prediction [B, C, H, W] (only first C channels)
+            weight: Loss weight scalar
+        '''
+        # Sample noise level from log-normal distribution (same as original)
+        rnd_normal = torch.randn([x.shape[0], 1, 1, 1], device=x.device)
+        sigma = (rnd_normal * self.P_std + self.P_mean).exp()
+        
+        # Compute loss weight
+        weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
+        
+        # Apply augmentation if provided
+        y, augment_labels = augment_pipe(x) if augment_pipe is not None else (x, None)
+        
+        # Add noise to image
+        n = torch.randn_like(y) * sigma
+        
+        # Apply corruption to NOISY image: Ã(x + σₜη)
+        noisy_image = hat_corruption_matrix * (y + n)
+        
+        # Network receives: [noisy_image, hat_corruption_matrix] concatenated
+        # Input: 2*C channels (image + mask)
+        cat_input = torch.cat([noisy_image, hat_corruption_matrix], dim=1)
+        
+        # Forward through network
+        # Network may output 2*C channels, but we only use first C channels (the prediction)
+        network_output = self.net(cat_input, sigma, labels, augment_labels=augment_labels)
+        
+        # CRITICAL: Slice to get only first C channels (like Ambient Diffusion does)
+        # This is the actual image prediction, not the mask
+        D_yn = network_output[:, :self.num_features]
+        
         return D_yn, weight
 
     def unpad(self, x, original_shape):

@@ -26,3 +26,7 @@ ema_warmup: 100
 logging_iter: 10
 # TST:
 input_size: 21
+
+# ==================== AMBIENT DIFFUSION SETTINGS ====================
+use_ambient_style: true           # Enable Ambient Diffusion mode (no TST)
+delta_probability: 0.1            # Further corruption probability (δ)
