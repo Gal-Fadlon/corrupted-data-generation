@@ -1,159 +1,227 @@
-import numpy as np
 import torch
-from utils.utils import get_random_mask
+import numpy as np
 
-class DiffusionProcess():
-    def __init__(self, args, diffusion_fn, shape):
-        '''
-        beta_1        : beta_1 of diffusion process
-        beta_T        : beta_T of diffusion process
-        T             : step of diffusion process
-        diffusion_fn  : trained diffusion network
-        shape         : data shape
-        '''
-        self.args = args
-        self.device = args.device
-        self.shape = shape
-        self.betas = torch.linspace(start=args.beta1, end=args.betaT, steps=args.diffusion_steps)
-        self.alphas = 1 - self.betas
-        self.alpha_bars = torch.cumprod(1 - torch.linspace(start=args.beta1, end=args.betaT, steps=args.diffusion_steps), dim=0).to(device=self.device)
-        self.alpha_prev_bars = torch.cat([torch.Tensor([1]).to(device=self.device), self.alpha_bars[:-1]])
-        self.deterministic = args.deterministic
-        self.net = diffusion_fn.to(device=self.device)
-        self.sigma_data = 0.5
-        self.sigma_min = 0.002
-        self.sigma_max = 80
-        self.rho = 7
-        self.S_churn = 0
-        self.S_min = 0
-        self.S_max = float('inf')
-        self.S_noise = 1
-        self.num_steps = args.diffusion_steps
-        
-        # Ambient Diffusion parameters
-        self.use_ambient_style = getattr(args, 'use_ambient_style', False)
-        self.num_features = getattr(args, 'input_channels', shape[0])  # Number of image channels (not including mask)
-        self.clipping = getattr(args, 'sampling_clipping', True)  # Output clipping
-        
-        # Calculate survival probability for sampling mask
-        # This should match the training distribution: (1-p)(1-δ)
-        # where p = corruption_probability, δ = delta_probability
-        if hasattr(args, 'sampling_survival_probability'):
-            # Explicit override from args
-            self.survival_probability = args.sampling_survival_probability
+#----------------------------------------------------------------------------
+# Tensor clipping utility from Ambient Diffusion
+
+def tensor_clipping(x, static=True, p=0.99):
+    dtype = x.dtype
+    if static:
+        return torch.clip(x, -1.0, 1.0)
+    else:
+        s_val = torch.tensor(np.percentile(torch.abs(x).detach().cpu().numpy(), p, axis=tuple(range(1, x.ndim))), device=x.device, dtype=dtype)
+        s_val = torch.max(s_val, torch.tensor(1.0))
+        s_val = s_val.reshape((-1, 1, 1, 1))
+        return torch.clip(x, -s_val, s_val) / s_val
+
+#----------------------------------------------------------------------------
+# Wrapper for torch.Generator that allows specifying a different random seed
+# for each sample in a minibatch.
+
+class StackedRandomGenerator:
+    def __init__(self, device, seeds):
+        super().__init__()
+        self.generators = [torch.Generator(device).manual_seed(int(seed) % (1 << 32)) for seed in seeds]
+
+    def randn(self, size, **kwargs):
+        assert size[0] == len(self.generators)
+        return torch.stack([torch.randn(size[1:], generator=gen, **kwargs) for gen in self.generators])
+
+    def randn_like(self, input):
+        return self.randn(input.shape, dtype=input.dtype, layout=input.layout, device=input.device)
+
+    def randint(self, *args, size, **kwargs):
+        assert size[0] == len(self.generators)
+        return torch.stack([torch.randint(*args, size=size[1:], generator=gen, **kwargs) for gen in self.generators])
+
+#----------------------------------------------------------------------------
+
+@torch.no_grad()
+def edm_sampler(
+    net, latents, class_labels=None, randn_like=torch.randn_like,
+    num_steps=18, sigma_min=0.002, sigma_max=80, rho=7,
+    S_churn=0, S_min=0, S_max=float('inf'), S_noise=1,
+):
+    # Adjust noise levels based on what's supported by the network.
+    sigma_min = max(sigma_min, net.sigma_min)
+    sigma_max = min(sigma_max, net.sigma_max)
+
+    # Time step discretization.
+    step_indices = torch.arange(num_steps, dtype=torch.float64, device=latents.device)
+    t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+    t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])]) # t_N = 0
+
+    # Main sampling loop.
+    x_next = latents.to(torch.float64) * t_steps[0]
+    for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])): # 0, ..., N-1
+        x_cur = x_next
+
+        # Increase noise temporarily.
+        gamma = min(S_churn / num_steps, np.sqrt(2) - 1) if S_min <= t_cur <= S_max else 0
+        t_hat = net.round_sigma(t_cur + gamma * t_cur)
+        x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * randn_like(x_cur)
+
+        # Euler step.
+        denoised = net(x_hat, t_hat, class_labels).to(torch.float64)
+        d_cur = (x_hat - denoised) / t_hat
+        x_next = x_hat + (t_next - t_hat) * d_cur
+
+        # Apply 2nd order correction.
+        if i < num_steps - 1:
+            denoised = net(x_next, t_next, class_labels).to(torch.float64)
+            d_prime = (x_next - denoised) / t_next
+            x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
+
+    return x_next
+
+#----------------------------------------------------------------------------
+
+def get_random_mask(image_shape, survival_probability, mask_full_rgb=False, same_for_all_batch=False, device='cuda', seed=None):
+    if seed is not None:
+        np.random.seed(seed)
+    if same_for_all_batch:
+        corruption_mask = np.random.binomial(1, survival_probability, size=image_shape[1:]).astype(np.float32)
+        corruption_mask = torch.tensor(corruption_mask, device=device, dtype=torch.float32).repeat([image_shape[0], 1, 1, 1])
+    else:
+        corruption_mask = np.random.binomial(1, survival_probability, size=image_shape).astype(np.float32)
+        corruption_mask = torch.tensor(corruption_mask, device=device, dtype=torch.float32)
+
+    if mask_full_rgb:
+        # Synchronized mask: same corruption pattern for ALL channels
+        # Use case: Time series data where entire time steps are missing (all features at once)
+        # Original Ambient code was hardcoded for RGB (3 channels), now generalized to any C
+        num_channels = image_shape[1]
+        corruption_mask = corruption_mask[:, 0]  # Take first channel [B, H, W]
+        corruption_mask = corruption_mask.repeat([num_channels, 1, 1, 1]).transpose(1, 0)  # [B, C, H, W]
+
+    return corruption_mask
+
+def cdist_masked(x1, x2, mask1=None, mask2=None):
+    if mask1 is None or mask2 is None:
+        mask1 = torch.ones_like(x1)
+        mask2 = torch.ones_like(x2)
+    x1 = x1[0].unsqueeze(0)
+    diffs = x1.unsqueeze(1) - x2.unsqueeze(0)
+    combined_mask = mask1.unsqueeze(1) * mask2.unsqueeze(0)
+    error = 0.5 * torch.linalg.norm(combined_mask * diffs)**2
+    return error
+
+#----------------------------------------------------------------------------
+
+def ambient_sampler(
+    net, latents, args, class_labels=None, randn_like=torch.randn_like,
+    num_steps=18, sigma_min=0.002, sigma_max=80, rho=7,
+    S_churn=0, S_min=0, S_max=float('inf'), S_noise=1,
+    sampler_seed=42, survival_probability=0.54,
+    mask_full_rgb=False,
+    same_for_all_batch=False,
+    num_masks=1,
+    guidance_scale=0.0,
+    clipping=True,
+    static=False,  # whether to use soft clipping or static clipping
+    resample_guidance_masks=False,
+):
+    # Adjust noise levels based on what's supported by the network.
+    sigma_min = max(sigma_min, net.sigma_min)
+    sigma_max = min(sigma_max, net.sigma_max)
+
+    clean_image = None
+
+    def sample_masks():
+        masks = []
+        for _ in range(num_masks):
+            masks.append(get_random_mask(latents.shape, survival_probability, mask_full_rgb=mask_full_rgb,
+                                         same_for_all_batch=same_for_all_batch, device=latents.device))
+        masks = torch.stack(masks)
+        return masks
+
+    masks = sample_masks()
+
+    # Time step discretization.
+    step_indices = torch.arange(num_steps, dtype=torch.float64, device=latents.device)
+    t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (
+                sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+    t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])])  # t_N = 0
+
+    # Main sampling loop.
+    x_next = latents.to(torch.float64) * t_steps[0]
+
+    for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):  # 0, ..., N-1
+        if resample_guidance_masks:
+            guidance_masks = sample_masks()
+            masks[:, 1:] = guidance_masks[:, 1:]
+
+        x_cur = x_next
+
+        # Increase noise temporarily.
+        gamma = min(S_churn / num_steps, np.sqrt(2) - 1) if S_min <= t_cur <= S_max else 0
+        t_hat = net.round_sigma(t_cur + gamma * t_cur)
+        x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * randn_like(x_cur)
+
+        x_hat = x_hat.detach()
+        x_hat.requires_grad = True
+
+        denoised = []
+        for mask_index in range(num_masks):
+            corruption_mask = masks[mask_index]
+            masked_image = corruption_mask * x_hat
+            noisy_image = masked_image
+
+            net_input = torch.cat([noisy_image, corruption_mask], dim=1)
+            net_output = net(net_input, t_hat, class_labels).to(torch.float64)[:, :args.input_channels]
+            # print_tensor_stats(net_output, 'Denoised')
+            if clipping:
+                net_output = tensor_clipping(net_output, static=static)
+
+            if clean_image is not None:
+                net_output = corruption_mask * net_output + (1 - corruption_mask) * clean_image
+
+            # Euler step.
+            denoised.append(net_output)
+
+        stack_denoised = torch.stack(denoised)
+        flattened = stack_denoised.view(stack_denoised.shape[0], -1)
+        l2_norm = cdist_masked(flattened, flattened, None, None)
+        l2_norm = l2_norm.mean()
+        rec_grad = torch.autograd.grad(l2_norm, inputs=x_hat)[0]
+
+        clean_pred = stack_denoised[0]
+
+        single_mask_grad = (t_next - t_hat) * (x_hat - clean_pred) / t_hat
+        grad_1 = single_mask_grad - guidance_scale * rec_grad
+        x_next += grad_1
+
+        if i < num_steps - 1:
+            x_next = x_next.detach()
+            x_next.requires_grad = True
+
+            denoised = []
+            for mask_index in range(num_masks):
+                corruption_mask = masks[mask_index]
+                masked_image = corruption_mask * x_next
+                noisy_image = masked_image
+                net_input = torch.cat([noisy_image, corruption_mask], dim=1)
+                net_output = net(net_input, t_next, class_labels).to(torch.float64)[:, :args.input_channels]
+                if clipping:
+                    net_output = tensor_clipping(net_output, static=static)
+
+                if clean_image is not None:
+                    net_output = corruption_mask * net_output + (1 - corruption_mask) * clean_image
+                denoised.append(net_output)
+
+            stack_denoised = torch.stack(denoised)
+            flattened = stack_denoised.view(stack_denoised.shape[0], -1)
+            l2_norm = cdist_masked(flattened, flattened, None, None)
+            rec_grad = torch.autograd.grad(l2_norm, inputs=x_next)[0]
+            clean_pred = stack_denoised[0]
+            single_mask_grad = (t_next - t_hat) * (x_next - clean_pred) / t_next
+            grad_2 = single_mask_grad - guidance_scale * rec_grad
+            x_next = x_hat + 0.5 * (grad_1 + grad_2)
         else:
-            # Calculate from corruption probabilities
-            corruption_prob = getattr(args, 'corruption_probability', 0.4)
-            delta_prob = getattr(args, 'delta_probability', 0.1)
-            self.survival_probability = (1 - corruption_prob) * (1 - delta_prob)
-        
-        if self.use_ambient_style:
-            print(f"🎭 Ambient Diffusion Sampler initialized:")
-            print(f"   - Survival probability: {self.survival_probability:.4f}")
-            print(f"   - Clipping enabled: {self.clipping}")
-            print(f"   - Number of image channels: {self.num_features}")
-    
-    def tensor_clipping(self, x, static=False):
-        """
-        Clip network output to valid range.
-        
-        Args:
-            x: Tensor to clip
-            static: If True, hard clip to [0,1]. If False, soft clip using tanh.
-        
-        Returns:
-            Clipped tensor
-        """
-        if static:
-            # Hard clipping to [0, 1]
-            return torch.clamp(x, 0.0, 1.0)
-        else:
-            # Soft clipping using tanh: maps (-inf, inf) -> (0, 1)
-            return 0.5 * (1.0 + torch.tanh(x))
-
-    def sample(self, latents, class_labels=None):
-        """
-        Sample from the diffusion model.
-        
-        Supports two modes:
-        1. Original mode: Standard EDM sampling (network input = image only)
-        2. Ambient mode: Ambient Diffusion sampling (network input = [masked_image, mask])
-        """
-        # Adjust noise levels based on what's supported by the network.
-        sigma_min = max(self.sigma_min, self.net.sigma_min)
-        sigma_max = min(self.sigma_max, self.net.sigma_max)
-
-        # Time step discretization.
-        step_indices = torch.arange(self.num_steps, dtype=torch.float64, device=latents.device)
-        t_steps = (sigma_max ** (1 / self.rho) + step_indices / (self.num_steps - 1) * (
-                    sigma_min ** (1 / self.rho) - sigma_max ** (1 / self.rho))) ** self.rho
-        t_steps = torch.cat([self.net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])])  # t_N = 0
-
-        # Generate corruption mask for Ambient-style sampling
-        if self.use_ambient_style:
-            # Generate mask once at the beginning (fixed mask throughout sampling)
-            corruption_mask = get_random_mask(
-                latents.shape, 
-                self.survival_probability, 
-                mask_full_rgb=False,
-                same_for_all_batch=False, 
-                device=latents.device
-            )
-
-        # Main sampling loop.
-        x_next = latents.to(torch.float64) * t_steps[0]
-        
-        for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):  # 0, ..., N-1
-            x_cur = x_next
-
-            # Increase noise temporarily (stochasticity).
-            gamma = min(self.S_churn / self.num_steps, np.sqrt(2) - 1) if self.S_min <= t_cur <= self.S_max else 0
-            t_hat = self.net.round_sigma(t_cur + gamma * t_cur)
-            x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * self.S_noise * torch.randn_like(x_cur)
-
-            # ===== FIRST NETWORK CALL (Euler step) =====
-            if self.use_ambient_style:
-                # Ambient Diffusion: mask the noisy image and concatenate with mask
-                masked_image = corruption_mask * x_hat
-                net_input = torch.cat([masked_image, corruption_mask], dim=1)
-                net_output = self.net(net_input, t_hat, class_labels).to(torch.float64)
-                # CRITICAL: Slice output to get only image channels
-                denoised = net_output[:, :self.num_features]
-                # Optional: Apply clipping
-                if self.clipping:
-                    denoised = self.tensor_clipping(denoised, static=False)
+            if clean_image is not None:
+                x_next = masks[0] * x_next + (1 - masks[0]) * clean_image
             else:
-                # Original: direct network call with full image
-                denoised = self.net(x_hat, t_hat, class_labels).to(torch.float64)
-            
-            # Euler step
-            d_cur = (x_hat - denoised) / t_hat
-            x_next = x_hat + (t_next - t_hat) * d_cur
+                clean_image = x_next
+                x_next = x_hat + grad_1
+    return x_next
 
-            # ===== SECOND NETWORK CALL (Heun's 2nd order correction) =====
-            if i < self.num_steps - 1:
-                if self.use_ambient_style:
-                    # Ambient Diffusion: mask and concatenate for 2nd order correction
-                    masked_image = corruption_mask * x_next
-                    net_input = torch.cat([masked_image, corruption_mask], dim=1)
-                    net_output = self.net(net_input, t_next, class_labels).to(torch.float64)
-                    # CRITICAL: Slice output to get only image channels
-                    denoised = net_output[:, :self.num_features]
-                    # Optional: Apply clipping
-                    if self.clipping:
-                        denoised = self.tensor_clipping(denoised, static=False)
-                else:
-                    # Original: direct network call with full image
-                    denoised = self.net(x_next, t_next, class_labels).to(torch.float64)
-                
-                # 2nd order correction
-                d_prime = (x_next - denoised) / t_next
-                x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
-
-        return x_next
-
-    @torch.no_grad()
-    def sampling(self, sampling_number=16, impute=False, xT=None):
-        if xT is None:
-            xT = torch.randn([sampling_number, *self.shape]).to(device=self.device)
-        return self.sample(xT)

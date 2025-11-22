@@ -15,55 +15,71 @@ from utils.utils import restore_state, create_model_name_and_dir, print_model_pa
 from utils.utils_data import gen_dataloader
 from utils.utils_args import parse_args_irregular
 from models.our import TS2img_Karras
-from models.sampler import DiffusionProcess
+from models.sampler import StackedRandomGenerator, edm_sampler, ambient_sampler
 from models.decoder import TST_Decoder
 from models.TST import TSTransformerEncoder
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 torch.multiprocessing.set_sharing_strategy('file_system')
 
+# def propagate_values_forward(tensor):
+#     """
+#     Propagates the last valid observation forward.
+#     """
+#     for b in range(tensor.size(0)):
+#         for f in range(tensor.size(2)):
+#             sequence = tensor[b, :, f]
+#             last_val = None
+#             for i in range(sequence.size(0)):
+#                 if not torch.isnan(sequence[i]):
+#                     last_val = sequence[i]
+#                 elif last_val is not None:
+#                     sequence[i] = last_val
+#     return tensor
+#
+#
+# def propagate_values_backward(tensor):
+#     """
+#     Propagates the next valid observation backward.
+#     """
+#     for b in range(tensor.size(0)):
+#         for f in range(tensor.size(2)):
+#             sequence = tensor[b, :, f]
+#             last_val = None
+#             for i in range(sequence.size(0) - 1, -1, -1):
+#                 if not torch.isnan(sequence[i]):
+#                     last_val = sequence[i]
+#                 elif last_val is not None:
+#                     sequence[i] = last_val
+#     return tensor
+#
+#
+# def propagate_values(tensor):
+#     """
+#     Fills NaN values by first propagating forward, then backward.
+#     Any remaining NaNs (if a whole sequence is NaN) are filled with 0.
+#     """
+#     tensor = propagate_values_forward(tensor)
+#     tensor = propagate_values_backward(tensor)
+#     # If any NaNs remain (e.g., if a whole sequence was NaN), fill with 0
+#     if torch.isnan(tensor).any():
+#         tensor[torch.isnan(tensor)] = 0
+#     return tensor
+
 def propagate_values_forward(tensor):
-    """
-    Propagates the last valid observation forward.
-    """
+    # Iterate over the batch and channels
     for b in range(tensor.size(0)):
-        for f in range(tensor.size(2)):
-            sequence = tensor[b, :, f]
-            last_val = None
-            for i in range(sequence.size(0)):
-                if not torch.isnan(sequence[i]):
-                    last_val = sequence[i]
-                elif last_val is not None:
-                    sequence[i] = last_val
+            # Extract the sequence for the current batch and channel
+            sequence = tensor[b]
+            if torch.isnan(sequence).all():
+                if b + 1 < tensor.size(0):
+                    tensor[b] = tensor[b + 1]
+                else:
+                    tensor[b] = tensor[b - 1]
     return tensor
-
-
-def propagate_values_backward(tensor):
-    """
-    Propagates the next valid observation backward.
-    """
-    for b in range(tensor.size(0)):
-        for f in range(tensor.size(2)):
-            sequence = tensor[b, :, f]
-            last_val = None
-            for i in range(sequence.size(0) - 1, -1, -1):
-                if not torch.isnan(sequence[i]):
-                    last_val = sequence[i]
-                elif last_val is not None:
-                    sequence[i] = last_val
-    return tensor
-
 
 def propagate_values(tensor):
-    """
-    Fills NaN values by first propagating forward, then backward.
-    Any remaining NaNs (if a whole sequence is NaN) are filled with 0.
-    """
     tensor = propagate_values_forward(tensor)
-    tensor = propagate_values_backward(tensor)
-    # If any NaNs remain (e.g., if a whole sequence was NaN), fill with 0
-    if torch.isnan(tensor).any():
-        tensor[torch.isnan(tensor)] = 0
     return tensor
 
 def save_checkpoint(args, our_model, our_optimizer, ema_model, encoder, decoder, tst_optimizer, disc_score, pred_score=None, fid_score=None, correlation_score=None):
@@ -80,10 +96,10 @@ def save_checkpoint(args, our_model, our_optimizer, ema_model, encoder, decoder,
         # Build the directory structure
         use_ambient_style = getattr(args, 'use_ambient_style', False)
         if use_ambient_style:
-            full_path = os.path.join(main_path, f'seq_len_{seq_len}', data_set_name, 
+            full_path = os.path.join(main_path, f'seq_len_{seq_len}', data_set_name,
                                    f'missing_rate_{missing_rate}_ambient')
         else:
-            full_path = os.path.join(main_path, f'seq_len_{seq_len}', data_set_name, 
+            full_path = os.path.join(main_path, f'seq_len_{seq_len}', data_set_name,
                                    f'missing_rate_{missing_rate}')
         os.makedirs(full_path, exist_ok=True)
 
@@ -113,13 +129,13 @@ def save_checkpoint(args, our_model, our_optimizer, ema_model, encoder, decoder,
             'args': vars(args),
             'use_ambient_style': use_ambient_style
         }
-        
+
         # Add TST components only if they exist (original mode)
         if encoder is not None and decoder is not None and tst_optimizer is not None:
             checkpoint['tst_encoder'] = encoder.state_dict()
             checkpoint['tst_decoder'] = decoder.state_dict()
             checkpoint['tst_optimizer'] = tst_optimizer.state_dict()
-        
+
         # Save the checkpoint
         torch.save(checkpoint, filepath)
 
@@ -170,7 +186,7 @@ def main(args):
 
         # Initialize TST components ONLY if not using Ambient style
         use_ambient_style = getattr(args, 'use_ambient_style', False)
-        
+
         if use_ambient_style:
             print("\n" + "="*80)
             print("🚀 AMBIENT DIFFUSION MODE ENABLED")
@@ -180,7 +196,7 @@ def main(args):
             print(f"✓ Delta probability (δ): {args.delta_probability}")
             print(f"✓ Network input: 2 × {args.input_channels} = {args.input_channels * 2} channels")
             print("="*80 + "\n")
-            
+
             # Set dummy TST components (not used)
             embedder = None
             decoder = None
@@ -193,7 +209,7 @@ def main(args):
             print("✓ Single mask from NaN: ENABLED")
             print(f"✓ Network input: {args.input_channels} channels")
             print("="*80 + "\n")
-            
+
             tst_config = {
                 'feat_dim': args.input_size,
                 'max_len': args.seq_len,
@@ -237,7 +253,7 @@ def main(args):
         best_disc_score = float('inf')
 
         print('logging_iter', args.logging_iter)
-        
+
         # TST Pre-training (ONLY if not using Ambient style)
         if not use_ambient_style:
             print("\n" + "="*80)
@@ -294,32 +310,38 @@ def main(args):
                 if use_ambient_style:
                     # ============== AMBIENT DIFFUSION MODE ==============
                     # No TST completion, use dual corruption (A, Ã)
-                    
+
                     # Step 1: Transform irregular time series (with NaN) to image
                     x_img = model.ts_to_img(x_ts)
-                    
-                    # Step 2: Create corruption_matrix (A) from NaN detection
+
+                    # Step 2: Track all zeros that was added to the original image by create a matrix with 1s and 0s. 1s will be where the original entry is not 0, and 0s will be where the original entry is 0.
+                    # Example: if x_img = [[2, 1, 0], [2, 2, 0], [3, NaN, 0]], then padded_mask = [[1, 1, 0], [1, 1, 0], [1, 1, 0]
+                    padded_mask = torch.zeros_like(x_img)
+                    padded_mask[x_img != 0] = 1
+
+                    # Step 3: Create corruption_matrix (A) from NaN detection
                     corruption_matrix = torch.isnan(x_img).float() * -1 + 1
                     # corruption_matrix: 1 = observed (not NaN), 0 = missing (is NaN)
-                    
-                    # Step 3: Create hat_corruption_matrix (Ã) by further corruption
+
+                    # Step 4: Create hat_corruption_matrix (Ã) by further corruption
                     hat_corruption_matrix = create_further_corruption(
-                        corruption_matrix, 
-                        args.delta_probability, 
+                        corruption_matrix,
+                        args.delta_probability,
                         device=args.device
                     )
-                    
+
                     # Step 4: Replace NaN with 0 (like Ambient normalizes corrupted pixels)
                     x_img = torch.nan_to_num(x_img, nan=0.0)
-                    
+
                     # Step 5: Ambient-style loss with dual masks
                     # Sigma is sampled from log-normal distribution (same as original)
                     loss = model.loss_fn_ambient(
-                        x_img, 
-                        corruption_matrix, 
-                        hat_corruption_matrix
+                        x_img,
+                        corruption_matrix,
+                        hat_corruption_matrix,
+                        padded_mask
                     )
-                    
+
                 else:
                     # ============== ORIGINAL MODE (TST + Masking) ==============
                     x_ts = propagate_values(x_ts)
@@ -330,7 +352,7 @@ def main(args):
                     x_recon = decoder(h)
                     x_tilde_img = model.ts_to_img(x_recon)
                     loss = model.loss_fn_irregular(x_tilde_img, mask)
-                
+
                 # Common optimization steps
                 optimizer.zero_grad()
                 if len(loss) == 2:
@@ -363,18 +385,66 @@ def main(args):
                 gen_sig = []
                 real_sig = []
                 model.eval()
-                with torch.no_grad():
-                    with model.ema_scope():
-                        process = DiffusionProcess(args, model.net,
-                                                   (args.input_channels, args.img_resolution, args.img_resolution))
-                        for data in tqdm(test_loader):
-                            # sample from the model
-                            x_img_sampled = process.sampling(sampling_number=data[0].shape[0])
-                            # --- convert to time series --
-                            x_ts = model.img_to_ts(x_img_sampled)
 
-                            gen_sig.append(x_ts.detach().cpu().numpy())
-                            real_sig.append(data[0].detach().cpu().numpy())
+                with model.ema_scope():
+                    for batch_idx, data in enumerate(tqdm(test_loader)):
+                        sampling_number = data[0].shape[0]
+                        
+                        # Create StackedRandomGenerator for reproducibility (like Ambient Diffusion)
+                        # Pattern: [seed + batch_idx * batch_size + 0, seed + batch_idx * batch_size + 1, ...]
+                        batch_seeds = [args.seed + batch_idx * args.batch_size + i for i in range(sampling_number)]
+                        rnd = StackedRandomGenerator(args.device, batch_seeds)
+                        
+                        # Create latents using StackedRandomGenerator
+                        latents = rnd.randn(
+                            (sampling_number, args.input_channels, 
+                             args.img_resolution, args.img_resolution),
+                            device=args.device
+                        )
+                        
+                        # Sample from the model
+                        if use_ambient_style:
+                            # Ambient mode: use ambient_sampler (Fixed Mask Sampler)
+                            # survival_probability = (1-p)(1-δ) where p=missing_rate, δ=delta_probability
+                            survival_probability = (1 - args.missing_rate) * (1 - args.delta_probability)
+                            x_img_sampled = ambient_sampler(
+                                net=model.net,
+                                latents=latents,
+                                args=args,
+                                class_labels=None,
+                                randn_like=rnd.randn_like,
+                                num_steps=args.diffusion_steps,
+                                sigma_min=0.002,
+                                sigma_max=80,
+                                rho=7,
+                                S_churn=0,
+                                S_min=0,
+                                S_max=float('inf'),
+                                S_noise=1,
+                                sampler_seed=args.seed,
+                                survival_probability=survival_probability,
+                                mask_full_rgb=True,            # Synchronized masks (matches training data!)
+                                same_for_all_batch=False,      # Different mask per sample in batch
+                                num_masks=1,                   # Fixed Mask Sampler (single mask)
+                                guidance_scale=0.0,            # No reconstruction guidance
+                                clipping=False,                 # Enable clipping
+                                static=False,                  # Soft clipping
+                                resample_guidance_masks=False, # Don't resample masks per step
+                            )
+                        else:
+                            # Original mode: use edm_sampler
+                            x_img_sampled = edm_sampler(
+                                net=model.net,
+                                latents=latents,
+                                randn_like=rnd.randn_like,
+                                num_steps=args.diffusion_steps,
+                            )
+                        
+                        # --- convert to time series --
+                        x_ts = model.img_to_ts(x_img_sampled)
+
+                        gen_sig.append(x_ts.detach().cpu().numpy())
+                        real_sig.append(data[0].detach().cpu().numpy())
 
                 gen_sig = np.vstack(gen_sig)
                 real_sig = np.vstack(real_sig)

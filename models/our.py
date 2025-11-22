@@ -75,13 +75,13 @@ class TS2img_Karras(nn.Module):
             mask = torch.isnan(x).float() * -1 + 1
             x = torch.nan_to_num(x, nan=0.0)
         output, weight = self.forward_irregular(x, mask)
-        x = self.unpad(x * mask, x.shape)
-        output = self.unpad(output * mask, x.shape)
+        x = self.unpad(x * mask, self.ts_img.img_shape)
+        output = self.unpad(output * mask, self.ts_img.img_shape)
         loss = (weight * (output - x).square()).mean()
         to_log['karras loss'] = loss.detach().item()
         return loss, to_log
     
-    def loss_fn_ambient(self, x, corruption_matrix, hat_corruption_matrix):
+    def loss_fn_ambient(self, x, corruption_matrix, hat_corruption_matrix, padded_mask):
         '''
         AMBIENT DIFFUSION STYLE LOSS: No TST completion, dual corruption masks
         
@@ -101,13 +101,13 @@ class TS2img_Karras(nn.Module):
         
         # Forward pass with Ambient-style noise and masking
         # Sigma is sampled from log-normal distribution (same as original)
-        output, weight = self.forward_ambient(x, hat_corruption_matrix)
+        output, weight = self.forward_ambient(x, hat_corruption_matrix, padded_mask)
         
-        # Unpad for loss computation
-        x_unpad = self.unpad(x, x.shape)
-        output_unpad = self.unpad(output, x.shape)
-        corruption_matrix_unpad = self.unpad(corruption_matrix, corruption_matrix.shape)
-        hat_corruption_matrix_unpad = self.unpad(hat_corruption_matrix, hat_corruption_matrix.shape)
+        # Unpad for loss computation (use cached non-square shape, not square shape!)
+        x_unpad = self.unpad(x * padded_mask, self.ts_img.img_shape)
+        output_unpad = self.unpad(output * padded_mask, self.ts_img.img_shape)
+        corruption_matrix_unpad = self.unpad(corruption_matrix * padded_mask, self.ts_img.img_shape)
+        hat_corruption_matrix_unpad = self.unpad(hat_corruption_matrix * padded_mask, self.ts_img.img_shape)
         
         # Compute THREE losses (like Ambient Diffusion)
         # 1. train_loss: on Ã (further corrupted) - for monitoring
@@ -138,7 +138,7 @@ class TS2img_Karras(nn.Module):
         D_yn = self.net(y + masked_noise, sigma, labels, augment_labels=augment_labels)
         return D_yn, weight
     
-    def forward_ambient(self, x, hat_corruption_matrix, labels=None, augment_pipe=None):
+    def forward_ambient(self, x, hat_corruption_matrix, padded_mask, labels=None, augment_pipe=None):
         '''
         AMBIENT DIFFUSION STYLE FORWARD: Applies corruption to noisy image
         
@@ -158,7 +158,6 @@ class TS2img_Karras(nn.Module):
         
         # Compute loss weight
         weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
-        
         # Apply augmentation if provided
         y, augment_labels = augment_pipe(x) if augment_pipe is not None else (x, None)
         
@@ -166,7 +165,8 @@ class TS2img_Karras(nn.Module):
         n = torch.randn_like(y) * sigma
         
         # Apply corruption to NOISY image: Ã(x + σₜη)
-        noisy_image = hat_corruption_matrix * (y + n)
+        masked_image = hat_corruption_matrix * (y + n)
+        noisy_image = masked_image
         
         # Network receives: [noisy_image, hat_corruption_matrix] concatenated
         # Input: 2*C channels (image + mask)
@@ -174,11 +174,7 @@ class TS2img_Karras(nn.Module):
         
         # Forward through network
         # Network may output 2*C channels, but we only use first C channels (the prediction)
-        network_output = self.net(cat_input, sigma, labels, augment_labels=augment_labels)
-        
-        # CRITICAL: Slice to get only first C channels (like Ambient Diffusion does)
-        # This is the actual image prediction, not the mask
-        D_yn = network_output[:, :self.num_features]
+        D_yn = self.net(cat_input, sigma, labels, augment_labels=augment_labels)[:, :self.num_features]
         
         return D_yn, weight
 
