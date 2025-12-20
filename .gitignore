@@ -13,3 +13,15 @@ neptune/
 # OS files
 .DS_Store
 
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyd
+
+# Jupyter / IPython
+.ipynb_checkpoints/
+
+# Common local artifacts
+.env
+*.log
+

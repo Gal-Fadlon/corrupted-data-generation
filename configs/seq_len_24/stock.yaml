@@ -15,10 +15,10 @@ embedding: 8
 
 # model:
 img_resolution: 8
-attn_resolution: [8, 4, 2]
+attn_resolution: [4]  # adjusted for 8x8 images
 input_channels: 6
 unet_channels: 128
-ch_mult: [1,2,2,2]
+ch_mult: [2, 2, 2]  # ambient CIFAR: [2,2,2]
 diffusion_steps: 18
 ema: true
 ema_warmup: 100

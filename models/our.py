@@ -23,8 +23,22 @@ class TS2img_Karras(nn.Module):
         self.T = args.diffusion_steps
 
         self.device = device
-        self.net = EDMPrecond(args.img_resolution, args.input_channels, channel_mult=args.ch_mult,
-                              model_channels=args.unet_channels, attn_resolutions=args.attn_resolution)
+        # Network architecture hyperparams hardcoded to match ambient diffusion CIFAR (ddpmpp)
+        self.net = EDMPrecond(
+            img_resolution=args.img_resolution,
+            img_channels=args.input_channels * 2,
+            attn_resolutions=args.attn_resolution,
+            model_type='SongUNet',
+            embedding_type='positional',
+            encoder_type='standard',
+            decoder_type='standard',
+            channel_mult_noise=1,
+            resample_filter=[1, 1],
+            model_channels=128,
+            channel_mult=[2, 2, 2],
+            gated=True,
+            dropout=0.13,
+        )
 
         self.delay = args.delay
         self.embedding = args.embedding
@@ -50,22 +64,36 @@ class TS2img_Karras(nn.Module):
     def img_to_ts(self, img):
         return self.ts_img.img_to_ts(img)
 
-    def loss_fn_irregular(self, x, mask=None):
+    def loss_fn_irregular(self, original_images, corruption_matrix, hat_corruption_matrix, padding_mask, labels=None, augment_pipe=None):
         '''
         x          : real data if idx==None else perturbation data
         idx        : if None (training phase), we perturbed random index.
         '''
 
         to_log = {}
-        if mask is None:
-            mask = torch.isnan(x).float() * -1 + 1
-            x = torch.nan_to_num(x, nan=0.0)
-        output, weight = self.forward_irregular(x, mask)
-        x = self.unpad(x * mask, x.shape)
-        output = self.unpad(output * mask, x.shape)
-        loss = (weight * (output - x).square()).mean()
-        to_log['karras loss'] = loss.detach().item()
-        return loss, to_log
+
+        rnd_normal = torch.randn([original_images.shape[0], 1, 1, 1], device=original_images.device)
+        sigma = (rnd_normal * self.P_std + self.P_mean).exp()
+        weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
+        y, augment_labels = augment_pipe(original_images) if augment_pipe is not None else (original_images, None)
+        n = torch.randn_like(y) * sigma
+
+        masked_image = hat_corruption_matrix * (y + n)
+        noisy_image = masked_image
+
+        cat_input = torch.cat([noisy_image, hat_corruption_matrix], dim=1)
+        D_yn = self.net(cat_input, sigma, labels, augment_labels=augment_labels)[:, :self.num_features]
+
+        train_loss = (weight * ((hat_corruption_matrix * (D_yn - y)) ** 2))
+        val_loss = (weight * ((corruption_matrix * (D_yn - y)) ** 2))
+        test_loss = (weight * (((D_yn - y) * padding_mask) ** 2))
+
+        # Log all three
+        to_log['train_loss'] = train_loss.mean().detach().item()
+        to_log['val_loss'] = val_loss.mean().detach().item()
+        to_log['test_loss'] = test_loss.mean().detach().item()
+
+        return val_loss, to_log
 
     def forward_irregular(self, x, mask, labels=None, augment_pipe=None):
         rnd_normal = torch.randn([x.shape[0], 1, 1, 1], device=x.device)

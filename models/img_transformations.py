@@ -167,4 +167,28 @@ class DelayEmbedder(TsImgEmbedder):
         # Permute to get shape (batch_size, seq_len, channels)
         reconstructed_ts = reconstructed_ts.permute(0, 1, 2)
 
-        return reconstructed_ts.cuda()
+        return reconstructed_ts.to(self.device)
+
+    def get_valid_pixel_mask(self, x_image_square: torch.Tensor) -> torch.Tensor:
+        """
+        Return a {0,1} mask that is 1 on pixels that correspond to some time index, and 0 elsewhere.
+
+        This is stricter than "non-square padding": it also masks any unused pixels *inside* the
+        unpadded rectangle (e.g. tail of the last column when remaining window < embedding).
+
+        IMPORTANT: This must be mapping-based (not value-based), because valid data may contain zeros.
+        Assumes `self.mapping` + `self.img_shape` correspond to the current embedding parameters.
+        """
+        assert self.img_shape is not None, "img_shape is not set; call ts_to_img() before requesting a valid-pixel mask."
+        assert self.mapping is not None, "mapping is not set; DelayEmbedder.create_mapping() must run successfully."
+
+        mask = torch.zeros_like(x_image_square, dtype=torch.float32, device=x_image_square.device)
+
+        # Mark all mapped pixel positions as valid for all batches/channels.
+        # mapping: {ts_idx: [(row, col), ...], ...}
+        for positions in self.mapping.values():
+            for (row, col) in positions:
+                # Safety: ensure we don't write outside the current square (can happen if seq_len changes).
+                if 0 <= row < mask.shape[-2] and 0 <= col < mask.shape[-1]:
+                    mask[:, :, row, col] = 1.0
+        return mask

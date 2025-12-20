@@ -21,6 +21,7 @@ def MinMaxScaler(data, return_scalers=False):
     numerator = data - np.min(data, 0)
     denominator = np.max(data, 0) - np.min(data, 0)
     norm_data = numerator / (denominator + 1e-7)
+    norm_data = norm_data * 2 - 1
     if return_scalers:
         return norm_data, min, max
     return norm_data
@@ -44,6 +45,16 @@ def load_data(dir):
 def save_data(dir, **tensors):
     for tensor_name, tensor_value in tensors.items():
         torch.save(tensor_value, str(dir / tensor_name) + '.pt')
+
+class IndexTensorDataset(Data.Dataset):
+    def __init__(self, *tensors):
+        self.tensors = tensors
+
+    def __getitem__(self, index):
+        return tuple([index] + [tensor[index] for tensor in self.tensors])
+
+    def __len__(self):
+        return self.tensors[0].size(0)
 
 class MujocoDataset(torch.utils.data.Dataset):
     def __init__(self, seq_len, data_name, missing_rate=0.0):
@@ -107,8 +118,6 @@ def sine_data_generation(no, seq_len, dim, missing_rate):
 
         # Align row/column
         temp = np.transpose(np.asarray(temp))
-        # Normalize to [0,1]
-        temp = (temp + 1) * 0.5
         # Stack the generated data
         ori_data.append(temp.copy())
 
@@ -217,16 +226,16 @@ def gen_dataloader(args):
         args.dataset_size = 10000
         ori_data, irregular_data = sine_data_generation(args.dataset_size, args.seq_len, args.input_channels, args.missing_rate)
         ori_data = torch.Tensor(np.array(ori_data))
-        ori_train_set = Data.TensorDataset(ori_data)
+        ori_train_set = IndexTensorDataset(ori_data)
         irregular_data = torch.Tensor(np.array(irregular_data))
-        irregular_train_set = Data.TensorDataset(irregular_data)
+        irregular_train_set = IndexTensorDataset(irregular_data)
 
     elif args.dataset in ['stock', 'energy', 'ETTh1', 'ETTh2', 'ETTm1', 'ETTm2', 'weather', 'electricity']:
         ori_data, irregular_data_np = real_data_loading(args.dataset, args.seq_len, missing_rate=args.missing_rate, gaussian_noise_level=args.gaussian_noise_level)
         ori_data = torch.Tensor(np.array(ori_data))
-        ori_train_set = Data.TensorDataset(ori_data)
+        ori_train_set = IndexTensorDataset(ori_data)
         irregular_data = torch.Tensor(np.array(irregular_data_np))
-        irregular_train_set = Data.TensorDataset(irregular_data)
+        irregular_train_set = IndexTensorDataset(irregular_data)
 
     elif args.dataset in ['mujoco']:
         train_set = MujocoDataset(args.seq_len, args.dataset, missing_rate=args.missing_rate)
@@ -236,9 +245,9 @@ def gen_dataloader(args):
             ori_data.append(ori_data_b)
             irregular_data.append(irregular_data_b)
         ori_data = torch.Tensor(np.array(ori_data))
-        ori_train_set = Data.TensorDataset(ori_data)
+        ori_train_set = IndexTensorDataset(ori_data)
         irregular_data = torch.Tensor(np.array(irregular_data))
-        irregular_train_set = Data.TensorDataset(irregular_data)
+        irregular_train_set = IndexTensorDataset(irregular_data)
 
     train_loader = Data.DataLoader(dataset=irregular_train_set, batch_size=args.batch_size, shuffle=True,
                                    num_workers=args.num_workers)
