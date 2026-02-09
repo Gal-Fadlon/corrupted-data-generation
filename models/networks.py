@@ -671,3 +671,91 @@ class EDMPrecond(torch.nn.Module):
         return torch.as_tensor(sigma)
 
 #----------------------------------------------------------------------------
+# Conditional EDM Preconditioning for DiffEM
+# Accepts conditioning channels concatenated to input, outputs only target channels
+
+@persistence.persistent_class
+class EDMPrecondConditional(torch.nn.Module):
+    """
+    Conditional EDM preconditioning for DiffEM-style training.
+    
+    Takes input x = [target | conditioning] and outputs denoised target only.
+    The skip connection is applied only to target channels.
+    """
+    def __init__(self,
+        img_resolution,                     # Image resolution.
+        target_channels,                    # Number of target (output) channels.
+        cond_channels,                      # Number of conditioning channels.
+        label_dim       = 0,                # Number of class labels, 0 = unconditional.
+        use_fp16        = False,            # Execute the underlying model at FP16 precision?
+        sigma_min       = 0,                # Minimum supported noise level.
+        sigma_max       = float('inf'),     # Maximum supported noise level.
+        sigma_data      = 0.5,              # Expected standard deviation of the training data.
+        model_type      = 'DhariwalUNet',   # Class name of the underlying model.
+        **model_kwargs,                     # Keyword arguments for the underlying model.
+    ):
+        super().__init__()
+        self.img_resolution = img_resolution
+        self.target_channels = target_channels
+        self.cond_channels = cond_channels
+        self.img_channels = target_channels + cond_channels  # Total input channels
+        self.label_dim = label_dim
+        self.use_fp16 = use_fp16
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+        self.sigma_data = sigma_data
+        
+        # Model takes all channels as input, outputs only target channels
+        self.model = globals()[model_type](
+            img_resolution=img_resolution, 
+            in_channels=self.img_channels,  # target + conditioning
+            out_channels=target_channels,   # only target
+            label_dim=label_dim, 
+            **model_kwargs
+        )
+
+    def forward(self, x, sigma, class_labels=None, force_fp32=False, **model_kwargs):
+        """
+        Forward pass for conditional denoising.
+        
+        Args:
+            x: input tensor [batch, target_channels + cond_channels, H, W]
+               Format: [noisy_target | cond_img | cond_mask]
+            sigma: noise level
+            class_labels: optional class labels
+            force_fp32: force FP32 computation
+        
+        Returns:
+            D_x: denoised target [batch, target_channels, H, W]
+        """
+        x = x.to(torch.float32)
+        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
+        class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
+        dtype = torch.float16 if (self.use_fp16 and not force_fp32 and x.device.type == 'cuda') else torch.float32
+
+        # Extract target (noisy) portion for skip connection
+        x_target = x[:, :self.target_channels, :, :]
+        
+        # EDM preconditioning coefficients
+        c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
+        c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt()
+        c_in = 1 / (self.sigma_data ** 2 + sigma ** 2).sqrt()
+        c_noise = sigma.log() / 4
+
+        # Scale input (apply c_in only to target, conditioning stays as-is)
+        x_scaled = x.clone()
+        x_scaled[:, :self.target_channels, :, :] = c_in * x_target
+        
+        # Forward through model
+        F_x = self.model(x_scaled.to(dtype), c_noise.flatten(), class_labels=class_labels, **model_kwargs)
+        assert F_x.dtype == dtype
+        
+        # Apply skip connection only to target
+        D_x = c_skip * x_target + c_out * F_x.to(torch.float32)
+        
+        return D_x
+
+    def round_sigma(self, sigma):
+        return torch.as_tensor(sigma)
+
+#----------------------------------------------------------------------------

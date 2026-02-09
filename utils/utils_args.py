@@ -16,7 +16,7 @@ def parse_args_irregular():
     parser.add_argument('--resume', type=bool, default=False, help='resume from checkpoint')
     parser.add_argument('--log_dir', default='./logs', help='path to save logs')
     parser.add_argument('--neptune', type=bool, default=True, help='use neptune logger')
-    parser.add_argument('--missing_rate', type=float, default=0.3)
+    parser.add_argument('--missing_rate', type=float, default=0.0)
     parser.add_argument('--tags', type=str, default=['30 missing rate'], help='tags for neptune logger', nargs='+')
 
     # --- diffusion process --- #
@@ -84,7 +84,46 @@ def parse_args_irregular():
     parser.add_argument('--ts_rate', type=float, default=0, help='teacher forcing rate for tst')
     parser.add_argument('--save_model', type=bool, default=False, help='save model')
     parser.add_argument('--gaussian_noise_level', type=float, default=0.0, help='noise level injected to the original data')
+    parser.add_argument('--noise_timestep', type=float, default=None, 
+                        help='timestep fraction [0,1] to compute noise level from diffusion schedule. '
+                             'If set, overrides gaussian_noise_level. 0=max noise (sigma_max), 1=min noise (sigma_min)')
     parser.add_argument('--new_metrics', type=int, default=1, help='save model')
+
+    # --- DiffEM Configuration ---
+    parser.add_argument('--use_diffem', action='store_true', default=False,
+                        help='Enable DiffEM-style EM training loop (with TST conditioning)')
+    parser.add_argument('--pure_diffem', action='store_true', default=False,
+                        help='Enable PURE DiffEM (no TST, condition on zero-filled + mask only)')
+    parser.add_argument('--em_iters', type=int, default=20,
+                        help='Number of EM iterations for DiffEM training')
+    parser.add_argument('--m_step_epochs', type=int, default=50,
+                        help='Number of training epochs per M-step')
+    parser.add_argument('--e_step_batch_size', type=int, default=64,
+                        help='Batch size for E-step posterior sampling')
+    parser.add_argument('--recon_cache_dir', type=str, default='./recon_cache',
+                        help='Directory to cache reconstructed datasets per EM iteration')
+    parser.add_argument('--num_posterior_samples', type=int, default=1,
+                        help='Number of posterior samples per observation in E-step')
+    parser.add_argument('--use_tst_conditioning', type=bool, default=True,
+                        help='Use TST completion as conditioning signal')
+    parser.add_argument('--freeze_tst_after_pretrain', type=bool, default=True,
+                        help='Freeze TST encoder/decoder after initial pretraining')
+    parser.add_argument('--no_freeze_tst', action='store_true', default=False,
+                        help='Do NOT freeze TST encoder/decoder after initial pretraining')
+    parser.add_argument('--em_corruption_rate', type=float, default=None,
+                        help='Corruption rate for EM M-step pairs (default: same as missing_rate)')
+    parser.add_argument('--em_noise_level', type=float, default=None,
+                        help='Gaussian noise level for EM M-step pairs (default: same as gaussian_noise_level)')
+    parser.add_argument('--train_uncond_after_em', type=bool, default=True,
+                        help='Train unconditional model on final reconstructions after EM')
+    parser.add_argument('--no_train_uncond', action='store_true', default=False,
+                        help='Do NOT train unconditional model after EM')
+    parser.add_argument('--uncond_epochs', type=int, default=100,
+                        help='Number of epochs to train unconditional model after EM')
+    parser.add_argument('--uncond_epochs_per_iter', type=int, default=None,
+                        help='Number of epochs to train unconditional model per EM iteration (default: same as m_step_epochs)')
+    parser.add_argument('--em_eval_interval', type=int, default=1,
+                        help='Evaluate metrics every N EM iterations')
 
     # --- logging ---s
     parser.add_argument('--logging_iter', type=int, default=10, help='number of iterations between logging')

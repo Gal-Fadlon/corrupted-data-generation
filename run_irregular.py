@@ -10,6 +10,8 @@ from tqdm import tqdm
 from itertools import chain
 
 from metrics import evaluate_model_irregular
+from metrics.memorization import compute_memorization_metric
+from neptune.types import File
 from utils.loggers import NeptuneLogger, PrintLogger, CompositeLogger
 from utils.utils import restore_state, create_model_name_and_dir, print_model_params, log_config_and_tags
 from utils.utils_data import gen_dataloader
@@ -268,20 +270,51 @@ def main(args):
                 for key, value in scores.items():
                     logger.log(f'test/{key}', value, epoch)
 
-                # --- save checkpoint ---
-                curr_disc_score = scores['disc_mean']
+                # --- Memorization Check ---
+                # We use a subset of real data to match the generated size if needed, or full real data
+                # real_sig is already available here as a numpy array
+                mem_plot_path = f"memorization_hist_epoch_{epoch}.png"
+                mem_stats = compute_memorization_metric(
+                    real_data=real_sig,
+                    generated_data=gen_sig,
+                    device=args.device,
+                    plot_path=mem_plot_path
+                )
 
-                # Du tu time consumption, we calculate predictive, fid and correlation only if we have an improvement in the disc score
-                if curr_disc_score < best_disc_score:
-                    new_scores = evaluate_model_irregular(real_sig, gen_sig, args, calc_other_metrics=True)
+                # Log stats to Neptune
+                for k, v in mem_stats.items():
+                    logger.log(f'test/memorization/{k}', v, epoch)
 
-                    pred_score = new_scores['pred_score_mean']
-                    fid_score = new_scores['fid_score_mean']
-                    correlation_score = new_scores['correlation_score_mean']
+                # Upload plot to Neptune and delete AFTER upload finishes
+                upload_successful = False
+                if hasattr(logger, 'loggers'):
+                    # CompositeLogger case
+                    for sub_logger in logger.loggers:
+                        if isinstance(sub_logger, NeptuneLogger):
+                            try:
+                                # Log as an image series - this is synchronous
+                                sub_logger.log('test/memorization/histogram', File(mem_plot_path), epoch)
+                                # Ensure upload completes (Neptune operations are typically synchronous, but we sync explicitly)
+                                sub_logger.run.sync()
+                                upload_successful = True
+                            except Exception as e:
+                                print(f"Failed to upload memorization plot to Neptune: {e}")
+                elif isinstance(logger, NeptuneLogger):
+                    # Direct NeptuneLogger case
+                    try:
+                        logger.log('test/memorization/histogram', File(mem_plot_path), epoch)
+                        logger.run.sync()
+                        upload_successful = True
+                    except Exception as e:
+                        print(f"Failed to upload memorization plot to Neptune: {e}")
 
-                    best_disc_score = curr_disc_score
-                    ema_model = model.model_ema if args.ema else None
-                    save_checkpoint(args=args, our_model=model, our_optimizer=optimizer, ema_model=ema_model, encoder=embedder, decoder=decoder, tst_optimizer=optimizer_er, disc_score=best_disc_score, pred_score=pred_score, fid_score=fid_score, correlation_score=correlation_score)
+                # Clean up plot file AFTER upload finishes
+                if upload_successful:
+                    try:
+                        if os.path.exists(mem_plot_path):
+                            os.remove(mem_plot_path)
+                    except Exception as e:
+                        print(f"Failed to delete temporary plot file {mem_plot_path}: {e}")
 
         logging.info("Training is complete")
 
@@ -291,4 +324,15 @@ if __name__ == '__main__':
     torch.random.manual_seed(args.seed)
     np.random.default_rng(args.seed)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    main(args)
+    
+    # Check if DiffEM mode is enabled
+    if getattr(args, 'pure_diffem', False):
+        print("Pure DiffEM mode enabled. Redirecting to run_diffem_pure.py...")
+        from run_diffem_pure import main as pure_diffem_main
+        pure_diffem_main(args)
+    elif getattr(args, 'use_diffem', False):
+        print("DiffEM mode enabled (with TST). Redirecting to run_diffem.py...")
+        from run_diffem import main as diffem_main
+        diffem_main(args)
+    else:
+        main(args)
