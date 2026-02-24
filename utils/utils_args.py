@@ -125,6 +125,23 @@ def parse_args_irregular():
     parser.add_argument('--em_eval_interval', type=int, default=1,
                         help='Evaluate metrics every N EM iterations')
 
+    # --- DiffEM E-step variants ---
+    # RePaint (run_diffem_uncond.py)
+    parser.add_argument('--repaint_n_resample', type=int, default=1,
+                        help='Number of resampling iterations per step (1=no resampling)')
+    parser.add_argument('--repaint_jump_length', type=int, default=10,
+                        help='Number of sigma steps to jump back during resampling')
+    # DPS (run_diffem_dps.py)
+    parser.add_argument('--dps_guidance_scale', type=float, default=1.0,
+                        help='Scale factor for DPS likelihood gradient')
+    parser.add_argument('--dps_sigma_y', type=float, default=0.01,
+                        help='Observation noise std for DPS likelihood')
+    # MMPS (run_diffem_mmps.py)
+    parser.add_argument('--mmps_sigma_y', type=float, default=0.01,
+                        help='Observation noise std for MMPS likelihood')
+    parser.add_argument('--mmps_cg_iters', type=int, default=1,
+                        help='Number of conjugate gradient iterations (1 typical for inpainting)')
+
     # --- logging ---s
     parser.add_argument('--logging_iter', type=int, default=10, help='number of iterations between logging')
     parser.add_argument('--percent', type=int, default=100)
