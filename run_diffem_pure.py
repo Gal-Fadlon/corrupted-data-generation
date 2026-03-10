@@ -30,8 +30,7 @@ from tqdm import tqdm
 
 from metrics import evaluate_model_irregular
 from metrics.memorization import compute_memorization_metric
-from neptune.types import File
-from utils.loggers import NeptuneLogger, PrintLogger, CompositeLogger
+from utils.loggers import WandbLogger, PrintLogger, CompositeLogger
 from utils.utils import restore_state, create_model_name_and_dir, print_model_params, log_config_and_tags
 from utils.utils_data import (
     gen_dataloader, apply_corruption, 
@@ -393,25 +392,13 @@ def evaluate_em_iteration(args, cond_model, corrupted_data, obs_masks, test_load
         if logger is not None:
             logger.log(f'test/memorization/{k}', v, em_iter)
     
-    # Upload plot to Neptune if available
     if logger is not None:
         upload_successful = False
-        if hasattr(logger, 'loggers'):
-            for sub_logger in logger.loggers:
-                if isinstance(sub_logger, NeptuneLogger):
-                    try:
-                        sub_logger.log('test/memorization/histogram', File(mem_plot_path), em_iter)
-                        sub_logger.run.sync()
-                        upload_successful = True
-                    except Exception as e:
-                        print(f"Failed to upload memorization plot to Neptune: {e}")
-        elif isinstance(logger, NeptuneLogger):
-            try:
-                logger.log('test/memorization/histogram', File(mem_plot_path), em_iter)
-                logger.run.sync()
-                upload_successful = True
-            except Exception as e:
-                print(f"Failed to upload memorization plot to Neptune: {e}")
+        try:
+            logger.log_file('test/memorization/histogram', mem_plot_path, em_iter)
+            upload_successful = True
+        except Exception as e:
+            print(f"Failed to upload memorization plot: {e}")
         
         if upload_successful:
             try:
@@ -546,25 +533,13 @@ def train_and_evaluate_unconditional(args, uncond_model, uncond_optimizer, recon
         if logger is not None:
             logger.log(f'test/memorization/{k}', v, em_iter)
     
-    # Upload plot to Neptune if available
     if logger is not None:
         upload_successful = False
-        if hasattr(logger, 'loggers'):
-            for sub_logger in logger.loggers:
-                if isinstance(sub_logger, NeptuneLogger):
-                    try:
-                        sub_logger.log('test/memorization/histogram', File(mem_plot_path), em_iter)
-                        sub_logger.run.sync()
-                        upload_successful = True
-                    except Exception as e:
-                        print(f"Failed to upload memorization plot to Neptune: {e}")
-        elif isinstance(logger, NeptuneLogger):
-            try:
-                logger.log('test/memorization/histogram', File(mem_plot_path), em_iter)
-                logger.run.sync()
-                upload_successful = True
-            except Exception as e:
-                print(f"Failed to upload memorization plot to Neptune: {e}")
+        try:
+            logger.log_file('test/memorization/histogram', mem_plot_path, em_iter)
+            upload_successful = True
+        except Exception as e:
+            print(f"Failed to upload memorization plot: {e}")
         
         if upload_successful:
             try:
@@ -682,7 +657,7 @@ def main(args):
     logging.info(args)
     
     # Set up logger
-    with CompositeLogger([NeptuneLogger()]) if args.neptune else PrintLogger() as logger:
+    with CompositeLogger([WandbLogger()]) if args.wandb else PrintLogger() as logger:
         log_config_and_tags(args, logger, name)
         
         # Set up device and data

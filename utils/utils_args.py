@@ -1,5 +1,6 @@
 from omegaconf import OmegaConf
 import argparse
+import sys
 
 def parse_args_irregular():
     """
@@ -15,9 +16,9 @@ def parse_args_irregular():
                         help='Number of workers to use for dataloader')
     parser.add_argument('--resume', type=bool, default=False, help='resume from checkpoint')
     parser.add_argument('--log_dir', default='./logs', help='path to save logs')
-    parser.add_argument('--neptune', type=bool, default=True, help='use neptune logger')
+    parser.add_argument('--wandb', type=bool, default=True, help='use wandb logger')
     parser.add_argument('--missing_rate', type=float, default=0.0)
-    parser.add_argument('--tags', type=str, default=['30 missing rate'], help='tags for neptune logger', nargs='+')
+    parser.add_argument('--tags', type=str, default=['30 missing rate'], help='tags for wandb logger', nargs='+')
 
     # --- diffusion process --- #
     parser.add_argument('--beta1', type=float, default=1e-5, help='value of beta 1')
@@ -125,6 +126,27 @@ def parse_args_irregular():
     parser.add_argument('--em_eval_interval', type=int, default=1,
                         help='Evaluate metrics every N EM iterations')
 
+    # --- General corruption (run_diffem_mmps_general_corruption.py) ---
+    parser.add_argument('--corruption_type', type=str, default='missing',
+                        choices=['missing', 'gaussian_noise', 'gaussian_blur', 'random_projection',
+                                 'ts_gaussian_noise', 'ts_temporal_smoothing', 'ts_missing_noise',
+                                 'temporal_smoothing', 'combined_missing_noise'],
+                        help='Type of forward operator / corruption model')
+    parser.add_argument('--corruption_noise_level', type=float, default=0.01,
+                        help='Observation noise sigma_y. For gaussian_noise this IS the corruption level.')
+    parser.add_argument('--blur_sigma', type=float, default=2.0,
+                        help='Std of Gaussian blur kernel (for gaussian_blur corruption)')
+    parser.add_argument('--blur_kernel_size', type=int, default=None,
+                        help='Kernel size for Gaussian blur (auto = 4*blur_sigma+1 if None)')
+    parser.add_argument('--projection_dim', type=int, default=None,
+                        help='Observation dimension for random_projection (default: d_full // 2)')
+    parser.add_argument('--smoothing_window', type=int, default=5,
+                        help='Window size for temporal smoothing corruption (odd number)')
+    parser.add_argument('--curriculum_warmup_frac', type=float, default=0.5,
+                        help='Fraction of EM iters using curriculum (easy samples only)')
+    parser.add_argument('--curriculum_easy_frac', type=float, default=0.7,
+                        help='Fraction of easiest samples used during curriculum warmup')
+
     # --- DiffEM E-step variants ---
     # RePaint (run_diffem_uncond.py)
     parser.add_argument('--repaint_n_resample', type=int, default=1,
@@ -141,6 +163,80 @@ def parse_args_irregular():
                         help='Observation noise std for MMPS likelihood')
     parser.add_argument('--mmps_cg_iters', type=int, default=1,
                         help='Number of conjugate gradient iterations (1 typical for inpainting)')
+    # Decomposition-enhanced variant (run_diffem_mmps_decomposed.py)
+    parser.add_argument('--stl_period', type=int, default=None,
+                        help='Period for STL decomposition (auto-detected if None)')
+    parser.add_argument('--lambda_trend', type=float, default=0.1,
+                        help='Weight for trend total-variation smoothness penalty')
+    parser.add_argument('--lambda_spectral', type=float, default=0.05,
+                        help='Weight for seasonal spectral matching penalty')
+    parser.add_argument('--use_component_loss', type=bool, default=True,
+                        help='Use component-aware loss (trend TV + spectral) in M-step')
+
+    # --- AmbientEM Configuration ---
+    parser.add_argument('--ambient_em', action='store_true', default=False,
+                        help='Enable AmbientEM training (DiffEM + Ambient-Omni aware unconditional training)')
+    parser.add_argument('--ambient_alpha', type=float, default=0.7,
+                        help='Fraction of EM reconstructions vs corrupted data per batch in unconditional training')
+    parser.add_argument('--ambient_delta', type=float, default=0.3,
+                        help='Further corruption probability for ambient masked loss')
+    parser.add_argument('--uncond_eval_epochs', type=int, default=100,
+                        help='Quick unconditional training epochs for per-EM-iteration disc_mean eval')
+    parser.add_argument('--use_ppca_init', action='store_true', default=True,
+                        help='Use PPCA-based Gaussian initialisation for EM')
+    parser.add_argument('--observation_consistency', action='store_true', default=True,
+                        help='Enforce observation consistency after E-step sampling')
+    parser.add_argument('--e_step_sample_steps', type=int, default=64,
+                        help='Number of diffusion steps for E-step sampling')
+    parser.add_argument('--ppca_rank', type=int, default=32,
+                        help='Rank for PPCA initialisation')
+    parser.add_argument('--ppca_iters', type=int, default=8,
+                        help='Number of PPCA EM iterations for initialisation')
+
+    # --- Enhanced MMPS for high corruption (run_diffem_mmps_general_corruption.py) ---
+    parser.add_argument('--use_ppca_posterior', action='store_true', default=False,
+                        help='Use PPCA covariance in MMPS posterior denoiser (stabilises high corruption)')
+    parser.add_argument('--ppca_posterior_rank', type=int, default=32,
+                        help='Rank for PPCA covariance in posterior denoiser')
+    parser.add_argument('--sigma_y_anneal', action='store_true', default=False,
+                        help='Anneal sigma_y from sigma_y_start to sigma_y_end over EM iterations')
+    parser.add_argument('--sigma_y_start', type=float, default=0.1,
+                        help='Starting sigma_y for annealing (high = diffuse posterior)')
+    parser.add_argument('--sigma_y_end', type=float, default=0.01,
+                        help='Ending sigma_y for annealing (low = tight data fit)')
+    parser.add_argument('--obs_consistency_mmps', action='store_true', default=False,
+                        help='Overwrite observed positions with true values after MMPS E-step')
+
+    # --- Early stopping ---
+    parser.add_argument('--early_stop_patience', type=int, default=20,
+                        help='Epochs with no loss improvement before stopping M-step/uncond training')
+    parser.add_argument('--early_stop_min_delta', type=float, default=1e-4,
+                        help='Minimum loss decrease to count as improvement')
+
+    # --- Warm-start DiffEM (Phase 2: conditional refinement after MMPS) ---
+    parser.add_argument('--warmstart_iters', type=int, default=5,
+                        help='Number of conditional DiffEM iterations after MMPS converges')
+    parser.add_argument('--warmstart_cond_epochs', type=int, default=100,
+                        help='Epochs to train the conditional model per warm-start iteration')
+    parser.add_argument('--warmstart_cond_lr', type=float, default=None,
+                        help='Learning rate for conditional model (default: same as learning_rate)')
+    parser.add_argument('--warmstart_stop_on_degradation', action='store_true', default=True,
+                        help='Stop Phase 2 if disc_mean gets worse than best MMPS result')
+
+    # --- Ambient-MMPS (run_diffem_ambient_mmps.py) ---
+    parser.add_argument('--ambient_pretrain_epochs', type=int, default=100,
+                        help='Epochs for Phase 0 ambient pre-training on corrupted observations')
+    parser.add_argument('--lambda_obs_start', type=float, default=1.0,
+                        help='Initial weight for observation-space loss in M-step (1.0 = obs only)')
+    parser.add_argument('--lambda_obs_end', type=float, default=0.3,
+                        help='Final weight for observation-space loss in M-step')
+    parser.add_argument('--further_corrupt_delta', type=float, default=0.1,
+                        help='Probability of dropping an observed position in Ambient further corruption')
+
+    # --- Fast mode (overrides multiple settings for quicker iteration) ---
+    parser.add_argument('--fast_mode', action='store_true', default=False,
+                        help='Quick iteration mode: m_step_epochs=60, uncond_eval_epochs=50, '
+                             'e_step_sample_steps=32, em_iters=10, patience=15')
 
     # --- logging ---s
     parser.add_argument('--logging_iter', type=int, default=10, help='number of iterations between logging')
@@ -160,4 +256,19 @@ def parse_args_irregular():
             setattr(parsed_args, k, v)
 
     parsed_args.input_size = parsed_args.input_channels
+
+    if getattr(parsed_args, 'fast_mode', False):
+        fast_overrides = dict(
+            m_step_epochs=60,
+            uncond_eval_epochs=50,
+            uncond_epochs_per_iter=50,
+            e_step_sample_steps=32,
+            em_iters=10,
+            early_stop_patience=15,
+        )
+        for k, v in fast_overrides.items():
+            if k not in [a.lstrip('-') for a in sys.argv]:
+                setattr(parsed_args, k, v)
+        print(f"[fast_mode] overrides applied: {fast_overrides}")
+
     return parsed_args

@@ -1,0 +1,38 @@
+#!/bin/bash
+
+################################################################################################
+### sbatch configuration parameters must start with #SBATCH and must precede any other commands.
+### To ignore, just add another # - like so: ##SBATCH
+################################################################################################
+
+#SBATCH --partition rtx6000			### specify partition name where to run a job.
+#SBATCH --qos azencot
+#SBATCH --time 7-00:00:00			### limit the time of job running. Format: D-H:MM:SS
+#SBATCH --job-name amb_mn50		### name of the job
+#SBATCH --output amb_mn50-%J.out	### output log for running job - %J for job number
+
+#SBATCH --gpus=1				### number of GPUs
+
+### Print some data to output file ###
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+### Start your code below ####
+module load anaconda
+source activate idan2_env
+python run_diffem_ambient_mmps.py \
+  --config ./configs/seq_len_24/energy.yaml \
+  --corruption_type ts_missing_noise \
+  --missing_rate 0.5 \
+  --corruption_noise_level 0.1 \
+  --em_iters 15 \
+  --m_step_epochs 150 \
+  --mmps_cg_iters 1 \
+  --obs_consistency_mmps \
+  --ambient_pretrain_epochs 100 \
+  --lambda_obs_start 1.0 \
+  --lambda_obs_end 0.3 \
+  --further_corrupt_delta 0.1 \
+  --wandb true \
+  --tags "ambient_mmps" "ts_missing_noise" "missing_50_noise_01" "energy" "seq_len_24" "combined"

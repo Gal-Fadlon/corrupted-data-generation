@@ -15,8 +15,10 @@ class PrintLogger(BaseLogger):
         self.plt = plt
         self.np = np
 
-    def stop(self):
-        pass
+    def stop(self, exit_code=0):
+        if exit_code != 0:
+            print(f"[PrintLogger] Run stopped with exit_code={exit_code}")
+
 
     def log(self, name: str, data: Any, step=None):
         print(f'{name}: {data}' if step is None else f'step {step}, {name}: {data:.4e}')

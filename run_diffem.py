@@ -24,8 +24,7 @@ from itertools import chain
 
 from metrics import evaluate_model_irregular
 from metrics.memorization import compute_memorization_metric
-from neptune.types import File
-from utils.loggers import NeptuneLogger, PrintLogger, CompositeLogger
+from utils.loggers import WandbLogger, PrintLogger, CompositeLogger
 from utils.utils import restore_state, create_model_name_and_dir, print_model_params, log_config_and_tags
 from utils.utils_data import (
     gen_dataloader, apply_corruption, build_conditioning, 
@@ -277,9 +276,16 @@ def m_step(args, cond_model, optimizer, embedder, decoder, reconstructions,
         num_workers=args.num_workers
     )
     
+    patience = getattr(args, 'early_stop_patience', 20)
+    min_delta = getattr(args, 'early_stop_min_delta', 1e-4)
+
     cond_model.train()
     embedder.eval()  # TST should be frozen during M-step
     decoder.eval()
+    
+    best_loss = float('inf')
+    no_improve_count = 0
+    actual_epochs = 0
     
     for epoch in range(args.m_step_epochs):
         epoch_loss = 0
@@ -293,7 +299,6 @@ def m_step(args, cond_model, optimizer, embedder, decoder, reconstructions,
             # Get TST completion for conditioning
             with torch.no_grad():
                 padding_masks = ~torch.isnan(corrupted).any(dim=-1)
-                # Replace NaN with 0 for TST input
                 corrupted_filled = torch.nan_to_num(corrupted, nan=0.0)
                 h = embedder(corrupted_filled, padding_masks)
                 completed_ts = decoder(h)
@@ -323,6 +328,7 @@ def m_step(args, cond_model, optimizer, embedder, decoder, reconstructions,
             torch.cuda.empty_cache()
         
         avg_loss = epoch_loss / num_batches
+        actual_epochs = epoch + 1
         
         if (epoch + 1) % 10 == 0 or epoch == 0:
             print(f"  M-step epoch {epoch+1}/{args.m_step_epochs}, loss: {avg_loss:.4f}")
@@ -330,8 +336,19 @@ def m_step(args, cond_model, optimizer, embedder, decoder, reconstructions,
         if logger is not None:
             global_step = em_iter * args.m_step_epochs + epoch
             logger.log('em/m_step_loss', avg_loss, global_step)
+
+        if avg_loss < best_loss - min_delta:
+            best_loss = avg_loss
+            no_improve_count = 0
+        else:
+            no_improve_count += 1
+        if no_improve_count >= patience and epoch >= 30:
+            print(f"  Early stopping at epoch {epoch+1}/{args.m_step_epochs} "
+                  f"(no improvement for {patience} epochs, best={best_loss:.4f})")
+            break
     
-    print(f"M-step complete for EM iteration {em_iter}.")
+    print(f"M-step complete for EM iteration {em_iter} "
+          f"({actual_epochs}/{args.m_step_epochs} epochs).")
     return cond_model
 
 
@@ -426,28 +443,14 @@ def evaluate_em_iteration(args, cond_model, embedder, decoder, test_loader,
         if logger is not None:
             logger.log(f'em/memorization/{k}', v, em_iter)
     
-    # Upload plot to Neptune if available
     if logger is not None:
         upload_successful = False
-        if hasattr(logger, 'loggers'):
-            # CompositeLogger case
-            for sub_logger in logger.loggers:
-                if isinstance(sub_logger, NeptuneLogger):
-                    try:
-                        sub_logger.log('em/memorization/histogram', File(mem_plot_path), em_iter)
-                        sub_logger.run.sync()
-                        upload_successful = True
-                    except Exception as e:
-                        print(f"Failed to upload memorization plot to Neptune: {e}")
-        elif isinstance(logger, NeptuneLogger):
-            try:
-                logger.log('em/memorization/histogram', File(mem_plot_path), em_iter)
-                logger.run.sync()
-                upload_successful = True
-            except Exception as e:
-                print(f"Failed to upload memorization plot to Neptune: {e}")
+        try:
+            logger.log_file('em/memorization/histogram', mem_plot_path, em_iter)
+            upload_successful = True
+        except Exception as e:
+            print(f"Failed to upload memorization plot: {e}")
         
-        # Clean up plot file after upload
         if upload_successful:
             try:
                 if os.path.exists(mem_plot_path):
@@ -455,6 +458,121 @@ def evaluate_em_iteration(args, cond_model, embedder, decoder, test_loader,
             except Exception as e:
                 print(f"Failed to delete temporary plot file {mem_plot_path}: {e}")
     
+    return scores
+
+
+def train_and_evaluate_unconditional(args, uncond_model, uncond_optimizer,
+                                      reconstructions, test_loader, em_iter,
+                                      device, logger=None):
+    """
+    Train unconditional model on current reconstructions and evaluate.
+
+    Uses the SAME evaluation protocol as run_irregular.py for fair comparison:
+    unconditional sampling → discriminative score against real test data.
+    """
+    uncond_epochs = getattr(args, 'uncond_epochs_per_iter', None)
+    if uncond_epochs is None:
+        uncond_epochs = getattr(args, 'm_step_epochs', 50)
+    print(f"\n=== Unconditional Training & Evaluation (EM iter {em_iter}) ===")
+    print(f"Training unconditional model for {uncond_epochs} epochs...")
+
+    recon_tensor = torch.tensor(reconstructions, dtype=torch.float32)
+    recon_loader = Data.DataLoader(
+        Data.TensorDataset(recon_tensor),
+        batch_size=args.batch_size, shuffle=True,
+        num_workers=args.num_workers,
+    )
+
+    patience = getattr(args, 'early_stop_patience', 20)
+    min_delta = getattr(args, 'early_stop_min_delta', 1e-4)
+    best_loss = float('inf')
+    no_improve_count = 0
+
+    uncond_model.train()
+    for epoch in range(uncond_epochs):
+        epoch_loss, num_batches = 0.0, 0
+        for (x_clean,) in recon_loader:
+            x_clean = x_clean.to(device)
+            x_img = uncond_model.ts_to_img(x_clean)
+            loss, _ = uncond_model.loss_fn_irregular(x_img)
+
+            uncond_optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(uncond_model.parameters(), 1.0)
+            uncond_optimizer.step()
+            uncond_model.on_train_batch_end()
+
+            epoch_loss += loss.item()
+            num_batches += 1
+            torch.cuda.empty_cache()
+
+        avg_loss = epoch_loss / max(num_batches, 1)
+        if (epoch + 1) % 10 == 0 or epoch == 0:
+            print(f"  Uncond epoch {epoch+1}/{uncond_epochs}, loss: {avg_loss:.4f}")
+        if logger is not None:
+            global_step = em_iter * uncond_epochs + epoch
+            logger.log('train/uncond_loss', avg_loss, global_step)
+
+        if avg_loss < best_loss - min_delta:
+            best_loss = avg_loss
+            no_improve_count = 0
+        else:
+            no_improve_count += 1
+        if no_improve_count >= patience and epoch >= 20:
+            print(f"  Uncond early stopping at epoch {epoch+1}/{uncond_epochs}")
+            break
+
+    # Evaluate — unconditional sampling, same as run_irregular.py
+    print("Evaluating unconditional model (same as run_irregular.py)...")
+    uncond_model.eval()
+    gen_sig, real_sig = [], []
+
+    with torch.no_grad():
+        with uncond_model.ema_scope():
+            process = DiffusionProcess(
+                args, uncond_model.net,
+                (args.input_channels, args.img_resolution, args.img_resolution),
+            )
+            for data in tqdm(test_loader, desc="Evaluating"):
+                x_img_sampled = process.sampling(sampling_number=data[0].shape[0])
+                x_ts = uncond_model.img_to_ts(x_img_sampled)
+                gen_sig.append(x_ts.cpu().numpy())
+                real_sig.append(data[0].cpu().numpy())
+
+    gen_sig = np.vstack(gen_sig)
+    real_sig = np.vstack(real_sig)
+
+    scores = evaluate_model_irregular(real_sig, gen_sig, args)
+    print(f"EM iter {em_iter} metrics (unconditional):")
+    for key, value in scores.items():
+        print(f"  {key}: {value:.4f}")
+        if logger is not None:
+            logger.log(f'test/{key}', value, em_iter)
+
+    mem_plot_path = f"memorization_hist_em_iter_{em_iter}.png"
+    mem_stats = compute_memorization_metric(
+        real_data=real_sig, generated_data=gen_sig,
+        device=device, plot_path=mem_plot_path,
+    )
+    for k, v in mem_stats.items():
+        print(f"  {k}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
+        if logger is not None:
+            logger.log(f'test/memorization/{k}', v, em_iter)
+
+    upload_successful = False
+    try:
+        logger.log_file('test/memorization/histogram', mem_plot_path, em_iter)
+        upload_successful = True
+    except Exception as e:
+        print(f"Failed to upload memorization plot: {e}")
+
+    if upload_successful:
+        try:
+            if os.path.exists(mem_plot_path):
+                os.remove(mem_plot_path)
+        except Exception as e:
+            print(f"Failed to delete temporary plot file {mem_plot_path}: {e}")
+
     return scores
 
 
@@ -562,7 +680,7 @@ def main(args):
     logging.info(args)
     
     # Set up logger
-    with CompositeLogger([NeptuneLogger()]) if args.neptune else PrintLogger() as logger:
+    with CompositeLogger([WandbLogger()]) if args.wandb else PrintLogger() as logger:
         log_config_and_tags(args, logger, name)
         
         # Set up device and data
@@ -655,6 +773,16 @@ def main(args):
         )
         print("Initial conditional model training complete.")
         
+        # === Create Unconditional Model for Fair Evaluation ===
+        # Same evaluation protocol as run_irregular.py and all other DiffEM variants
+        uncond_model = TS2img_Karras(args=args, device=args.device).to(args.device)
+        uncond_optimizer = torch.optim.AdamW(
+            uncond_model.parameters(),
+            lr=args.learning_rate,
+            weight_decay=args.weight_decay
+        )
+        print("Unconditional evaluation model created (same protocol as run_irregular.py)")
+        
         # === Phase 2: EM Loop ===
         print(f"\n{'='*60}")
         print(f"Starting DiffEM with {args.em_iters} EM iterations")
@@ -662,7 +790,6 @@ def main(args):
         
         best_metrics = None
         final_reconstructions = None
-        metrics = None  # Initialize to avoid undefined variable
         
         for em_iter in range(args.em_iters):
             print(f"\n{'='*60}")
@@ -681,14 +808,16 @@ def main(args):
                 reconstructions, em_iter, args.device, logger
             )
             
-            # Evaluate if at interval
+            # Evaluate using UNCONDITIONAL model (same as run_irregular.py)
             if (em_iter + 1) % args.em_eval_interval == 0 or em_iter == args.em_iters - 1:
-                metrics = evaluate_em_iteration(
-                    args, cond_model, embedder, decoder, test_loader,
-                    em_iter, args.device, logger
+                metrics = train_and_evaluate_unconditional(
+                    args, uncond_model, uncond_optimizer,
+                    reconstructions, test_loader, em_iter,
+                    args.device, logger
                 )
                 
-                if best_metrics is None or metrics.get('discriminative', float('inf')) < best_metrics.get('discriminative', float('inf')):
+                disc = metrics.get('disc_mean', float('inf'))
+                if best_metrics is None or disc < best_metrics.get('disc_mean', float('inf')):
                     best_metrics = metrics
             
             # Keep track of final reconstructions
@@ -697,17 +826,6 @@ def main(args):
             # Log EM iteration
             if logger is not None:
                 logger.log('em/iteration', em_iter, em_iter)
-        
-        # === Phase 3: Train Unconditional Model ===
-        # Check for the negative flag first, then the positive flag
-        should_train_uncond = getattr(args, 'train_uncond_after_em', True)
-        if getattr(args, 'no_train_uncond', False):
-            should_train_uncond = False
-        
-        if should_train_uncond and final_reconstructions is not None:
-            uncond_model, uncond_metrics = train_unconditional_final(
-                args, final_reconstructions, test_loader, args.device, logger
-            )
         
         print("\n" + "="*60)
         print("DiffEM Training Complete!")

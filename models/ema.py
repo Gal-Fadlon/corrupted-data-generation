@@ -46,6 +46,19 @@ class LitEma(nn.Module):
                 else:
                     assert not key in self.m_name2s_name
 
+    def reset(self, model):
+        """
+        Reset EMA shadow parameters to current model parameters and zero the
+        update counter.  Matches the DiffEM paper's ``avrg = params`` at the
+        start of each EM lap.
+        """
+        self.num_updates.zero_()
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                if p.requires_grad:
+                    sname = self.m_name2s_name[name]
+                    getattr(self, sname).copy_(p.data)
+
     def copy_to(self, model):
         m_param = dict(model.named_parameters())
         shadow_params = dict(self.named_buffers())

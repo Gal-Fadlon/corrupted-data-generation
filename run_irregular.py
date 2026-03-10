@@ -11,8 +11,7 @@ from itertools import chain
 
 from metrics import evaluate_model_irregular
 from metrics.memorization import compute_memorization_metric
-from neptune.types import File
-from utils.loggers import NeptuneLogger, PrintLogger, CompositeLogger
+from utils.loggers import WandbLogger, PrintLogger, CompositeLogger
 from utils.utils import restore_state, create_model_name_and_dir, print_model_params, log_config_and_tags
 from utils.utils_data import gen_dataloader
 from utils.utils_args import parse_args_irregular
@@ -102,8 +101,8 @@ def main(args):
     # log args
     logging.info(args)
 
-    # set-up neptune logger. switch to your desired logger
-    with CompositeLogger([NeptuneLogger()]) if args.neptune else PrintLogger() as logger:
+    # set-up logger
+    with CompositeLogger([WandbLogger()]) if args.wandb else PrintLogger() as logger:
 
         # log config and tags
         log_config_and_tags(args, logger, name)
@@ -281,34 +280,17 @@ def main(args):
                     plot_path=mem_plot_path
                 )
 
-                # Log stats to Neptune
+                # Log memorization stats
                 for k, v in mem_stats.items():
                     logger.log(f'test/memorization/{k}', v, epoch)
 
-                # Upload plot to Neptune and delete AFTER upload finishes
                 upload_successful = False
-                if hasattr(logger, 'loggers'):
-                    # CompositeLogger case
-                    for sub_logger in logger.loggers:
-                        if isinstance(sub_logger, NeptuneLogger):
-                            try:
-                                # Log as an image series - this is synchronous
-                                sub_logger.log('test/memorization/histogram', File(mem_plot_path), epoch)
-                                # Ensure upload completes (Neptune operations are typically synchronous, but we sync explicitly)
-                                sub_logger.run.sync()
-                                upload_successful = True
-                            except Exception as e:
-                                print(f"Failed to upload memorization plot to Neptune: {e}")
-                elif isinstance(logger, NeptuneLogger):
-                    # Direct NeptuneLogger case
-                    try:
-                        logger.log('test/memorization/histogram', File(mem_plot_path), epoch)
-                        logger.run.sync()
-                        upload_successful = True
-                    except Exception as e:
-                        print(f"Failed to upload memorization plot to Neptune: {e}")
+                try:
+                    logger.log_file('test/memorization/histogram', mem_plot_path, epoch)
+                    upload_successful = True
+                except Exception as e:
+                    print(f"Failed to upload memorization plot: {e}")
 
-                # Clean up plot file AFTER upload finishes
                 if upload_successful:
                     try:
                         if os.path.exists(mem_plot_path):
