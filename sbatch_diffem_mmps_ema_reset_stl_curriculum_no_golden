@@ -28,4 +28,4 @@ echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
 ### Start your src_code below ####
 module load anaconda    ### load anaconda module (must be present when working with conda environments)
 source activate idan2_env    ### activate a conda environment, replace my_env with your conda environment
-python run_diffem_mmps_ema_reset_stl_curriculum.py --config ./configs/seq_len_96/energy.yaml --missing_rate 0.5 --wandb true --tags "diffem_mmps_ema_reset_stl_curriculum" "energy" "50_missing_rate" "decomposition" "curriculum" "seq_len_96"
+python run_diffem_mmps_ema_reset_stl_curriculum.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.5 --wandb true --tags "diffem_mmps_ema_reset_stl_curriculum" "energy" "50_missing_rate" "decomposition" "curriculum"

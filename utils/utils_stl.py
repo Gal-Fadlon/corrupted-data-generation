@@ -11,9 +11,15 @@ References:
       Learning for Time Series Generation" (2025)
 """
 
+import warnings
+
 import numpy as np
 import torch
+from scipy.interpolate import PchipInterpolator
 from scipy.ndimage import uniform_filter1d
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, ExpSineSquared, WhiteKernel
+from statsmodels.nonparametric.smoothers_lowess import lowess
 from statsmodels.tsa.seasonal import STL
 
 
@@ -425,4 +431,574 @@ def initialize_with_knn_stl(corrupted_data, obs_masks, period=None, k=5, seed=No
 
     obs_pct = obs_masks.sum() / obs_masks.size * 100
     print(f"k-NN+STL initialization complete. {N} sequences, {obs_pct:.1f}% observed, k={k}, period={period}")
+    return initial_recon
+
+
+# =============================================================================
+# Experiment 1: GP with Composite Kernel
+# =============================================================================
+
+def initialize_with_gp(corrupted_data, obs_masks, period=None, seed=None):
+    """
+    Gaussian Process initialization for corrupted time series.
+
+    Uses a composite kernel (RBF + ExpSineSquared + WhiteKernel) that explicitly
+    encodes trend and seasonality. The GP fits only on observed points and
+    predicts at all timepoints, so no pre-interpolation is needed.
+
+    Reference:
+        "An improved Gaussian process for filling missing data in GNSS
+         position time series" (Nature Sci. Reports, 2024)
+
+    Args:
+        corrupted_data: (N, T, C) numpy array with NaN for missing
+        obs_masks:      (N, T) boolean, True = observed
+        period:         seasonal period (auto-detected if None)
+        seed:           random seed
+
+    Returns:
+        initial_recon: (N, T, C) with all values filled
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    N, T, C = corrupted_data.shape
+    if period is None:
+        period = auto_detect_period(T)
+
+    initial_recon = corrupted_data.copy()
+    all_t = np.arange(T).reshape(-1, 1)
+
+    kernel = (
+        RBF(length_scale=T / 4.0, length_scale_bounds=(1.0, T * 2.0))
+        + ExpSineSquared(
+            length_scale=1.0, periodicity=float(period),
+            length_scale_bounds=(0.5, T),
+            periodicity_bounds=(max(2.0, period * 0.5), period * 2.0),
+        )
+        + WhiteKernel(noise_level=0.01, noise_level_bounds=(1e-5, 1.0))
+    )
+
+    rng = np.random.RandomState(seed)
+    n_gp_ok = 0
+    n_fallback = 0
+
+    for i in range(N):
+        mask_i = obs_masks[i]
+        obs_idx = np.where(mask_i)[0]
+        mis_idx = np.where(~mask_i)[0]
+
+        if len(mis_idx) == 0:
+            continue
+
+        if len(obs_idx) < 3:
+            for c in range(C):
+                obs_vals = corrupted_data[i, obs_idx, c] if len(obs_idx) > 0 else np.array([0.5])
+                mu, sigma = np.nanmean(obs_vals), max(np.nanstd(obs_vals), 1e-3)
+                initial_recon[i, mis_idx, c] = rng.normal(mu, sigma, size=len(mis_idx))
+            n_fallback += 1
+            continue
+
+        X_obs = obs_idx.reshape(-1, 1)
+
+        for c in range(C):
+            obs_vals = corrupted_data[i, obs_idx, c]
+
+            # Per-feature NaN filtering: the obs_mask is per-timestep (any
+            # feature), so individual features can still be NaN at "observed"
+            # timesteps.
+            valid = ~np.isnan(obs_vals)
+            if valid.sum() < 3:
+                feat_vals = corrupted_data[i, :, c]
+                mu = np.nanmean(feat_vals) if np.any(~np.isnan(feat_vals)) else 0.5
+                initial_recon[i, mis_idx, c] = mu + rng.normal(0, 0.01, size=len(mis_idx))
+                n_fallback += 1
+                continue
+
+            try:
+                gp = GaussianProcessRegressor(
+                    kernel=kernel, n_restarts_optimizer=2, random_state=seed,
+                    alpha=1e-6, normalize_y=True,
+                )
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    gp.fit(X_obs[valid], obs_vals[valid])
+
+                y_pred, y_std = gp.predict(all_t, return_std=True)
+
+                filled = corrupted_data[i, :, c].copy()
+                filled[mis_idx] = y_pred[mis_idx]
+                initial_recon[i, :, c] = filled
+                n_gp_ok += 1
+            except Exception:
+                filled = corrupted_data[i, :, c].copy()
+                valid_all = ~np.isnan(filled)
+                if valid_all.sum() >= 2:
+                    filled[~valid_all] = np.interp(
+                        np.where(~valid_all)[0],
+                        np.where(valid_all)[0],
+                        filled[valid_all]
+                    )
+                else:
+                    mu = np.nanmean(filled) if np.any(valid_all) else 0.5
+                    filled[:] = mu + rng.normal(0, 0.01, size=T)
+                initial_recon[i, :, c] = filled
+                n_fallback += 1
+
+    initial_recon = np.clip(initial_recon, 0, 1)
+
+    obs_pct = obs_masks.sum() / obs_masks.size * 100
+    print(f"GP initialization complete. {N} sequences, {obs_pct:.1f}% observed, period={period}")
+    print(f"  GP OK: {n_gp_ok}, Fallback (interp/mean): {n_fallback}")
+    return initial_recon
+
+
+# =============================================================================
+# Experiment 2: Iterative Decompose-Impute-Redecompose
+# =============================================================================
+
+def initialize_with_iterative_stl(corrupted_data, obs_masks, period=None,
+                                   n_iters=5, seed=None):
+    """
+    Iterative STL initialization for corrupted time series.
+
+    Instead of interpolate-once then decompose, this method iterates:
+      1. Initialize missing with per-feature mean
+      2. Repeat n_iters times:
+         a. STL decompose the full series
+         b. Impute missing = trend + seasonal + resampled residual
+         c. Restore observed values
+    Each iteration refines the decomposition since imputed values
+    progressively better reflect the true structure.
+
+    Reference:
+        STLinterp (Harrington, GitHub) — iterative STL-based NA estimation
+
+    Args:
+        corrupted_data: (N, T, C) numpy array with NaN for missing
+        obs_masks:      (N, T) boolean, True = observed
+        period:         STL period (auto-detected if None)
+        n_iters:        number of decompose-impute iterations (default 5)
+        seed:           random seed
+
+    Returns:
+        initial_recon: (N, T, C) with all values filled
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    N, T, C = corrupted_data.shape
+    if period is None:
+        period = auto_detect_period(T)
+
+    initial_recon = corrupted_data.copy()
+
+    for i in range(N):
+        mask_i = obs_masks[i]
+        obs_idx = np.where(mask_i)[0]
+        mis_idx = np.where(~mask_i)[0]
+
+        if len(obs_idx) < 3 or len(mis_idx) == 0:
+            for c in range(C):
+                obs_vals = corrupted_data[i, obs_idx, c] if len(obs_idx) > 0 else np.array([0.5])
+                mu, sigma = np.nanmean(obs_vals), max(np.nanstd(obs_vals), 1e-3)
+                initial_recon[i, mis_idx, c] = np.random.normal(mu, sigma, size=len(mis_idx))
+            continue
+
+        for c in range(C):
+            series = corrupted_data[i, :, c].copy()
+            obs_vals_orig = series[obs_idx].copy()
+
+            # Initialize missing with per-feature observed mean
+            feat_mean = np.nanmean(series)
+            series[mis_idx] = feat_mean
+
+            for k in range(n_iters):
+                trend_c, season_c, resid_c = stl_decompose_single(series, period)
+
+                resid_obs = resid_c[obs_idx]
+                mu_r, std_r = resid_obs.mean(), max(resid_obs.std(), 1e-4)
+                resid_c[mis_idx] = np.random.normal(mu_r, std_r, size=len(mis_idx))
+
+                series = trend_c + season_c + resid_c
+                # Restore observed values to prevent drift
+                series[obs_idx] = obs_vals_orig
+
+            initial_recon[i, :, c] = series
+
+    initial_recon = np.clip(initial_recon, 0, 1)
+
+    obs_pct = obs_masks.sum() / obs_masks.size * 100
+    print(f"Iterative STL initialization complete ({n_iters} iters). "
+          f"{N} sequences, {obs_pct:.1f}% observed, period={period}")
+    return initial_recon
+
+
+# =============================================================================
+# Experiment 3: Kalman Smoother with Structural TS Model
+# =============================================================================
+
+def initialize_with_kalman(corrupted_data, obs_masks, period=None, seed=None):
+    """
+    Kalman smoother initialization using statsmodels UnobservedComponents.
+
+    The structural time series model explicitly decomposes into
+    level (trend) + seasonal + irregular. The Kalman smoother natively
+    handles missing values by skipping the measurement update step.
+
+    Reference:
+        Harvey (1989), "Forecasting, Structural Time Series Models
+        and the Kalman Filter"
+
+    Args:
+        corrupted_data: (N, T, C) numpy array with NaN for missing
+        obs_masks:      (N, T) boolean, True = observed
+        period:         seasonal period (auto-detected if None)
+        seed:           random seed
+
+    Returns:
+        initial_recon: (N, T, C) with all values filled
+    """
+    from statsmodels.tsa.statespace.structural import UnobservedComponents
+
+    if seed is not None:
+        np.random.seed(seed)
+
+    N, T, C = corrupted_data.shape
+    if period is None:
+        period = auto_detect_period(T)
+
+    initial_recon = corrupted_data.copy()
+    n_kalman_ok = 0
+    n_fallback = 0
+
+    for i in range(N):
+        mask_i = obs_masks[i]
+        obs_idx = np.where(mask_i)[0]
+        mis_idx = np.where(~mask_i)[0]
+
+        if len(mis_idx) == 0:
+            continue
+
+        if len(obs_idx) < 3:
+            for c in range(C):
+                obs_vals = corrupted_data[i, obs_idx, c] if len(obs_idx) > 0 else np.array([0.5])
+                mu, sigma = np.nanmean(obs_vals), max(np.nanstd(obs_vals), 1e-3)
+                initial_recon[i, mis_idx, c] = np.random.normal(mu, sigma, size=len(mis_idx))
+            n_fallback += 1
+            continue
+
+        for c in range(C):
+            series = corrupted_data[i, :, c].copy().astype(np.float64)
+
+            # Per-feature NaN handling: the obs_mask is per-timestep (any
+            # feature), so individual features can still be NaN at "observed"
+            # timesteps. Pre-interpolate NaNs so UnobservedComponents gets a
+            # complete series (it handles missing via np.nan but works better
+            # with pre-filled data).
+            feat_valid = ~np.isnan(series)
+            if feat_valid.sum() < 3:
+                mu = np.nanmean(series) if feat_valid.any() else 0.5
+                initial_recon[i, :, c] = mu + np.random.normal(0, 0.01, size=T)
+                n_fallback += 1
+                continue
+
+            if not feat_valid.all():
+                series[~feat_valid] = np.interp(
+                    np.where(~feat_valid)[0],
+                    np.where(feat_valid)[0],
+                    series[feat_valid]
+                )
+
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    model = UnobservedComponents(
+                        series, level='local linear trend',
+                        seasonal=period, stochastic_seasonal=True,
+                    )
+                    result = model.fit(disp=False, maxiter=100)
+
+                smoothed_state = result.smoothed_state
+                smoothed = smoothed_state[0, :]  # level
+                if model.k_states > 2:
+                    smoothed = smoothed + smoothed_state[2, :]  # + seasonal
+
+                filled = series.copy()
+                filled[mis_idx] = smoothed[mis_idx]
+
+                if np.isnan(filled[mis_idx]).any():
+                    raise ValueError("Kalman smoother produced NaN")
+
+                obs_residuals = series[obs_idx] - smoothed[obs_idx]
+                obs_residuals = obs_residuals[~np.isnan(obs_residuals)]
+                if len(obs_residuals) > 1:
+                    std_r = max(np.std(obs_residuals), 1e-4)
+                    filled[mis_idx] += np.random.normal(0, std_r * 0.5, size=len(mis_idx))
+
+                initial_recon[i, :, c] = filled
+                n_kalman_ok += 1
+
+            except Exception:
+                obs_vals_orig = series[obs_idx].copy()
+                feat_mean = np.nanmean(series)
+                series[mis_idx] = feat_mean
+                for k in range(3):
+                    trend_c, season_c, resid_c = stl_decompose_single(series, period)
+                    resid_obs = resid_c[obs_idx]
+                    mu_r, std_r = resid_obs.mean(), max(resid_obs.std(), 1e-4)
+                    resid_c[mis_idx] = np.random.normal(mu_r, std_r, size=len(mis_idx))
+                    series = trend_c + season_c + resid_c
+                    series[obs_idx] = obs_vals_orig
+                initial_recon[i, :, c] = series
+                n_fallback += 1
+
+    initial_recon = np.clip(initial_recon, 0, 1)
+
+    obs_pct = obs_masks.sum() / obs_masks.size * 100
+    print(f"Kalman initialization complete. {N} sequences, {obs_pct:.1f}% observed, period={period}")
+    print(f"  Kalman OK: {n_kalman_ok}, Fallback to iterative STL: {n_fallback}")
+    return initial_recon
+
+
+# =============================================================================
+# Experiment 4: Seasonal-Aware Interpolation (Deseasonalize-Interpolate-Reseasonalize)
+# =============================================================================
+
+def initialize_with_seasonal_interp(corrupted_data, obs_masks, period=None, seed=None):
+    """
+    Seasonal-aware interpolation: deseasonalize, interpolate, reseasonalize.
+
+    Seasonality is preserved by construction because it is never interpolated
+    through. The deseasonalized signal is smooth, making interpolation accurate
+    even with simple methods.
+
+    Inspired by imputeTS::na_seadec (R package).
+
+    Strategy:
+      1. Estimate seasonal pattern from observed data only (periodic averaging)
+      2. Deseasonalize observed points
+      3. PCHIP-interpolate the smooth deseasonalized signal
+      4. Reseasonalize: filled = deseasonalized_interp + seasonal
+      5. STL decompose for residual resampling at missing positions
+
+    Args:
+        corrupted_data: (N, T, C) numpy array with NaN for missing
+        obs_masks:      (N, T) boolean, True = observed
+        period:         seasonal period (auto-detected if None)
+        seed:           random seed
+
+    Returns:
+        initial_recon: (N, T, C) with all values filled
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    N, T, C = corrupted_data.shape
+    if period is None:
+        period = auto_detect_period(T)
+
+    initial_recon = corrupted_data.copy()
+
+    for i in range(N):
+        mask_i = obs_masks[i]
+        obs_idx = np.where(mask_i)[0]
+        mis_idx = np.where(~mask_i)[0]
+
+        if len(obs_idx) < 3 or len(mis_idx) == 0:
+            for c in range(C):
+                obs_vals = corrupted_data[i, obs_idx, c] if len(obs_idx) > 0 else np.array([0.5])
+                mu, sigma = np.nanmean(obs_vals), max(np.nanstd(obs_vals), 1e-3)
+                initial_recon[i, mis_idx, c] = np.random.normal(mu, sigma, size=len(mis_idx))
+            continue
+
+        for c in range(C):
+            series = corrupted_data[i, :, c].copy()
+            obs_vals = series[obs_idx]
+
+            # Step 1: estimate seasonal pattern from observed data only
+            seasonal = np.zeros(T)
+            global_mean = np.nanmean(obs_vals)
+            for k in range(period):
+                phase_positions = np.arange(k, T, period)
+                phase_obs = [t for t in phase_positions if mask_i[t]]
+                if len(phase_obs) >= 1:
+                    seasonal[phase_positions] = np.mean(series[phase_obs]) - global_mean
+                else:
+                    seasonal[phase_positions] = 0.0
+
+            # Step 2: deseasonalize observed points
+            deseason = np.full(T, np.nan)
+            deseason[obs_idx] = obs_vals - seasonal[obs_idx]
+
+            # Step 3: PCHIP-interpolate the deseasonalized signal
+            deseason_obs = deseason[obs_idx]
+            if len(obs_idx) >= 2:
+                pchip = PchipInterpolator(obs_idx, deseason_obs)
+                deseason_filled = pchip(np.arange(T))
+            else:
+                deseason_filled = np.full(T, deseason_obs[0] if len(deseason_obs) > 0 else 0.5)
+
+            # Step 4: reseasonalize
+            filled = deseason_filled + seasonal
+
+            # Step 5: STL decompose for residual resampling
+            trend_c, season_c, resid_c = stl_decompose_single(filled, period)
+            resid_obs = resid_c[obs_idx]
+            mu_r, std_r = resid_obs.mean(), max(resid_obs.std(), 1e-4)
+            resid_c[mis_idx] = np.random.normal(mu_r, std_r, size=len(mis_idx))
+
+            initial_recon[i, :, c] = trend_c + season_c + resid_c
+
+    initial_recon = np.clip(initial_recon, 0, 1)
+
+    obs_pct = obs_masks.sum() / obs_masks.size * 100
+    print(f"Seasonal-aware interpolation init complete. {N} sequences, "
+          f"{obs_pct:.1f}% observed, period={period}")
+    return initial_recon
+
+
+# =============================================================================
+# Experiment 5: PCHIP Interpolation + STL
+# =============================================================================
+
+def initialize_with_pchip_stl(corrupted_data, obs_masks, period=None, seed=None):
+    """
+    PCHIP + STL initialization — drop-in replacement of linear interpolation
+    with shape-preserving cubic Hermite interpolation.
+
+    PCHIP preserves monotonicity between observations and captures curvature,
+    producing a better pre-fill for STL decomposition than linear interpolation.
+
+    Args:
+        corrupted_data: (N, T, C) numpy array with NaN for missing
+        obs_masks:      (N, T) boolean, True = observed
+        period:         STL period (auto-detected if None)
+        seed:           random seed
+
+    Returns:
+        initial_recon: (N, T, C) with all values filled
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    N, T, C = corrupted_data.shape
+    if period is None:
+        period = auto_detect_period(T)
+
+    initial_recon = corrupted_data.copy()
+
+    for i in range(N):
+        mask_i = obs_masks[i]
+        obs_idx = np.where(mask_i)[0]
+        mis_idx = np.where(~mask_i)[0]
+
+        if len(obs_idx) < 3 or len(mis_idx) == 0:
+            for c in range(C):
+                obs_vals = corrupted_data[i, obs_idx, c] if len(obs_idx) > 0 else np.array([0.5])
+                mu, sigma = np.nanmean(obs_vals), max(np.nanstd(obs_vals), 1e-3)
+                initial_recon[i, mis_idx, c] = np.random.normal(mu, sigma, size=len(mis_idx))
+            continue
+
+        for c in range(C):
+            series = corrupted_data[i, :, c].copy()
+            obs_vals = series[obs_idx]
+
+            # PCHIP interpolation (shape-preserving cubic Hermite)
+            pchip = PchipInterpolator(obs_idx, obs_vals)
+            series[mis_idx] = pchip(mis_idx)
+
+            # STL decompose the PCHIP-interpolated series
+            trend_c, season_c, resid_c = stl_decompose_single(series, period)
+
+            # Resample residual at missing positions
+            resid_obs = resid_c[obs_idx]
+            mu_r, std_r = resid_obs.mean(), max(resid_obs.std(), 1e-4)
+            resid_c[mis_idx] = np.random.normal(mu_r, std_r, size=len(mis_idx))
+
+            initial_recon[i, :, c] = trend_c + season_c + resid_c
+
+    initial_recon = np.clip(initial_recon, 0, 1)
+
+    obs_pct = obs_masks.sum() / obs_masks.size * 100
+    print(f"PCHIP+STL initialization complete. {N} sequences, {obs_pct:.1f}% observed, period={period}")
+    return initial_recon
+
+
+# =============================================================================
+# Experiment 6: LOWESS Interpolation + STL
+# =============================================================================
+
+def initialize_with_lowess_stl(corrupted_data, obs_masks, period=None,
+                                frac=0.3, seed=None):
+    """
+    LOWESS + STL initialization — uses locally weighted scatterplot smoothing
+    to fit a smooth curve on observed points, then evaluates at all positions.
+
+    LOWESS captures non-linear local structure better than linear interpolation.
+    The smoothed curve is then decomposed via STL for residual resampling.
+
+    Args:
+        corrupted_data: (N, T, C) numpy array with NaN for missing
+        obs_masks:      (N, T) boolean, True = observed
+        period:         STL period (auto-detected if None)
+        frac:           LOWESS bandwidth (fraction of data used, default 0.3)
+        seed:           random seed
+
+    Returns:
+        initial_recon: (N, T, C) with all values filled
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    N, T, C = corrupted_data.shape
+    if period is None:
+        period = auto_detect_period(T)
+
+    initial_recon = corrupted_data.copy()
+
+    for i in range(N):
+        mask_i = obs_masks[i]
+        obs_idx = np.where(mask_i)[0]
+        mis_idx = np.where(~mask_i)[0]
+
+        if len(obs_idx) < 3 or len(mis_idx) == 0:
+            for c in range(C):
+                obs_vals = corrupted_data[i, obs_idx, c] if len(obs_idx) > 0 else np.array([0.5])
+                mu, sigma = np.nanmean(obs_vals), max(np.nanstd(obs_vals), 1e-3)
+                initial_recon[i, mis_idx, c] = np.random.normal(mu, sigma, size=len(mis_idx))
+            continue
+
+        for c in range(C):
+            series = corrupted_data[i, :, c].copy()
+            obs_vals = series[obs_idx]
+
+            # Fit LOWESS on observed points
+            # lowess returns (n, 2) array sorted by x: [[x0, y0], [x1, y1], ...]
+            lowess_result = lowess(
+                obs_vals, obs_idx.astype(float),
+                frac=max(frac, 3.0 / len(obs_idx)),  # ensure >= 3 points in window
+                return_sorted=True,
+            )
+            lowess_x = lowess_result[:, 0]
+            lowess_y = lowess_result[:, 1]
+
+            # Interpolate the smooth LOWESS curve at missing positions
+            series[mis_idx] = np.interp(mis_idx, lowess_x, lowess_y)
+
+            # STL decompose the LOWESS-filled series
+            trend_c, season_c, resid_c = stl_decompose_single(series, period)
+
+            # Resample residual at missing positions
+            resid_obs = resid_c[obs_idx]
+            mu_r, std_r = resid_obs.mean(), max(resid_obs.std(), 1e-4)
+            resid_c[mis_idx] = np.random.normal(mu_r, std_r, size=len(mis_idx))
+
+            initial_recon[i, :, c] = trend_c + season_c + resid_c
+
+    initial_recon = np.clip(initial_recon, 0, 1)
+
+    obs_pct = obs_masks.sum() / obs_masks.size * 100
+    print(f"LOWESS+STL initialization complete. {N} sequences, "
+          f"{obs_pct:.1f}% observed, frac={frac}, period={period}")
     return initial_recon

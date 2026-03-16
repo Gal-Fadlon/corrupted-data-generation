@@ -207,6 +207,36 @@ def parse_args_irregular():
     parser.add_argument('--obs_consistency_mmps', action='store_true', default=False,
                         help='Overwrite observed positions with true values after MMPS E-step')
 
+    # --- Component-wise sigma_y (run_diffem_mmps_component_sigma.py) ---
+    parser.add_argument('--sigma_y_trend', type=float, default=0.005,
+                        help='Observation noise for trend component (tight = reliable)')
+    parser.add_argument('--sigma_y_seasonal', type=float, default=0.01,
+                        help='Observation noise for seasonal component (medium)')
+    parser.add_argument('--sigma_y_residual', type=float, default=0.05,
+                        help='Observation noise for residual component (loose = noisy)')
+
+    # --- Gibbs decomposition (run_diffem_mmps_gibbs_decomp.py) ---
+    parser.add_argument('--gibbs_synthetic_confidence', type=float, default=0.3,
+                        help='Confidence weight for synthetic trend+seasonal observations in Gibbs Pass 2')
+
+    # --- TimeMAE-inspired E-step experiments ---
+    # Codebook-regularized E-step (run_diffem_mmps_codebook_estep.py)
+    parser.add_argument('--codebook_patch_size', type=int, default=4,
+                        help='Sub-series patch length for codebook (TimeMAE window sigma)')
+    parser.add_argument('--codebook_n_codes', type=int, default=256,
+                        help='Number of codebook entries K (TimeMAE vocab size)')
+    parser.add_argument('--codebook_blend_start', type=float, default=0.4,
+                        help='Codebook blend strength at EM iter 0')
+    parser.add_argument('--codebook_blend_end', type=float, default=0.05,
+                        help='Codebook blend strength at final EM iter')
+    # Momentum-teacher stabilized E-step (run_diffem_mmps_momentum_teacher.py)
+    parser.add_argument('--teacher_momentum', type=float, default=0.95,
+                        help='Momentum coefficient eta for teacher update (TimeMAE uses 0.99)')
+    parser.add_argument('--teacher_blend_start', type=float, default=0.3,
+                        help='Teacher blend weight at EM iter 0')
+    parser.add_argument('--teacher_blend_end', type=float, default=0.0,
+                        help='Teacher blend weight at final EM iter')
+
     # --- Early stopping ---
     parser.add_argument('--early_stop_patience', type=int, default=20,
                         help='Epochs with no loss improvement before stopping M-step/uncond training')

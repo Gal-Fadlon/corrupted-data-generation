@@ -24,7 +24,23 @@ def convert_no_basic_to_str_from_any(p: Any):
         return str(p)
 
 
+def _to_native(v):
+    """Convert numpy scalars to Python native types for WandB compatibility."""
+    if isinstance(v, (np.floating, float)):
+        return float(v)
+    if isinstance(v, (np.integer, int)):
+        return int(v)
+    return v
+
+
 class WandbLogger(BaseLogger):
+    """WandB logger with automatic batching.
+
+    Consecutive ``log()`` calls that share the same (step, step_key) are
+    accumulated into a single ``wandb.log()`` call.  The buffer is flushed
+    automatically when the step changes, or when ``log_metrics``,
+    ``log_file``, ``_log_fig``, or ``stop`` are called.
+    """
 
     def __init__(self, entity="azencot-group", project="ts_corrupted", *args, **kwargs):
         super(WandbLogger, self).__init__(*args, **kwargs)
@@ -39,42 +55,65 @@ class WandbLogger(BaseLogger):
 
         wandb.define_metric("custom_step", hidden=True)
         wandb.define_metric("train_step", hidden=True)
-        wandb.define_metric("em/m_step_loss", step_metric="train_step")
         wandb.define_metric("*", step_metric="custom_step")
+        wandb.define_metric("em/m_step_loss", step_metric="train_step")
 
         self._train_step_metrics = {"em/m_step_loss"}
+        self._pending: Dict[str, Any] = {}
+        self._pending_step = None
+        self._pending_step_key = None
+
+    def _flush_pending(self):
+        if not self._pending:
+            return
+        log_dict = dict(self._pending)
+        if self._pending_step is not None:
+            log_dict[self._pending_step_key] = int(self._pending_step)
+        self.run.log(log_dict)
+        self._pending = {}
+        self._pending_step = None
+        self._pending_step_key = None
 
     def stop(self, exit_code=0):
+        self._flush_pending()
         self.run.finish(exit_code=exit_code)
 
     def log(self, name: str, data: Any, step=None):
-        log_dict = {name: data}
-        if step is not None:
-            step_key = "train_step" if name in self._train_step_metrics else "custom_step"
-            log_dict[step_key] = step
-        self.run.log(log_dict)
+        step_key = "train_step" if name in self._train_step_metrics else "custom_step"
+        flush_key = (step, step_key)
+        current_key = (self._pending_step, self._pending_step_key)
+
+        if self._pending and flush_key != current_key:
+            self._flush_pending()
+
+        self._pending[name] = _to_native(data)
+        self._pending_step = step
+        self._pending_step_key = step_key
 
     def log_metrics(self, metrics: Dict[str, Any], step=None):
         """Log all metrics in a single wandb.log() call so they share one row."""
-        log_dict = dict(metrics)
+        self._flush_pending()
+        log_dict = {k: _to_native(v) for k, v in metrics.items()}
         if step is not None:
             has_train = any(k in self._train_step_metrics for k in metrics)
             if has_train:
-                log_dict["train_step"] = step
+                log_dict["train_step"] = int(step)
             else:
-                log_dict["custom_step"] = step
+                log_dict["custom_step"] = int(step)
         self.run.log(log_dict)
 
     def _log_fig(self, name: str, fig: Any):
+        self._flush_pending()
         if isinstance(fig, np.ndarray):
             from PIL import Image
             fig = Image.fromarray(fig)
         self.run.log({name: self.wandb.Image(fig)})
 
     def log_file(self, name: str, file_path: str, step=None):
+        self._flush_pending()
         log_dict = {name: self.wandb.Image(file_path)}
         if step is not None:
-            log_dict["custom_step"] = step
+            log_dict["custom_step"] = int(step)
         self.run.log(log_dict)
 
     def log_hparams(self, params: Dict[str, Any]):

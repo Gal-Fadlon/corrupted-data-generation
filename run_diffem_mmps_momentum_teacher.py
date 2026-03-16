@@ -1,22 +1,24 @@
 """
-DiffEM with Unconditional Model + MMPS E-step — EMA Reset + Decomp-Weighted Loss
+DiffEM with Unconditional Model + MMPS E-step — Momentum-Teacher Stabilized
 
-Same as run_diffem_mmps_ema_reset.py with ONE enhancement:
-  In the M-step, a moving-average decomposition is used to create per-pixel
-  importance weights.  Positions where the high-frequency residual is large
-  receive higher loss weight, focusing the model's capacity on the harder-to-
-  predict regions while maintaining full image coverage.
+Same as run_diffem_mmps_ema_reset_stl_init.py with ONE addition:
+  A momentum-averaged teacher model provides a stable imputation reference
+  via cheap replacement-based sampling (no VJP). The teacher's output is
+  blended with the online model's MMPS output, preventing EM oscillation.
 
-  importance(x) = 1 + |residual(x)| / mean(|residual|)
+  The teacher is updated after each M-step:
+      theta_teacher <- eta * theta_teacher + (1 - eta) * theta_online
+  and is NEVER reset — it accumulates knowledge across all EM iterations.
 
-  E-step, evaluation, model architecture, and EMA reset are all unchanged.
+Inspired by TimeMAE (Cheng et al., WSDM 2026) — Masked Representation
+Regression (Sec 3.4.2, Eq. 5-6): a momentum-updated target encoder provides
+stable regression targets, preventing collapse in the siamese architecture.
 """
 
+import copy
 import torch
 import torch.autograd
 import torch.multiprocessing
-from torch import optim
-import torch.nn.functional as F
 import torch.utils.data as Data
 import os
 import sys
@@ -34,43 +36,10 @@ from utils.utils_data import (
 from utils.utils_args import parse_args_irregular
 from models.our import TS2img_Karras
 from models.sampler import DiffusionProcess
+from utils.utils_stl import initialize_with_stl
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 torch.multiprocessing.set_sharing_strategy('file_system')
-
-
-# =============================================================================
-# Decomposition-Weighted Loss Helpers
-# =============================================================================
-
-def compute_ma_trend(data, window=5):
-    """Per-sample, per-feature moving-average trend. No NaN allowed."""
-    N, T, C = data.shape
-    trend = np.zeros_like(data)
-    half_w = window // 2
-    for t in range(T):
-        start = max(0, t - half_w)
-        end = min(T, t + half_w + 1)
-        trend[:, t, :] = data[:, start:end, :].mean(axis=1)
-    return trend
-
-
-def compute_importance_weights(reconstructions, window=5):
-    """
-    Per-sample importance weights derived from MA decomposition.
-    Regions with large high-frequency residual get higher weight.
-
-    Args:
-        reconstructions: (N, T, C), no NaN
-        window: MA window size
-    Returns:
-        weights: (N, T, C), values >= 1.0
-    """
-    trend = compute_ma_trend(reconstructions, window)
-    residual = np.abs(reconstructions - trend)
-    mean_res = residual.mean() + 1e-8
-    weights = 1.0 + residual / mean_res
-    return weights.astype(np.float32)
 
 
 # =============================================================================
@@ -94,7 +63,7 @@ def conjugate_gradient(A_fn, b, maxiter=1):
         x: approximate solution tensor (same shape as b)
     """
     x = torch.zeros_like(b)
-    r = b.clone()  # r = b - A·x₀ = b (since x₀ = 0)
+    r = b.clone()
     p = r.clone()
 
     for _ in range(maxiter):
@@ -102,7 +71,6 @@ def conjugate_gradient(A_fn, b, maxiter=1):
         rTr = (r * r).sum()
         pTAp = (p * Ap).sum()
 
-        # Avoid division by zero
         alpha = rTr / (pTAp + 1e-30)
 
         x = x + alpha * p
@@ -143,7 +111,6 @@ class MMPSDiffusionProcess:
         self.shape = shape
         self.net = diffusion_fn.to(device=self.device)
 
-        # EDM parameters (same as DiffusionProcess)
         self.sigma_data = 0.5
         self.sigma_min = 0.002
         self.sigma_max = 80
@@ -154,45 +121,19 @@ class MMPSDiffusionProcess:
         self.S_noise = 1
         self.num_steps = args.diffusion_steps
 
-        # MMPS parameters
         self.sigma_y = sigma_y
         self.cg_iters = cg_iters
 
     def posterior_denoise(self, x_t, sigma, x_obs, mask):
         """
         Posterior denoiser: replaces unconditional D_θ(x_t) with posterior estimate.
-
-        Following Rozet's PosteriorDenoiser (DiffEM-main/priors/diffusion.py:481-558):
-
-        1. Forward pass with gradient: denoised = D_θ(x_t)
-        2. Define VJP function using torch.autograd.grad (robust to in-place ops)
-        3. Compute residual: r = x_obs - mask * denoised
-        4. Solve linear system via CG: (σ_y²I + σ² · mask · Jᵀ · mask) · v = r
-        5. Compute posterior correction: score = vjp_fn(mask · v)
-        6. Return: denoised + σ² · score
-
-        Why torch.autograd.grad instead of torch.func.vjp:
-            The UNet has in-place .add_() operations (Conv2d, ResBlock, attention
-            in models/networks.py) which break torch.func.vjp.
-
-        Args:
-            x_t: noisy input (batch, C, H, W), float64
-            sigma: noise level scalar (float64)
-            x_obs: observed data (batch, C, H, W), float64
-            mask: binary mask (batch, 1, H, W), float64, 1=observed
-
-        Returns:
-            posterior_denoised: corrected denoised estimate (batch, C, H, W), float64
         """
         sigma_sq = sigma ** 2
         sigma_y_sq = self.sigma_y ** 2
 
-        # Forward pass with gradient tracking
         x_t_input = x_t.detach().requires_grad_(True)
         denoised = self.net(x_t_input, sigma, None).to(torch.float64)
 
-        # Define VJP function: cotangent -> Jᵀ · cotangent
-        # Uses autograd.grad with retain_graph=True to allow multiple VJP calls
         def vjp_fn(cotangent):
             grad, = torch.autograd.grad(
                 denoised, x_t_input, grad_outputs=cotangent,
@@ -200,76 +141,45 @@ class MMPSDiffusionProcess:
             )
             return grad
 
-        # Compute residual: r = x_obs - mask * denoised
         r = x_obs - mask * denoised
 
-        # CG linear operator: M(v) = σ_y² · v + σ² · mask · Jᵀ(mask · v)
-        # This is the covariance matrix (σ_y²I + A·V·Aᵀ) applied to v,
-        # where A = mask (diagonal), V = σ²·Jᵀ
         def cg_operator(v):
             return sigma_y_sq * v + sigma_sq * mask * vjp_fn(mask * v)
 
-        # Solve (σ_y²I + σ² · mask · Jᵀ · mask) · v = r
         v = conjugate_gradient(cg_operator, r, maxiter=self.cg_iters)
 
-        # Compute posterior correction: score = Jᵀ(mask · v)
         score = vjp_fn(mask * v)
 
-        # Detach from computation graph
         result = denoised.detach() + sigma_sq * score.detach()
 
         return result
 
     def mmps_sample(self, latents, x_obs_img, mask_img):
-        """
-        MMPS sampling: inpaint missing regions using posterior denoiser.
-
-        Same structure as DiffusionProcess.sample(), but BOTH the Euler step
-        and Heun correction call posterior_denoise() instead of self.net().
-
-        This is the key structural difference from DPS: MMPS modifies the
-        denoised estimate itself, so both the Euler predictor and Heun corrector
-        naturally use the posterior estimate.
-
-        Args:
-            latents: initial noise (batch, C, H, W)
-            x_obs_img: observed data in image space (batch, C, H, W), clean values
-            mask_img: binary mask in image space (batch, 1, H, W), 1=observed, 0=missing
-
-        Returns:
-            x_next: inpainted result (batch, C, H, W)
-        """
-        # Adjust noise levels based on what's supported by the network
+        """MMPS sampling: inpaint missing regions using posterior denoiser."""
         sigma_min = max(self.sigma_min, self.net.sigma_min)
         sigma_max = min(self.sigma_max, self.net.sigma_max)
 
-        # Time step discretization (same as DiffusionProcess)
         step_indices = torch.arange(self.num_steps, dtype=torch.float64, device=latents.device)
         t_steps = (sigma_max ** (1 / self.rho) + step_indices / (self.num_steps - 1) * (
                     sigma_min ** (1 / self.rho) - sigma_max ** (1 / self.rho))) ** self.rho
-        t_steps = torch.cat([self.net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])])  # t_N = 0
+        t_steps = torch.cat([self.net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])])
 
-        # Cast observations to float64 for numerical precision
         x_obs = x_obs_img.to(torch.float64)
         mask = mask_img.to(torch.float64)
 
-        # Main sampling loop
         x_next = latents.to(torch.float64) * t_steps[0]
 
         for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
             x_cur = x_next
 
-            # Increase noise temporarily (stochastic churn, typically 0)
             gamma = min(self.S_churn / self.num_steps, np.sqrt(2) - 1) if self.S_min <= t_cur <= self.S_max else 0
             t_hat = self.net.round_sigma(t_cur + gamma * t_cur)
             x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * self.S_noise * torch.randn_like(x_cur)
 
-            # Euler step with POSTERIOR denoiser
             denoised = self.posterior_denoise(x_hat, t_hat, x_obs, mask)
             d_cur = (x_hat - denoised) / t_hat
             x_next = x_hat + (t_next - t_hat) * d_cur
 
-            # Apply 2nd order correction with POSTERIOR denoiser
             if i < self.num_steps - 1:
                 denoised_2 = self.posterior_denoise(x_next, t_next, x_obs, mask)
                 d_prime = (x_next - denoised_2) / t_next
@@ -278,34 +188,19 @@ class MMPSDiffusionProcess:
         return x_next
 
     def sampling_mmps(self, x_obs_img, mask_img):
-        """
-        Convenience wrapper for MMPS sampling.
-        NOT decorated with @torch.no_grad() — MMPS needs gradients for VJP.
-
-        Args:
-            x_obs_img: observed data in image space (batch, C, H, W)
-            mask_img: binary mask in image space (batch, 1, H, W), 1=observed, 0=missing
-
-        Returns:
-            inpainted result (batch, C, H, W)
-        """
+        """Convenience wrapper for MMPS sampling (needs gradients for VJP)."""
         batch_size = x_obs_img.shape[0]
         latents = torch.randn([batch_size, *self.shape], device=self.device)
         return self.mmps_sample(latents, x_obs_img, mask_img)
 
     @torch.no_grad()
     def sampling(self, sampling_number=16):
-        """
-        Standard unconditional sampling (for evaluation).
-        Same as DiffusionProcess.sampling.
-        """
+        """Standard unconditional sampling (for evaluation)."""
         latents = torch.randn([sampling_number, *self.shape], device=self.device)
 
-        # Adjust noise levels
         sigma_min = max(self.sigma_min, self.net.sigma_min)
         sigma_max = min(self.sigma_max, self.net.sigma_max)
 
-        # Time step discretization
         step_indices = torch.arange(self.num_steps, dtype=torch.float64, device=latents.device)
         t_steps = (sigma_max ** (1 / self.rho) + step_indices / (self.num_steps - 1) * (
                     sigma_min ** (1 / self.rho) - sigma_max ** (1 / self.rho))) ** self.rho
@@ -332,30 +227,117 @@ class MMPSDiffusionProcess:
 
 
 # =============================================================================
-# Helper functions (from run_diffem_uncond.py)
+# Teacher Replacement-Based Imputation (Repaint-style, no VJP)
+# =============================================================================
+
+@torch.no_grad()
+def teacher_repaint_impute(teacher_net, uncond_model, corrupted_data, obs_masks,
+                           device, args):
+    """
+    Cheap replacement-based imputation using the teacher model.
+
+    At each reverse diffusion step:
+      1. Unconditional denoise: x0_hat = D_teacher(x_t, sigma)
+      2. Replace observed pixels in TS space with true values
+      3. Convert back and continue reverse process
+
+    This is gradient-free (no VJP), costing ~1/3 of a MMPS pass, while still
+    providing a stable reference signal from the momentum teacher.
+
+    Args:
+        teacher_net: teacher's network (momentum-averaged weights)
+        uncond_model: model instance (for ts_to_img / img_to_ts conversions)
+        corrupted_data: (N, T, C) numpy with NaN for missing
+        obs_masks: (N, T) boolean, True = observed
+        device: target device
+        args: configuration arguments
+
+    Returns:
+        teacher_recon: (N, T, C) numpy array of teacher imputations
+    """
+    target_shape = (args.input_channels, args.img_resolution, args.img_resolution)
+
+    sigma_min = max(0.002, teacher_net.sigma_min)
+    sigma_max = min(80, teacher_net.sigma_max)
+    rho = 7
+    num_steps = args.diffusion_steps
+
+    N = len(corrupted_data)
+    batch_size = args.batch_size
+    all_recon = []
+
+    for start_idx in tqdm(range(0, N, batch_size), desc="Teacher impute"):
+        end_idx = min(start_idx + batch_size, N)
+        bs = end_idx - start_idx
+
+        corrupted_batch = corrupted_data[start_idx:end_idx]
+        mask_batch = obs_masks[start_idx:end_idx]
+
+        corrupted_ts = torch.tensor(corrupted_batch, dtype=torch.float32, device=device)
+        mask_ts = torch.tensor(mask_batch, dtype=torch.float32, device=device)
+        obs_ts = torch.nan_to_num(corrupted_ts, nan=0.0)
+
+        # Sigma schedule (same Karras discretization as MMPS)
+        step_indices = torch.arange(num_steps, dtype=torch.float64, device=device)
+        t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (
+                    sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+        t_steps = torch.cat([teacher_net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])])
+
+        # Start from noise
+        latents = torch.randn([bs, *target_shape], device=device)
+        x_next = latents.to(torch.float64) * t_steps[0]
+
+        for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
+            x_cur = x_next
+            t_hat = teacher_net.round_sigma(t_cur)
+            x_hat = x_cur
+
+            # Unconditional denoise
+            denoised = teacher_net(x_hat, t_hat, None).to(torch.float64)
+
+            # Replace observed values in TS space
+            x_ts = uncond_model.img_to_ts(denoised)
+            mask_expanded = mask_ts.unsqueeze(-1).expand_as(x_ts)
+            x_ts = torch.where(mask_expanded.bool(), obs_ts.to(torch.float64), x_ts)
+            denoised = uncond_model.ts_to_img(x_ts.float()).to(torch.float64)
+
+            # Euler step
+            d_cur = (x_hat - denoised) / t_hat
+            x_next = x_hat + (t_next - t_hat) * d_cur
+
+            # Heun correction
+            if i < num_steps - 1:
+                denoised_2 = teacher_net(x_next, t_next, None).to(torch.float64)
+
+                x_ts_2 = uncond_model.img_to_ts(denoised_2)
+                x_ts_2 = torch.where(mask_expanded.bool(), obs_ts.to(torch.float64), x_ts_2)
+                denoised_2 = uncond_model.ts_to_img(x_ts_2.float()).to(torch.float64)
+
+                d_prime = (x_next - denoised_2) / t_next
+                x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
+
+        x_ts_final = uncond_model.img_to_ts(x_next)
+        all_recon.append(x_ts_final.cpu().numpy())
+
+        torch.cuda.empty_cache()
+
+    return np.vstack(all_recon)
+
+
+# =============================================================================
+# Helper functions
 # =============================================================================
 
 def get_corrupted_data_from_loader(train_loader, device):
-    """
-    Extract corrupted time series (with NaNs) from the train loader.
-
-    Args:
-        train_loader: dataloader with irregular observations
-        device: target device
-
-    Returns:
-        corrupted_data: numpy array (N, seq_len, features) with NaN for missing
-        obs_masks: numpy array (N, seq_len) with True for observed
-    """
+    """Extract corrupted time series (with NaNs) from the train loader."""
     all_corrupted = []
     all_masks = []
 
     for batch_idx, data in enumerate(train_loader):
-        x_irregular = data[0]  # (batch, seq_len, features+1)
-        x_ts = x_irregular[:, :, :-1]  # Remove time index column
+        x_irregular = data[0]
+        x_ts = x_irregular[:, :, :-1]
 
-        # Create mask: True where observed
-        mask = ~torch.isnan(x_ts).any(dim=-1)  # (batch, seq_len)
+        mask = ~torch.isnan(x_ts).any(dim=-1)
 
         all_corrupted.append(x_ts.numpy())
         all_masks.append(mask.numpy())
@@ -367,42 +349,23 @@ def get_corrupted_data_from_loader(train_loader, device):
 
 
 def initialize_with_gaussian(corrupted_data, obs_masks, seed=None):
-    """
-    Initialize reconstructions using Gaussian prior.
-
-    For observed values: use the actual observed data
-    For missing values: sample from Gaussian fitted on observed data
-
-    Args:
-        corrupted_data: numpy array (N, seq_len, features) with NaN for missing
-        obs_masks: numpy array (N, seq_len) with True for observed
-        seed: random seed
-
-    Returns:
-        initial_recon: numpy array (N, seq_len, features) with all values filled
-    """
+    """Initialize reconstructions using Gaussian prior."""
     if seed is not None:
         np.random.seed(seed)
 
     N, seq_len, features = corrupted_data.shape
 
-    # Compute mean and std from observed data
-    mu = np.nanmean(corrupted_data, axis=(0, 1))  # Per-feature mean
-    std = np.nanstd(corrupted_data, axis=(0, 1))  # Per-feature std
-
-    # Handle edge case where std is 0
+    mu = np.nanmean(corrupted_data, axis=(0, 1))
+    std = np.nanstd(corrupted_data, axis=(0, 1))
     std = np.where(std == 0, 1.0, std)
 
-    # Create initial reconstructions
     initial_recon = corrupted_data.copy()
 
-    # Fill missing values with Gaussian samples
     for i in range(N):
         for t in range(seq_len):
             if not obs_masks[i, t]:
                 initial_recon[i, t, :] = np.random.normal(mu, std)
 
-    # Clip to [0, 1] since data is normalized
     initial_recon = np.clip(initial_recon, 0, 1)
 
     print(f"Gaussian initialization complete. Generated {N} sequences.")
@@ -416,31 +379,22 @@ def initialize_with_gaussian(corrupted_data, obs_masks, seed=None):
 # Core EM functions
 # =============================================================================
 
-def e_step(args, uncond_model, corrupted_data, obs_masks, em_iter, device, logger=None):
+def e_step(args, uncond_model, teacher_model, corrupted_data, obs_masks,
+           em_iter, device, logger=None):
     """
-    E-step: Impute missing values using MMPS with the unconditional model.
+    E-step: Impute with MMPS (online) + repaint (teacher), blend results.
 
-    Uses MMPSDiffusionProcess: at each reverse step, the unconditional denoiser
-    is replaced by a posterior denoiser with covariance correction via the
-    denoiser Jacobian.
-
-    Args:
-        args: configuration arguments
-        uncond_model: unconditional diffusion model
-        corrupted_data: numpy array (N, seq_len, features) with NaN for missing
-        obs_masks: numpy array (N, seq_len) with True for observed
-        em_iter: current EM iteration number
-        device: target device
-        logger: optional logger
-
-    Returns:
-        reconstructions: numpy array of imputed sequences (N, seq_len, features)
+    1. Online model: full MMPS imputation (posterior denoiser with VJP)
+    2. Teacher model: replacement-based imputation (no VJP, cheap)
+    3. Blend: recon = (1 - tw) * online + tw * teacher
+       where tw decays linearly from teacher_blend_start to teacher_blend_end
     """
-    print(f"\n=== E-Step (EM iter {em_iter}) — MMPS Imputation ===")
-    print("Imputing missing values via MMPS with unconditional model...")
+    print(f"\n=== E-Step (EM iter {em_iter}) — MMPS + Momentum Teacher ===")
 
     uncond_model.eval()
 
+    # --- Pass 1: Online MMPS imputation ---
+    print("Pass 1: MMPS imputation with online model...")
     all_reconstructions = []
     target_shape = (args.input_channels, args.img_resolution, args.img_resolution)
 
@@ -450,49 +404,60 @@ def e_step(args, uncond_model, corrupted_data, obs_masks, em_iter, device, logge
     sigma_y = getattr(args, 'mmps_sigma_y', 0.01)
     cg_iters = getattr(args, 'mmps_cg_iters', 1)
 
-    # No torch.no_grad() outer context — MMPS requires gradient computation for VJP
     with uncond_model.ema_scope():
         process = MMPSDiffusionProcess(
             args, uncond_model.net, target_shape,
             sigma_y=sigma_y, cg_iters=cg_iters
         )
 
-        for start_idx in tqdm(range(0, N, batch_size), desc="E-step MMPS"):
+        for start_idx in tqdm(range(0, N, batch_size), desc="E-step MMPS (online)"):
             end_idx = min(start_idx + batch_size, N)
 
-            # Get batch
             corrupted_batch = corrupted_data[start_idx:end_idx]
             mask_batch = obs_masks[start_idx:end_idx]
 
-            # Convert to tensors
             corrupted_ts = torch.tensor(corrupted_batch, dtype=torch.float32, device=device)
             mask_ts = torch.tensor(mask_batch, dtype=torch.float32, device=device)
 
-            # Zero-fill NaN values for observed data image
             obs_ts = torch.nan_to_num(corrupted_ts, nan=0.0)
 
-            # Convert observed data to image space
             x_obs_img = uncond_model.ts_to_img(obs_ts)
 
-            # Create mask image: expand (N, seq_len) -> (N, seq_len, features),
-            # then ts_to_img(), take first channel [:, :1, :, :]
             mask_ts_expanded = mask_ts.unsqueeze(-1).expand(-1, -1, corrupted_ts.shape[-1])
             mask_img = uncond_model.ts_to_img(mask_ts_expanded)
-            mask_img = mask_img[:, :1, :, :]  # Take first channel for mask
+            mask_img = mask_img[:, :1, :, :]
 
-            # MMPS sampling
             x_img_imputed = process.sampling_mmps(x_obs_img, mask_img)
 
-            # Convert back to time series
             x_ts_recon = uncond_model.img_to_ts(x_img_imputed)
 
             all_reconstructions.append(x_ts_recon.cpu().numpy())
 
-            # Free autograd memory
             torch.cuda.empty_cache()
 
-    reconstructions = np.vstack(all_reconstructions)
-    print(f"E-step complete. Imputed {len(reconstructions)} sequences.")
+    online_recon = np.vstack(all_reconstructions)
+    print(f"Online MMPS complete. {len(online_recon)} sequences.")
+
+    # --- Pass 2: Teacher replacement-based imputation ---
+    print("Pass 2: Replacement-based imputation with teacher model...")
+    teacher_recon = teacher_repaint_impute(
+        teacher_model.net, uncond_model, corrupted_data, obs_masks,
+        device, args
+    )
+    print(f"Teacher imputation complete. {len(teacher_recon)} sequences.")
+
+    # --- Blend online and teacher ---
+    progress = em_iter / max(1, args.em_iters - 1)
+    tw = args.teacher_blend_start + progress * (
+        args.teacher_blend_end - args.teacher_blend_start
+    )
+    reconstructions = (1.0 - tw) * online_recon + tw * teacher_recon
+    reconstructions = np.clip(reconstructions, 0, 1)
+
+    print(f"Blended: teacher_weight={tw:.3f}")
+
+    if logger is not None:
+        logger.log('em/teacher_blend_weight', tw, em_iter)
 
     # Verify no NaN in output
     nan_count = np.isnan(reconstructions).sum()
@@ -511,19 +476,12 @@ def e_step(args, uncond_model, corrupted_data, obs_masks, em_iter, device, logge
 
 
 def m_step(args, uncond_model, optimizer, reconstructions, em_iter, device, logger=None):
-    """
-    M-step with decomposition-weighted loss: regions with large high-frequency
-    residual receive higher denoising loss weight.
-    """
-    ma_window = getattr(args, 'ma_window', 5)
+    """M-step: Train unconditional model on fully imputed data."""
     print(f"\n=== M-Step (EM iter {em_iter}) ===")
-    print(f"Training for {args.m_step_epochs} epochs (decomp-weighted, MA window={ma_window})...")
-
-    imp_weights = compute_importance_weights(reconstructions, window=ma_window)
+    print(f"Training unconditional model for {args.m_step_epochs} epochs...")
 
     recon_tensor = torch.tensor(reconstructions, dtype=torch.float32)
-    weight_tensor = torch.tensor(imp_weights, dtype=torch.float32)
-    recon_dataset = Data.TensorDataset(recon_tensor, weight_tensor)
+    recon_dataset = Data.TensorDataset(recon_tensor)
     recon_loader = Data.DataLoader(
         recon_dataset,
         batch_size=args.batch_size,
@@ -537,21 +495,12 @@ def m_step(args, uncond_model, optimizer, reconstructions, em_iter, device, logg
         epoch_loss = 0
         num_batches = 0
 
-        for batch_idx, (x_clean, x_imp) in enumerate(recon_loader):
+        for batch_idx, (x_clean,) in enumerate(recon_loader):
             x_clean = x_clean.to(device)
-            x_imp = x_imp.to(device)
 
             x_img = uncond_model.ts_to_img(x_clean)
-            imp_img = uncond_model.ts_to_img(x_imp, pad_val=1)
 
-            mask = torch.ones_like(x_img)
-            output, weight = uncond_model.forward_irregular(x_img, mask)
-
-            x_unpad = uncond_model.unpad(x_img, x_img.shape)
-            out_unpad = uncond_model.unpad(output, x_img.shape)
-            imp_unpad = uncond_model.unpad(imp_img, x_img.shape)
-
-            loss = (weight * imp_unpad * (out_unpad - x_unpad).square()).mean()
+            loss, to_log = uncond_model.loss_fn_irregular(x_img)
 
             optimizer.zero_grad()
             loss.backward()
@@ -576,25 +525,22 @@ def m_step(args, uncond_model, optimizer, reconstructions, em_iter, device, logg
     return uncond_model
 
 
+def update_teacher_momentum(teacher_model, online_model, momentum):
+    """
+    Momentum update for teacher model (TimeMAE Eq. 6):
+        theta_teacher <- eta * theta_teacher + (1 - eta) * theta_online
+
+    Only updates the network parameters (not EMA buffers).
+    """
+    with torch.no_grad():
+        for p_teacher, p_online in zip(
+            teacher_model.net.parameters(), online_model.net.parameters()
+        ):
+            p_teacher.data.mul_(momentum).add_(p_online.data, alpha=1.0 - momentum)
+
+
 def evaluate_uncond(args, uncond_model, test_loader, em_iter, device, logger=None):
-    """
-    Evaluate the unconditional model via standard unconditional sampling.
-
-    Same evaluation as run_irregular.py for fair comparison:
-    generates completely new sequences and compares to real data.
-    Includes memorization metrics.
-
-    Args:
-        args: configuration arguments
-        uncond_model: unconditional diffusion model
-        test_loader: test data loader
-        em_iter: current EM iteration
-        device: target device
-        logger: optional logger
-
-    Returns:
-        scores: dict of evaluation metrics
-    """
+    """Evaluate the unconditional model via standard unconditional sampling."""
     print(f"\n=== Evaluation (EM iter {em_iter}) ===")
     print("Evaluating unconditional model (same as run_irregular.py)...")
 
@@ -610,7 +556,6 @@ def evaluate_uncond(args, uncond_model, test_loader, em_iter, device, logger=Non
             )
 
             for data in tqdm(test_loader, desc="Evaluating"):
-                # Unconditional sampling — generates completely new sequences
                 x_img_sampled = process.sampling(sampling_number=data[0].shape[0])
                 x_ts = uncond_model.img_to_ts(x_img_sampled)
 
@@ -620,12 +565,13 @@ def evaluate_uncond(args, uncond_model, test_loader, em_iter, device, logger=Non
     gen_sig = np.vstack(gen_sig)
     real_sig = np.vstack(real_sig)
 
-    # Compute metrics
     scores = evaluate_model_irregular(real_sig, gen_sig, args)
 
     print(f"EM iter {em_iter} metrics (unconditional):")
     for key, value in scores.items():
         print(f"  {key}: {value:.4f}")
+        if logger is not None:
+            logger.log(f'test/{key}', value, em_iter)
 
     # --- Memorization Check ---
     mem_plot_path = f"memorization_hist_em_iter_{em_iter}.png"
@@ -639,15 +585,10 @@ def evaluate_uncond(args, uncond_model, test_loader, em_iter, device, logger=Non
     print(f"EM iter {em_iter} memorization metrics:")
     for k, v in mem_stats.items():
         print(f"  {k}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
+        if logger is not None:
+            logger.log(f'test/memorization/{k}', v, em_iter)
 
     if logger is not None:
-        all_metrics = {}
-        for key, value in scores.items():
-            all_metrics[f'test/{key}'] = value
-        for k, v in mem_stats.items():
-            all_metrics[f'test/memorization/{k}'] = v
-        logger.log_metrics(all_metrics, em_iter)
-
         upload_successful = False
         try:
             logger.log_file('test/memorization/histogram', mem_plot_path, em_iter)
@@ -670,24 +611,21 @@ def evaluate_uncond(args, uncond_model, test_loader, em_iter, device, logger=Non
 # =============================================================================
 
 def main(args):
-    """Main DiffEM-Uncond training loop with MMPS E-step."""
+    """Main DiffEM-Uncond training loop with MMPS + Momentum Teacher."""
 
-    # Model name and directory
     name = create_model_name_and_dir(args)
-    name = f"diffem_mmps_ema_reset_decomp_weight_{name}"
+    name = f"diffem_mmps_momentum_teacher_{name}"
 
     logging.info(args)
 
-    # Set up logger
     with CompositeLogger([WandbLogger()]) if args.wandb else PrintLogger() as logger:
         log_config_and_tags(args, logger, name)
 
-        # Set up device and data
         args.device = "cuda" if torch.cuda.is_available() else "cpu"
         train_loader, test_loader, _ = gen_dataloader(args)
         logging.info(f'{args.dataset} dataset is ready.')
 
-        # === Create single unconditional model ===
+        # === Create online unconditional model ===
         uncond_model = TS2img_Karras(args=args, device=args.device).to(args.device)
         optimizer = torch.optim.AdamW(
             uncond_model.parameters(),
@@ -697,23 +635,38 @@ def main(args):
 
         print_model_params(logger, uncond_model)
 
+        # === Create momentum teacher (deep copy, frozen gradients) ===
+        print("Creating momentum teacher model (TimeMAE MRR)...")
+        teacher_model = copy.deepcopy(uncond_model)
+        teacher_model.eval()
+        for p in teacher_model.parameters():
+            p.requires_grad_(False)
+        print(f"  Teacher momentum: {args.teacher_momentum}")
+        print(f"  Teacher blend: {args.teacher_blend_start} -> {args.teacher_blend_end}")
+
         # === Extract corrupted data and masks ===
         print("Extracting corrupted data from train loader...")
-        corrupted_data, obs_masks = get_corrupted_data_from_loader(train_loader, args.device)
-        print(f"Extracted {len(corrupted_data)} sequences with {obs_masks.sum() / obs_masks.size * 100:.1f}% observed")
+        try:
+            corrupted_data, obs_masks = get_corrupted_data_from_loader(train_loader, args.device)
+        except Exception as e:
+            logging.error(f"Failed to extract corrupted data: {type(e).__name__}: {e}",
+                          exc_info=True)
+            raise
+        print(f"Extracted {len(corrupted_data)} sequences with "
+              f"{obs_masks.sum() / obs_masks.size * 100:.1f}% observed")
 
-        # === Phase 1: Initialize with Gaussian prior ===
+        # === Phase 1: Initialize with STL-informed prior ===
         print(f"\n{'='*60}")
-        print("Phase 1: Gaussian Initialization")
+        print("Phase 1: STL Warm-Start Initialization")
         print(f"{'='*60}")
 
-        initial_reconstructions = initialize_with_gaussian(
+        initial_reconstructions = initialize_with_stl(
             corrupted_data, obs_masks, seed=args.seed
         )
 
-        # === Phase 1.5: Train unconditional model on Gaussian-filled data ===
+        # === Phase 1.5: Train unconditional model on STL-initialized data ===
         print(f"\n{'='*60}")
-        print("Phase 1.5: Initial unconditional model training on Gaussian-filled data")
+        print("Phase 1.5: Initial unconditional model training on STL-initialized data")
         print(f"{'='*60}")
 
         uncond_model = m_step(
@@ -722,59 +675,84 @@ def main(args):
         )
         print("Initial unconditional model training complete.")
 
+        # Sync teacher to trained online model before EM starts
+        teacher_model.load_state_dict(uncond_model.state_dict())
+        # Strip EMA from teacher — it never uses ema_scope(), so shadow
+        # weights just waste GPU memory
+        if hasattr(teacher_model, 'model_ema'):
+            del teacher_model.model_ema
+            teacher_model.use_ema = False
+        teacher_model.eval()
+        for p in teacher_model.parameters():
+            p.requires_grad_(False)
+        print("Teacher synced to initial online model weights (EMA stripped).")
+
         # === Phase 2: EM Loop ===
         print(f"\n{'='*60}")
-        print(f"Starting DiffEM-MMPS + Decomp-Weighted Loss with {args.em_iters} EM iterations")
+        print(f"Starting DiffEM-MMPS + Momentum Teacher with {args.em_iters} EM iterations")
         print(f"  MMPS sigma_y: {args.mmps_sigma_y}")
         print(f"  MMPS cg_iters: {args.mmps_cg_iters}")
+        print(f"  Teacher momentum: {args.teacher_momentum}")
+        print(f"  Teacher blend: {args.teacher_blend_start} -> {args.teacher_blend_end}")
         print(f"{'='*60}")
 
         best_metrics = None
         metrics = None
 
-        for em_iter in range(args.em_iters):
-            print(f"\n{'='*60}")
-            print(f"EM Iteration {em_iter + 1}/{args.em_iters}")
-            print(f"{'='*60}")
+        try:
+            for em_iter in range(args.em_iters):
+                print(f"\n{'='*60}")
+                print(f"EM Iteration {em_iter + 1}/{args.em_iters}")
+                print(f"{'='*60}")
 
-            # E-step: MMPS imputation with current model
-            reconstructions = e_step(
-                args, uncond_model, corrupted_data, obs_masks,
-                em_iter, args.device, logger
-            )
-
-            # Reset EMA so it tracks only this iteration's training dynamics
-            uncond_model.reset_ema()
-
-            # M-step: Train unconditional model on fully imputed data
-            uncond_model = m_step(
-                args, uncond_model, optimizer,
-                reconstructions, em_iter, args.device, logger
-            )
-
-            # Evaluate periodically
-            if (em_iter + 1) % args.em_eval_interval == 0 or em_iter == args.em_iters - 1:
-                metrics = evaluate_uncond(
-                    args, uncond_model, test_loader,
-                    em_iter, args.device, logger
+                # E-step: MMPS (online) + repaint (teacher) -> blended reconstructions
+                reconstructions = e_step(
+                    args, uncond_model, teacher_model, corrupted_data, obs_masks,
+                    em_iter, args.device, logger=logger
                 )
 
-                if best_metrics is None or metrics.get('disc_mean', float('inf')) < best_metrics.get('disc_mean', float('inf')):
-                    best_metrics = metrics
+                # Reset EMA so it tracks only this iteration's training dynamics
+                uncond_model.reset_ema()
 
-            # Log EM iteration
+                # M-step: Train unconditional model on blended imputed data
+                uncond_model = m_step(
+                    args, uncond_model, optimizer,
+                    reconstructions, em_iter, args.device, logger
+                )
+
+                # Momentum update teacher (NO reset — accumulates across all EM iters)
+                update_teacher_momentum(teacher_model, uncond_model, args.teacher_momentum)
+                print(f"Teacher updated: eta={args.teacher_momentum}")
+
+                # Evaluate periodically
+                if (em_iter + 1) % args.em_eval_interval == 0 or em_iter == args.em_iters - 1:
+                    metrics = evaluate_uncond(
+                        args, uncond_model, test_loader,
+                        em_iter, args.device, logger
+                    )
+
+                    if best_metrics is None or metrics.get('disc_mean', float('inf')) < best_metrics.get('disc_mean', float('inf')):
+                        best_metrics = metrics
+
+                if logger is not None:
+                    logger.log('em/iteration', em_iter, em_iter)
+
+        except Exception as e:
+            logging.error(f"EM loop failed at iteration {em_iter}: "
+                          f"{type(e).__name__}: {e}", exc_info=True)
             if logger is not None:
-                logger.log('em/iteration', em_iter, em_iter)
+                logger.log('em/failed_at_iter', em_iter, em_iter)
+            raise
 
         print("\n" + "="*60)
-        print("DiffEM-MMPS + Decomp-Weighted Loss Training Complete!")
+        print("DiffEM-MMPS + Momentum Teacher Training Complete!")
         print("="*60)
         if best_metrics:
             print("Best metrics across EM iterations:")
             for k, v in best_metrics.items():
                 print(f"  {k}: {v:.4f}")
 
-        logging.info("DiffEM-MMPS + Decomp-Weighted Loss training is complete")
+        logging.info("DiffEM-MMPS + Momentum Teacher training is complete")
 
 
 # =============================================================================

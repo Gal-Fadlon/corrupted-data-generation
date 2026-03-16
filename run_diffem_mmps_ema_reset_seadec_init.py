@@ -1,15 +1,10 @@
 """
-DiffEM with Unconditional Model + MMPS E-step — EMA Reset + Decomp-Weighted Loss
+DiffEM with Unconditional Model + MMPS E-step — EMA Reset + Seasonal-Aware Warm-Start
 
-Same as run_diffem_mmps_ema_reset.py with ONE enhancement:
-  In the M-step, a moving-average decomposition is used to create per-pixel
-  importance weights.  Positions where the high-frequency residual is large
-  receive higher loss weight, focusing the model's capacity on the harder-to-
-  predict regions while maintaining full image coverage.
-
-  importance(x) = 1 + |residual(x)| / mean(|residual|)
-
-  E-step, evaluation, model architecture, and EMA reset are all unchanged.
+Same as run_diffem_mmps_ema_reset.py with ONE change:
+  Gaussian initialization is replaced with seasonal-aware interpolation.
+  Missing values are filled by deseasonalizing, PCHIP-interpolating the
+  smooth remainder, and reseasonalizing — preserving seasonality by construction.
 """
 
 import torch
@@ -34,43 +29,10 @@ from utils.utils_data import (
 from utils.utils_args import parse_args_irregular
 from models.our import TS2img_Karras
 from models.sampler import DiffusionProcess
+from utils.utils_stl import initialize_with_seasonal_interp
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 torch.multiprocessing.set_sharing_strategy('file_system')
-
-
-# =============================================================================
-# Decomposition-Weighted Loss Helpers
-# =============================================================================
-
-def compute_ma_trend(data, window=5):
-    """Per-sample, per-feature moving-average trend. No NaN allowed."""
-    N, T, C = data.shape
-    trend = np.zeros_like(data)
-    half_w = window // 2
-    for t in range(T):
-        start = max(0, t - half_w)
-        end = min(T, t + half_w + 1)
-        trend[:, t, :] = data[:, start:end, :].mean(axis=1)
-    return trend
-
-
-def compute_importance_weights(reconstructions, window=5):
-    """
-    Per-sample importance weights derived from MA decomposition.
-    Regions with large high-frequency residual get higher weight.
-
-    Args:
-        reconstructions: (N, T, C), no NaN
-        window: MA window size
-    Returns:
-        weights: (N, T, C), values >= 1.0
-    """
-    trend = compute_ma_trend(reconstructions, window)
-    residual = np.abs(reconstructions - trend)
-    mean_res = residual.mean() + 1e-8
-    weights = 1.0 + residual / mean_res
-    return weights.astype(np.float32)
 
 
 # =============================================================================
@@ -512,18 +474,29 @@ def e_step(args, uncond_model, corrupted_data, obs_masks, em_iter, device, logge
 
 def m_step(args, uncond_model, optimizer, reconstructions, em_iter, device, logger=None):
     """
-    M-step with decomposition-weighted loss: regions with large high-frequency
-    residual receive higher denoising loss weight.
+    M-step: Train unconditional model on fully imputed data.
+
+    Since the data has no NaN (all values were imputed in E-step), the internal
+    mask in loss_fn_irregular is all-ones automatically.
+
+    Args:
+        args: configuration arguments
+        uncond_model: unconditional diffusion model
+        optimizer: model optimizer
+        reconstructions: numpy array of fully imputed sequences from E-step
+        em_iter: current EM iteration number
+        device: target device
+        logger: optional logger
+
+    Returns:
+        uncond_model: updated model
     """
-    ma_window = getattr(args, 'ma_window', 5)
     print(f"\n=== M-Step (EM iter {em_iter}) ===")
-    print(f"Training for {args.m_step_epochs} epochs (decomp-weighted, MA window={ma_window})...")
+    print(f"Training unconditional model for {args.m_step_epochs} epochs...")
 
-    imp_weights = compute_importance_weights(reconstructions, window=ma_window)
-
+    # Create dataset from reconstructions (fully imputed, no NaN)
     recon_tensor = torch.tensor(reconstructions, dtype=torch.float32)
-    weight_tensor = torch.tensor(imp_weights, dtype=torch.float32)
-    recon_dataset = Data.TensorDataset(recon_tensor, weight_tensor)
+    recon_dataset = Data.TensorDataset(recon_tensor)
     recon_loader = Data.DataLoader(
         recon_dataset,
         batch_size=args.batch_size,
@@ -537,21 +510,15 @@ def m_step(args, uncond_model, optimizer, reconstructions, em_iter, device, logg
         epoch_loss = 0
         num_batches = 0
 
-        for batch_idx, (x_clean, x_imp) in enumerate(recon_loader):
+        for batch_idx, (x_clean,) in enumerate(recon_loader):
             x_clean = x_clean.to(device)
-            x_imp = x_imp.to(device)
 
+            # Convert to image
             x_img = uncond_model.ts_to_img(x_clean)
-            imp_img = uncond_model.ts_to_img(x_imp, pad_val=1)
 
-            mask = torch.ones_like(x_img)
-            output, weight = uncond_model.forward_irregular(x_img, mask)
-
-            x_unpad = uncond_model.unpad(x_img, x_img.shape)
-            out_unpad = uncond_model.unpad(output, x_img.shape)
-            imp_unpad = uncond_model.unpad(imp_img, x_img.shape)
-
-            loss = (weight * imp_unpad * (out_unpad - x_unpad).square()).mean()
+            # Standard unconditional diffusion loss
+            # Since data has no NaN, the internal mask is all-ones
+            loss, to_log = uncond_model.loss_fn_irregular(x_img)
 
             optimizer.zero_grad()
             loss.backward()
@@ -626,6 +593,8 @@ def evaluate_uncond(args, uncond_model, test_loader, em_iter, device, logger=Non
     print(f"EM iter {em_iter} metrics (unconditional):")
     for key, value in scores.items():
         print(f"  {key}: {value:.4f}")
+        if logger is not None:
+            logger.log(f'test/{key}', value, em_iter)
 
     # --- Memorization Check ---
     mem_plot_path = f"memorization_hist_em_iter_{em_iter}.png"
@@ -636,18 +605,14 @@ def evaluate_uncond(args, uncond_model, test_loader, em_iter, device, logger=Non
         plot_path=mem_plot_path
     )
 
+    # Log memorization stats
     print(f"EM iter {em_iter} memorization metrics:")
     for k, v in mem_stats.items():
         print(f"  {k}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
+        if logger is not None:
+            logger.log(f'test/memorization/{k}', v, em_iter)
 
     if logger is not None:
-        all_metrics = {}
-        for key, value in scores.items():
-            all_metrics[f'test/{key}'] = value
-        for k, v in mem_stats.items():
-            all_metrics[f'test/memorization/{k}'] = v
-        logger.log_metrics(all_metrics, em_iter)
-
         upload_successful = False
         try:
             logger.log_file('test/memorization/histogram', mem_plot_path, em_iter)
@@ -674,7 +639,7 @@ def main(args):
 
     # Model name and directory
     name = create_model_name_and_dir(args)
-    name = f"diffem_mmps_ema_reset_decomp_weight_{name}"
+    name = f"diffem_mmps_ema_reset_seadec_init_{name}"
 
     logging.info(args)
 
@@ -702,18 +667,18 @@ def main(args):
         corrupted_data, obs_masks = get_corrupted_data_from_loader(train_loader, args.device)
         print(f"Extracted {len(corrupted_data)} sequences with {obs_masks.sum() / obs_masks.size * 100:.1f}% observed")
 
-        # === Phase 1: Initialize with Gaussian prior ===
+        # === Phase 1: Initialize with STL-informed prior ===
         print(f"\n{'='*60}")
-        print("Phase 1: Gaussian Initialization")
+        print("Phase 1: Seasonal-Aware Warm-Start Initialization")
         print(f"{'='*60}")
 
-        initial_reconstructions = initialize_with_gaussian(
+        initial_reconstructions = initialize_with_seasonal_interp(
             corrupted_data, obs_masks, seed=args.seed
         )
 
-        # === Phase 1.5: Train unconditional model on Gaussian-filled data ===
+        # === Phase 1.5: Train unconditional model on Seasonal-interp-initialized data ===
         print(f"\n{'='*60}")
-        print("Phase 1.5: Initial unconditional model training on Gaussian-filled data")
+        print("Phase 1.5: Initial unconditional model training on Seasonal-interp-initialized data")
         print(f"{'='*60}")
 
         uncond_model = m_step(
@@ -724,7 +689,7 @@ def main(args):
 
         # === Phase 2: EM Loop ===
         print(f"\n{'='*60}")
-        print(f"Starting DiffEM-MMPS + Decomp-Weighted Loss with {args.em_iters} EM iterations")
+        print(f"Starting DiffEM-MMPS with {args.em_iters} EM iterations")
         print(f"  MMPS sigma_y: {args.mmps_sigma_y}")
         print(f"  MMPS cg_iters: {args.mmps_cg_iters}")
         print(f"{'='*60}")
@@ -767,14 +732,14 @@ def main(args):
                 logger.log('em/iteration', em_iter, em_iter)
 
         print("\n" + "="*60)
-        print("DiffEM-MMPS + Decomp-Weighted Loss Training Complete!")
+        print("DiffEM-MMPS + Seasonal-Aware Warm-Start Training Complete!")
         print("="*60)
         if best_metrics:
             print("Best metrics across EM iterations:")
             for k, v in best_metrics.items():
                 print(f"  {k}: {v:.4f}")
 
-        logging.info("DiffEM-MMPS + Decomp-Weighted Loss training is complete")
+        logging.info("DiffEM-MMPS + Seasonal-Aware Warm-Start training is complete")
 
 
 # =============================================================================
