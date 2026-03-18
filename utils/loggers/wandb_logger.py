@@ -55,7 +55,16 @@ class WandbLogger(BaseLogger):
 
         wandb.define_metric("custom_step", hidden=True)
         wandb.define_metric("train_step", hidden=True)
+
+        # Explicit patterns — the bare "*" glob has a known bug (wandb #5059)
+        # where it fails to match metric names containing "/".  Listing
+        # concrete prefixes works on every wandb version.
+        wandb.define_metric("em/*", step_metric="custom_step")
+        wandb.define_metric("test/*", step_metric="custom_step")
+        wandb.define_metric("test/*/*", step_metric="custom_step")
+        wandb.define_metric("warmstart/*", step_metric="custom_step")
         wandb.define_metric("*", step_metric="custom_step")
+
         wandb.define_metric("em/m_step_loss", step_metric="train_step")
 
         self._train_step_metrics = {"em/m_step_loss"}
@@ -111,10 +120,10 @@ class WandbLogger(BaseLogger):
 
     def log_file(self, name: str, file_path: str, step=None):
         self._flush_pending()
-        log_dict = {name: self.wandb.Image(file_path)}
-        if step is not None:
-            log_dict["custom_step"] = int(step)
-        self.run.log(log_dict)
+        # Intentionally omit custom_step: images don't need a custom x-axis,
+        # and duplicating the same custom_step across multiple wandb.log()
+        # calls can confuse chart rendering for numeric metrics.
+        self.run.log({name: self.wandb.Image(file_path)})
 
     def log_hparams(self, params: Dict[str, Any]):
         params = convert_no_basic_to_str(params)
