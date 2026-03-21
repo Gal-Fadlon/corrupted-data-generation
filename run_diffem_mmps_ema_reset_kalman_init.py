@@ -407,7 +407,7 @@ def e_step(args, uncond_model, corrupted_data, obs_masks, em_iter, device, logge
     target_shape = (args.input_channels, args.img_resolution, args.img_resolution)
 
     N = len(corrupted_data)
-    batch_size = args.batch_size
+    batch_size = getattr(args, 'e_step_batch_size', args.batch_size)
 
     sigma_y = getattr(args, 'mmps_sigma_y', 0.01)
     cg_iters = getattr(args, 'mmps_cg_iters', 1)
@@ -673,7 +673,9 @@ def main(args):
         print(f"{'='*60}")
 
         initial_reconstructions = initialize_with_kalman(
-            corrupted_data, obs_masks, seed=args.seed
+            corrupted_data, obs_masks, seed=args.seed,
+            per_fit_timeout=getattr(args, 'kalman_fit_timeout', 5),
+            max_seconds=getattr(args, 'kalman_global_timeout', 1800),
         )
 
         # === Phase 1.5: Train unconditional model on Kalman-initialized data ===

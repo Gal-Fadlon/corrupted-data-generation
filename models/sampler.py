@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 
+from utils.ambient_net_input import concat_ones_mask
+
 
 class DiffusionProcess():
     def __init__(self, args, diffusion_fn, shape):
@@ -29,6 +31,9 @@ class DiffusionProcess():
         self.S_max = float('inf')
         self.S_noise = 1
         self.num_steps = args.diffusion_steps
+        self._ambient_concat = bool(
+            getattr(args, 'ambient_concat_further_mask', False)
+        )
 
     def sample(self, latents, class_labels=None):
 
@@ -53,13 +58,15 @@ class DiffusionProcess():
             x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * self.S_noise * torch.randn_like(x_cur)
 
             # Euler step.
-            denoised = self.net(x_hat, t_hat, class_labels).to(torch.float64)
+            x_in = concat_ones_mask(x_hat, self._ambient_concat)
+            denoised = self.net(x_in, t_hat, class_labels).to(torch.float64)
             d_cur = (x_hat - denoised) / t_hat
             x_next = x_hat + (t_next - t_hat) * d_cur
 
             # Apply 2nd order correction.
             if i < self.num_steps - 1:
-                denoised = self.net(x_next, t_next, class_labels).to(torch.float64)
+                x_in2 = concat_ones_mask(x_next, self._ambient_concat)
+                denoised = self.net(x_in2, t_next, class_labels).to(torch.float64)
                 d_prime = (x_next - denoised) / t_next
                 x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
 

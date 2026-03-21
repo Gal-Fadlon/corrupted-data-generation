@@ -5,13 +5,13 @@
 ### To ignore, just add another # - like so: ##SBATCH
 ################################################################################################
 
-#SBATCH --partition main
-#SBATCH --qos normal
-#SBATCH --time 7-00:00:00
-#SBATCH --job-name decomp_proj
-#SBATCH --output decomp_proj-%J.out
+#SBATCH --partition rtx6000			### specify partition name where to run a job.
+#SBATCH --qos azencot
+#SBATCH --time 7-00:00:00			### limit the time of job running.
+#SBATCH --job-name kal_cur_70		### name of the job
+#SBATCH --output kal_cur_70-%J.out		### output log for running job - %J for job number
 
-#SBATCH --gpus=1
+#SBATCH --gpus=1				### number of GPUs
 
 ### Print some data to output file ###
 echo `date`
@@ -22,7 +22,7 @@ echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
 cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
 export PYTHONUNBUFFERED=1
 
-### Start your src_code below ####
+### Start your code below ####
 module load anaconda
 source activate idan2_env
-python run_diffem_mmps_decomp_projection.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.5 --wandb true --tags "diffem_mmps_decomp_projection" "energy" "50_missing_rate" "decomposition_estep" "v2_fixed"
+python run_diffem_mmps_kalman_curriculum.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.7 --m_step_epochs 75 --curriculum_reveal_max 0.4 --wandb true --tags "kalman_curriculum" "energy" "70_missing_rate" "kalman_init" "curriculum"

@@ -50,6 +50,7 @@ from utils.utils_data import (
 from utils.utils_args import parse_args_irregular
 from models.our import TS2img_Karras
 from models.sampler import DiffusionProcess
+from utils.ambient_net_input import concat_mask_channel, concat_ones_mask
 from utils.utils_stl import initialize_with_stl, stl_decompose_single, auto_detect_period
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -436,6 +437,25 @@ class MMPSDiffusionProcess:
 
         self.cg_iters = cg_iters
         self.ppca_cov = ppca_cov
+        self._ambient_concat = bool(
+            getattr(args, 'ambient_concat_further_mask', False))
+        self._data_c = int(shape[0])
+
+    def _net_input_ambient(self, x_data, operator):
+        """Match TS2img_Karras when trained with an extra mask channel."""
+        if not self._ambient_concat:
+            return x_data
+        if getattr(operator, 'mask', None) is not None:
+            m = operator.mask
+            if m.dtype != x_data.dtype:
+                m = m.to(dtype=x_data.dtype)
+            return concat_mask_channel(x_data, m, True)
+        return concat_ones_mask(x_data, True)
+
+    def _trunc_vjp(self, grad):
+        if not self._ambient_concat:
+            return grad
+        return grad[:, : self._data_c, :, :]
 
     def posterior_denoise(self, x_t, sigma, y_obs, operator):
         """
@@ -461,7 +481,8 @@ class MMPSDiffusionProcess:
         sigma_sq = sigma ** 2
         sigma_y_sq = operator.sigma_y ** 2
 
-        x_t_input = x_t.detach().requires_grad_(True)
+        x_data = x_t.detach().requires_grad_(True)
+        x_t_input = self._net_input_ambient(x_data, operator)
         denoised = self.net(x_t_input, sigma, None).to(torch.float64)
 
         def vjp_fn(cotangent):
@@ -469,7 +490,7 @@ class MMPSDiffusionProcess:
                 denoised, x_t_input, grad_outputs=cotangent,
                 retain_graph=True
             )
-            return grad
+            return self._trunc_vjp(grad)
 
         r = y_obs - operator.forward(denoised)
 
@@ -501,7 +522,8 @@ class MMPSDiffusionProcess:
         sigma_y_sq = operator.sigma_y ** 2
         ppca = self.ppca_cov
 
-        x_t_input = x_t.detach().requires_grad_(True)
+        x_data = x_t.detach().requires_grad_(True)
+        x_t_input = self._net_input_ambient(x_data, operator)
         denoised = self.net(x_t_input, sigma, None).to(torch.float64)
 
         def vjp_fn(cotangent):
@@ -509,7 +531,7 @@ class MMPSDiffusionProcess:
                 denoised, x_t_input, grad_outputs=cotangent,
                 retain_graph=True
             )
-            return grad
+            return self._trunc_vjp(grad)
 
         r = y_obs - operator.forward(denoised)
         img_shape = denoised.shape  # (B, C, H, W)
@@ -608,12 +630,14 @@ class MMPSDiffusionProcess:
             x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * \
                     self.S_noise * torch.randn_like(x_cur)
 
-            denoised = self.net(x_hat, t_hat, None).to(torch.float64)
+            x_in = concat_ones_mask(x_hat, self._ambient_concat)
+            denoised = self.net(x_in, t_hat, None).to(torch.float64)
             d_cur = (x_hat - denoised) / t_hat
             x_next = x_hat + (t_next - t_hat) * d_cur
 
             if i < self.num_steps - 1:
-                denoised = self.net(x_next, t_next, None).to(torch.float64)
+                x_in2 = concat_ones_mask(x_next, self._ambient_concat)
+                denoised = self.net(x_in2, t_next, None).to(torch.float64)
                 d_prime = (x_next - denoised) / t_next
                 x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
 

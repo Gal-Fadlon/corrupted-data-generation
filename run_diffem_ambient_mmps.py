@@ -307,6 +307,7 @@ def main(args):
     name = f"ambient_mmps_{corruption_type}_{name}"
 
     logging.info(args)
+    args.ambient_concat_further_mask = True
 
     with CompositeLogger([WandbLogger()]) if args.wandb else PrintLogger() as logger:
         log_config_and_tags(args, logger, name)

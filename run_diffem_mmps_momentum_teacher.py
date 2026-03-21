@@ -15,7 +15,6 @@ Regression (Sec 3.4.2, Eq. 5-6): a momentum-updated target encoder provides
 stable regression targets, preventing collapse in the siamese architecture.
 """
 
-import copy
 import torch
 import torch.autograd
 import torch.multiprocessing
@@ -635,9 +634,10 @@ def main(args):
 
         print_model_params(logger, uncond_model)
 
-        # === Create momentum teacher (deep copy, frozen gradients) ===
+        # === Create momentum teacher (fresh model + state dict copy) ===
         print("Creating momentum teacher model (TimeMAE MRR)...")
-        teacher_model = copy.deepcopy(uncond_model)
+        teacher_model = TS2img_Karras(args=args, device=args.device).to(args.device)
+        teacher_model.load_state_dict(uncond_model.state_dict())
         teacher_model.eval()
         for p in teacher_model.parameters():
             p.requires_grad_(False)

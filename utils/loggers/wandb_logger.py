@@ -61,7 +61,7 @@ class WandbLogger(BaseLogger):
         # concrete prefixes works on every wandb version.
         wandb.define_metric("em/*", step_metric="custom_step")
         wandb.define_metric("test/*", step_metric="custom_step")
-        wandb.define_metric("test/*/*", step_metric="custom_step")
+        wandb.define_metric("test/memorization/*", step_metric="custom_step")
         wandb.define_metric("warmstart/*", step_metric="custom_step")
         wandb.define_metric("*", step_metric="custom_step")
 

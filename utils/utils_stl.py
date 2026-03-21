@@ -11,6 +11,9 @@ References:
       Learning for Time Series Generation" (2025)
 """
 
+import gc
+import signal
+import time
 import warnings
 
 import numpy as np
@@ -638,13 +641,36 @@ def initialize_with_iterative_stl(corrupted_data, obs_masks, period=None,
 # Experiment 3: Kalman Smoother with Structural TS Model
 # =============================================================================
 
-def initialize_with_kalman(corrupted_data, obs_masks, period=None, seed=None):
+def _kalman_timeout_handler(signum, frame):
+    raise TimeoutError("Kalman fit exceeded time limit")
+
+
+def _kalman_fallback_stl(series, obs_idx, mis_idx, period):
+    """Iterative STL fallback for a single feature series."""
+    obs_vals_orig = series[obs_idx].copy()
+    feat_mean = np.nanmean(series)
+    series[mis_idx] = feat_mean
+    for k in range(3):
+        trend_c, season_c, resid_c = stl_decompose_single(series, period)
+        resid_obs = resid_c[obs_idx]
+        mu_r, std_r = resid_obs.mean(), max(resid_obs.std(), 1e-4)
+        resid_c[mis_idx] = np.random.normal(mu_r, std_r, size=len(mis_idx))
+        series = trend_c + season_c + resid_c
+        series[obs_idx] = obs_vals_orig
+    return series
+
+
+def initialize_with_kalman(corrupted_data, obs_masks, period=None, seed=None,
+                           per_fit_timeout=None, max_seconds=None):
     """
     Kalman smoother initialization using statsmodels UnobservedComponents.
 
     The structural time series model explicitly decomposes into
     level (trend) + seasonal + irregular. The Kalman smoother natively
     handles missing values by skipping the measurement update step.
+
+    Includes per-fit timeout, a global time budget with
+    automatic fallback to iterative STL, and periodic progress logging.
 
     Reference:
         Harvey (1989), "Forecasting, Structural Time Series Models
@@ -655,6 +681,8 @@ def initialize_with_kalman(corrupted_data, obs_masks, period=None, seed=None):
         obs_masks:      (N, T) boolean, True = observed
         period:         seasonal period (auto-detected if None)
         seed:           random seed
+        per_fit_timeout: seconds per model.fit() call (default 5)
+        max_seconds:    global time budget in seconds (default 1800)
 
     Returns:
         initial_recon: (N, T, C) with all values filled
@@ -671,93 +699,140 @@ def initialize_with_kalman(corrupted_data, obs_masks, period=None, seed=None):
     initial_recon = corrupted_data.copy()
     n_kalman_ok = 0
     n_fallback = 0
+    n_timeout = 0
+    n_budget_fallback = 0
 
-    for i in range(N):
-        mask_i = obs_masks[i]
-        obs_idx = np.where(mask_i)[0]
-        mis_idx = np.where(~mask_i)[0]
+    MAX_KALMAN_SECONDS = max_seconds if max_seconds is not None else 1800
+    PER_FIT_TIMEOUT = per_fit_timeout if per_fit_timeout is not None else 5
+    start_time = time.time()
+    budget_exceeded = False
 
-        if len(mis_idx) == 0:
-            continue
+    prev_alarm_handler = signal.signal(signal.SIGALRM, _kalman_timeout_handler)
 
-        if len(obs_idx) < 3:
-            for c in range(C):
-                obs_vals = corrupted_data[i, obs_idx, c] if len(obs_idx) > 0 else np.array([0.5])
-                mu, sigma = np.nanmean(obs_vals), max(np.nanstd(obs_vals), 1e-3)
-                initial_recon[i, mis_idx, c] = np.random.normal(mu, sigma, size=len(mis_idx))
-            n_fallback += 1
-            continue
+    try:
+        for i in range(N):
+            if (i + 1) % 200 == 0 or i == 0:
+                elapsed = time.time() - start_time
+                rate = (i + 1) / max(elapsed, 1e-6)
+                print(f"  Kalman init: {i+1}/{N} sequences "
+                      f"({elapsed:.0f}s, {rate:.1f} seq/s, "
+                      f"kalman={n_kalman_ok}, fallback={n_fallback}, "
+                      f"timeout={n_timeout})")
 
-        for c in range(C):
-            series = corrupted_data[i, :, c].copy().astype(np.float64)
+            if not budget_exceeded and time.time() - start_time > MAX_KALMAN_SECONDS:
+                budget_exceeded = True
+                remaining = N - i
+                print(f"  Global time budget ({MAX_KALMAN_SECONDS}s) exceeded at "
+                      f"sequence {i}/{N}. Falling back to iterative STL "
+                      f"for remaining {remaining} sequences.")
 
-            # Per-feature NaN handling: the obs_mask is per-timestep (any
-            # feature), so individual features can still be NaN at "observed"
-            # timesteps. Pre-interpolate NaNs so UnobservedComponents gets a
-            # complete series (it handles missing via np.nan but works better
-            # with pre-filled data).
-            feat_valid = ~np.isnan(series)
-            if feat_valid.sum() < 3:
-                mu = np.nanmean(series) if feat_valid.any() else 0.5
-                initial_recon[i, :, c] = mu + np.random.normal(0, 0.01, size=T)
+            mask_i = obs_masks[i]
+            obs_idx = np.where(mask_i)[0]
+            mis_idx = np.where(~mask_i)[0]
+
+            if len(mis_idx) == 0:
+                continue
+
+            if len(obs_idx) < 3:
+                for c in range(C):
+                    obs_vals = corrupted_data[i, obs_idx, c] if len(obs_idx) > 0 else np.array([0.5])
+                    mu, sigma = np.nanmean(obs_vals), max(np.nanstd(obs_vals), 1e-3)
+                    initial_recon[i, mis_idx, c] = np.random.normal(mu, sigma, size=len(mis_idx))
                 n_fallback += 1
                 continue
 
-            if not feat_valid.all():
-                series[~feat_valid] = np.interp(
-                    np.where(~feat_valid)[0],
-                    np.where(feat_valid)[0],
-                    series[feat_valid]
-                )
+            for c in range(C):
+                series = corrupted_data[i, :, c].copy().astype(np.float64)
 
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    model = UnobservedComponents(
-                        series, level='local linear trend',
-                        seasonal=period, stochastic_seasonal=True,
+                feat_valid = ~np.isnan(series)
+                if feat_valid.sum() < 3:
+                    mu = np.nanmean(series) if feat_valid.any() else 0.5
+                    initial_recon[i, :, c] = mu + np.random.normal(0, 0.01, size=T)
+                    n_fallback += 1
+                    continue
+
+                if not feat_valid.all():
+                    series[~feat_valid] = np.interp(
+                        np.where(~feat_valid)[0],
+                        np.where(feat_valid)[0],
+                        series[feat_valid]
                     )
-                    result = model.fit(disp=False, maxiter=100)
 
-                smoothed_state = result.smoothed_state
-                smoothed = smoothed_state[0, :]  # level
-                if model.k_states > 2:
-                    smoothed = smoothed + smoothed_state[2, :]  # + seasonal
+                if budget_exceeded:
+                    initial_recon[i, :, c] = _kalman_fallback_stl(
+                        series, obs_idx, mis_idx, period)
+                    n_budget_fallback += 1
+                    continue
 
-                filled = series.copy()
-                filled[mis_idx] = smoothed[mis_idx]
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        model = UnobservedComponents(
+                            series, level='local linear trend',
+                            seasonal=period, stochastic_seasonal=True,
+                        )
+                        signal.alarm(PER_FIT_TIMEOUT)
+                        result = model.fit(disp=False, maxiter=30)
+                        signal.alarm(0)
 
-                if np.isnan(filled[mis_idx]).any():
-                    raise ValueError("Kalman smoother produced NaN")
+                    smoothed_state = result.smoothed_state
+                    smoothed = smoothed_state[0, :]  # level
+                    if model.k_states > 2:
+                        smoothed = smoothed + smoothed_state[2, :]  # + seasonal
 
-                obs_residuals = series[obs_idx] - smoothed[obs_idx]
-                obs_residuals = obs_residuals[~np.isnan(obs_residuals)]
-                if len(obs_residuals) > 1:
-                    std_r = max(np.std(obs_residuals), 1e-4)
-                    filled[mis_idx] += np.random.normal(0, std_r * 0.5, size=len(mis_idx))
+                    filled = series.copy()
+                    filled[mis_idx] = smoothed[mis_idx]
 
-                initial_recon[i, :, c] = filled
-                n_kalman_ok += 1
+                    if np.isnan(filled[mis_idx]).any():
+                        raise ValueError("Kalman smoother produced NaN")
 
-            except Exception:
-                obs_vals_orig = series[obs_idx].copy()
-                feat_mean = np.nanmean(series)
-                series[mis_idx] = feat_mean
-                for k in range(3):
-                    trend_c, season_c, resid_c = stl_decompose_single(series, period)
-                    resid_obs = resid_c[obs_idx]
-                    mu_r, std_r = resid_obs.mean(), max(resid_obs.std(), 1e-4)
-                    resid_c[mis_idx] = np.random.normal(mu_r, std_r, size=len(mis_idx))
-                    series = trend_c + season_c + resid_c
-                    series[obs_idx] = obs_vals_orig
-                initial_recon[i, :, c] = series
-                n_fallback += 1
+                    obs_residuals = series[obs_idx] - smoothed[obs_idx]
+                    obs_residuals = obs_residuals[~np.isnan(obs_residuals)]
+                    if len(obs_residuals) > 1:
+                        std_r = max(np.std(obs_residuals), 1e-4)
+                        filled[mis_idx] += np.random.normal(0, std_r * 0.5, size=len(mis_idx))
+
+                    initial_recon[i, :, c] = filled
+                    n_kalman_ok += 1
+
+                    del model, result, smoothed_state, smoothed, filled
+                    gc.collect()
+
+                except TimeoutError:
+                    signal.alarm(0)
+                    n_timeout += 1
+                    initial_recon[i, :, c] = _kalman_fallback_stl(
+                        series, obs_idx, mis_idx, period)
+                    n_fallback += 1
+                    try:
+                        del model, result
+                    except NameError:
+                        pass
+                    gc.collect()
+
+                except Exception:
+                    signal.alarm(0)
+                    initial_recon[i, :, c] = _kalman_fallback_stl(
+                        series, obs_idx, mis_idx, period)
+                    n_fallback += 1
+                    try:
+                        del model, result
+                    except NameError:
+                        pass
+                    gc.collect()
+
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, prev_alarm_handler)
 
     initial_recon = np.clip(initial_recon, 0, 1)
 
+    elapsed_total = time.time() - start_time
     obs_pct = obs_masks.sum() / obs_masks.size * 100
-    print(f"Kalman initialization complete. {N} sequences, {obs_pct:.1f}% observed, period={period}")
-    print(f"  Kalman OK: {n_kalman_ok}, Fallback to iterative STL: {n_fallback}")
+    print(f"Kalman initialization complete in {elapsed_total:.0f}s. "
+          f"{N} sequences, {obs_pct:.1f}% observed, period={period}")
+    print(f"  Kalman OK: {n_kalman_ok}, Fallback (STL): {n_fallback}, "
+          f"Timeouts: {n_timeout}, Budget fallback: {n_budget_fallback}")
     return initial_recon
 
 

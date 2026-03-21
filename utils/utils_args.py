@@ -237,6 +237,18 @@ def parse_args_irregular():
     parser.add_argument('--teacher_blend_end', type=float, default=0.0,
                         help='Teacher blend weight at final EM iter')
 
+    # --- Multi-sample E-step ---
+    parser.add_argument('--estep_n_samples', type=int, default=3,
+                        help='Number of MMPS samples to average per E-step (variance reduction)')
+
+    # --- Curriculum and scaling ---
+    parser.add_argument('--curriculum_reveal_max', type=float, default=0.3,
+                        help='Max fraction of missing positions revealed in curriculum (increase for high missing rates)')
+    parser.add_argument('--kalman_fit_timeout', type=int, default=5,
+                        help='Per-series Kalman fit timeout in seconds (increase for long sequences)')
+    parser.add_argument('--kalman_global_timeout', type=int, default=1800,
+                        help='Global Kalman init budget in seconds')
+
     # --- Early stopping ---
     parser.add_argument('--early_stop_patience', type=int, default=20,
                         help='Epochs with no loss improvement before stopping M-step/uncond training')
@@ -262,6 +274,13 @@ def parse_args_irregular():
                         help='Final weight for observation-space loss in M-step')
     parser.add_argument('--further_corrupt_delta', type=float, default=0.1,
                         help='Probability of dropping an observed position in Ambient further corruption')
+    parser.add_argument(
+        '--ambient_concat_further_mask',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help='Concatenate further-corruption mask as an extra UNet channel (Ambient Diffusion paper). '
+             'Ambient M-step run scripts force this True; enable manually for custom runs.',
+    )
 
     # --- Fast mode (overrides multiple settings for quicker iteration) ---
     parser.add_argument('--fast_mode', action='store_true', default=False,

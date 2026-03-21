@@ -762,6 +762,8 @@ def main(args):
     name = f"ambient_em_{name}"
 
     logging.info(args)
+    # Unconditional ambient losses use C+1 UNet input; eval / quick_uncond must match.
+    args.ambient_concat_further_mask = True
 
     with (CompositeLogger([WandbLogger()]) if args.wandb
           else PrintLogger()) as logger:

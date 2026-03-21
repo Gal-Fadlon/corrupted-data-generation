@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from contextlib import contextmanager
+from utils.ambient_net_input import concat_mask_channel, concat_ones_mask
 from models.networks import EDMPrecond, EDMPrecondConditional
 from models.ema import LitEma
 from models.img_transformations import DelayEmbedder, SpectrogramEmbedder, GAFEmbedder, MultiViewEmbedder
@@ -220,8 +221,16 @@ class TS2img_Karras(nn.Module):
         self.T = args.diffusion_steps
 
         self.device = device
-        self.net = EDMPrecond(args.img_resolution, args.input_channels, channel_mult=args.ch_mult,
-                              model_channels=args.unet_channels, attn_resolutions=args.attn_resolution)
+        self.ambient_concat_further_mask = bool(
+            getattr(args, 'ambient_concat_further_mask', False)
+        )
+        _in_ch = args.input_channels + (
+            1 if self.ambient_concat_further_mask else 0
+        )
+        self.net = EDMPrecond(
+            args.img_resolution, _in_ch, channel_mult=args.ch_mult,
+            model_channels=args.unet_channels, attn_resolutions=args.attn_resolution,
+        )
 
         self.delay = args.delay
         self.embedding = args.embedding
@@ -274,7 +283,10 @@ class TS2img_Karras(nn.Module):
         y, augment_labels = augment_pipe(x) if augment_pipe is not None else (x, None)
         n = torch.randn_like(y) * sigma
         masked_noise = n * (mask)
-        D_yn = self.net(y + masked_noise, sigma, labels, augment_labels=augment_labels)
+        x_in = concat_ones_mask(
+            y + masked_noise, self.ambient_concat_further_mask
+        )
+        D_yn = self.net(x_in, sigma, labels, augment_labels=augment_labels)
         return D_yn, weight
 
     def unpad(self, x, original_shape):
@@ -334,8 +346,10 @@ class TS2img_Karras(nn.Module):
 
         Combines two ideas:
           1. Ambient Diffusion (Daras et al., NeurIPS 2023): further corrupt the
-             already-masked data with mask B, train on ``A`` positions, evaluate
-             on ``A \\ tilde{A}`` positions to learn the true distribution.
+             already-masked data with mask B; network input is ``tilde{A} ⊙ (x_0 + σ ε)``
+             (zeros on dropped positions — not fresh noise); loss on all ``A``
+             positions. Optionally concatenates ``tilde{A}`` as an extra channel
+             when ``args.ambient_concat_further_mask`` is set (paper / official code).
           2. Ambient-Omni (Daras et al., 2025): reweight the loss with
              ``ambient_factor = sigma^4 / (sigma^2 - sigma_tn^2)^2`` so that
              corrupted data contributes properly at each noise level.
@@ -379,9 +393,12 @@ class TS2img_Karras(nn.Module):
         noise = torch.randn_like(x_img) * sigma
         x_noisy = x_img + noise
 
-        # Network input: apply further-corruption mask to noisy data and
-        # add noise on masked-out positions so they are indistinguishable
-        x_input = x_noisy * further_mask + noise * (1 - further_mask)
+        # Paper Eq. (100): feed tilde{A} ⊙ (x_0 + ση); zeros on further-erased pixels.
+        # (Official ambient-diffusion: hat * (y + n), not independent noise in holes.)
+        x_data = x_noisy * further_mask
+        x_input = concat_mask_channel(
+            x_data, further_mask, self.ambient_concat_further_mask
+        )
 
         # --- Network prediction h_theta(x_input, sigma) -> E[X_0 | x_input] ---
         D_x = self.net(x_input, sigma, None)
@@ -463,9 +480,13 @@ class TS2img_Karras(nn.Module):
                 obs_mask = obs_mask.expand_as(x_img)
             B_rand = (torch.rand_like(obs_mask) >= delta).float()
             further_mask = obs_mask * B_rand
-            x_input = x_noisy * further_mask + noise * (1 - further_mask)
+            x_data = x_noisy * further_mask
+            x_input = concat_mask_channel(
+                x_data, further_mask, self.ambient_concat_further_mask
+            )
         else:
-            x_input = x_noisy
+            x_input = concat_ones_mask(
+                x_noisy, self.ambient_concat_further_mask)
 
         # --- network prediction ---
         D_x = self.net(x_input, sigma, None)
