@@ -22,8 +22,20 @@ ch_mult: [1,2,2,2]
 diffusion_steps: 18
 ema: true
 ema_warmup: 100
+
 # logging:
 logging_iter: 10
+
 # TST:
 input_size: 6
 
+# DiffEM configuration (optional - CLI defaults used if not specified):
+# em_iters: 5
+# m_step_epochs: 50
+# e_step_batch_size: 64
+# recon_cache_dir: ./recon_cache
+# num_posterior_samples: 1
+# freeze_tst_after_pretrain: true
+# train_uncond_after_em: true
+# uncond_epochs: 100
+# em_eval_interval: 1

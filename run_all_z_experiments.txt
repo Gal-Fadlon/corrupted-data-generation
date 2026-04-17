@@ -1,0 +1,172 @@
+sbatch sbatch_z_temporal_kernel_sigma_y_stock && \
+sbatch sbatch_z_temporal_kernel_sigma_y_energy && \
+sbatch sbatch_z_freq_dependent_sigma_y_stock && \
+sbatch sbatch_z_freq_dependent_sigma_y_energy && \
+sbatch sbatch_z_annealed_sigma_y_stock && \
+sbatch sbatch_z_annealed_sigma_y_energy && \
+sbatch sbatch_z_spectral_jacobian_stock && \
+sbatch sbatch_z_spectral_jacobian_energy && \
+sbatch sbatch_z_decomp_proj_jacobian_stock && \
+sbatch sbatch_z_decomp_proj_jacobian_energy && \
+sbatch sbatch_z_hybrid_jac_decomp_stock && \
+sbatch sbatch_z_hybrid_jac_decomp_energy && \
+sbatch sbatch_z_freq_gated_score_stock && \
+sbatch sbatch_z_freq_gated_score_energy && \
+sbatch sbatch_z_trend_seasonal_score_stock && \
+sbatch sbatch_z_trend_seasonal_score_energy && \
+sbatch sbatch_z_decomp_consistency_stock && \
+sbatch sbatch_z_decomp_consistency_energy && \
+sbatch sbatch_z_warmstart_cg_stock && \
+sbatch sbatch_z_warmstart_cg_energy && \
+sbatch sbatch_z_preconditioned_cg_stock && \
+sbatch sbatch_z_preconditioned_cg_energy && \
+sbatch sbatch_z_fourier_cg_stock && \
+sbatch sbatch_z_fourier_cg_energy && \
+sbatch sbatch_z_annealed_obs_mask_stock && \
+sbatch sbatch_z_annealed_obs_mask_energy && \
+sbatch sbatch_z_multiscale_cascade_stock && \
+sbatch sbatch_z_multiscale_cascade_energy && \
+sbatch sbatch_z_periodic_correction_stock && \
+sbatch sbatch_z_periodic_correction_energy && \
+sbatch sbatch_z_temporal_kernel_sigma_y_weather && \
+sbatch sbatch_z_temporal_kernel_sigma_y_etth1 && \
+sbatch sbatch_z_freq_dependent_sigma_y_weather && \
+sbatch sbatch_z_freq_dependent_sigma_y_etth1 && \
+sbatch sbatch_z_annealed_sigma_y_weather && \
+sbatch sbatch_z_annealed_sigma_y_etth1 && \
+sbatch sbatch_z_spectral_jacobian_weather && \
+sbatch sbatch_z_spectral_jacobian_etth1 && \
+sbatch sbatch_z_decomp_proj_jacobian_weather && \
+sbatch sbatch_z_decomp_proj_jacobian_etth1 && \
+sbatch sbatch_z_hybrid_jac_decomp_weather && \
+sbatch sbatch_z_hybrid_jac_decomp_etth1 && \
+sbatch sbatch_z_freq_gated_score_weather && \
+sbatch sbatch_z_freq_gated_score_etth1 && \
+sbatch sbatch_z_trend_seasonal_score_weather && \
+sbatch sbatch_z_trend_seasonal_score_etth1 && \
+sbatch sbatch_z_decomp_consistency_weather && \
+sbatch sbatch_z_decomp_consistency_etth1 && \
+sbatch sbatch_z_warmstart_cg_weather && \
+sbatch sbatch_z_warmstart_cg_etth1 && \
+sbatch sbatch_z_preconditioned_cg_weather && \
+sbatch sbatch_z_preconditioned_cg_etth1 && \
+sbatch sbatch_z_fourier_cg_weather && \
+sbatch sbatch_z_fourier_cg_etth1 && \
+sbatch sbatch_z_annealed_obs_mask_weather && \
+sbatch sbatch_z_annealed_obs_mask_etth1 && \
+sbatch sbatch_z_multiscale_cascade_weather && \
+sbatch sbatch_z_multiscale_cascade_etth1 && \
+sbatch sbatch_z_periodic_correction_weather && \
+sbatch sbatch_z_periodic_correction_etth1 && \
+sbatch sbatch_z_temporal_kernel_sigma_y_etth2 && \
+sbatch sbatch_z_temporal_kernel_sigma_y_ettm1 && \
+sbatch sbatch_z_freq_dependent_sigma_y_etth2 && \
+sbatch sbatch_z_freq_dependent_sigma_y_ettm1 && \
+sbatch sbatch_z_annealed_sigma_y_etth2 && \
+sbatch sbatch_z_annealed_sigma_y_ettm1 && \
+sbatch sbatch_z_spectral_jacobian_etth2 && \
+sbatch sbatch_z_spectral_jacobian_ettm1 && \
+sbatch sbatch_z_decomp_proj_jacobian_etth2 && \
+sbatch sbatch_z_decomp_proj_jacobian_ettm1 && \
+sbatch sbatch_z_hybrid_jac_decomp_etth2 && \
+sbatch sbatch_z_hybrid_jac_decomp_ettm1 && \
+sbatch sbatch_z_freq_gated_score_etth2 && \
+sbatch sbatch_z_freq_gated_score_ettm1 && \
+sbatch sbatch_z_trend_seasonal_score_etth2 && \
+sbatch sbatch_z_trend_seasonal_score_ettm1 && \
+sbatch sbatch_z_decomp_consistency_etth2 && \
+sbatch sbatch_z_decomp_consistency_ettm1 && \
+sbatch sbatch_z_warmstart_cg_etth2 && \
+sbatch sbatch_z_warmstart_cg_ettm1 && \
+sbatch sbatch_z_preconditioned_cg_etth2 && \
+sbatch sbatch_z_preconditioned_cg_ettm1 && \
+sbatch sbatch_z_fourier_cg_etth2 && \
+sbatch sbatch_z_fourier_cg_ettm1 && \
+sbatch sbatch_z_annealed_obs_mask_etth2 && \
+sbatch sbatch_z_annealed_obs_mask_ettm1 && \
+sbatch sbatch_z_multiscale_cascade_etth2 && \
+sbatch sbatch_z_multiscale_cascade_ettm1 && \
+sbatch sbatch_z_periodic_correction_etth2 && \
+sbatch sbatch_z_periodic_correction_ettm1 && \
+
+
+
+sbatch sbatch_z_temporal_kernel_sigma_y_ettm2 && \
+sbatch sbatch_z_temporal_kernel_sigma_y_mujoco && \
+sbatch sbatch_z_freq_dependent_sigma_y_ettm2 && \
+sbatch sbatch_z_freq_dependent_sigma_y_mujoco && \
+sbatch sbatch_z_annealed_sigma_y_ettm2 && \
+
+
+
+sbatch sbatch_z_annealed_sigma_y_mujoco && \
+sbatch sbatch_z_spectral_jacobian_ettm2 && \
+sbatch sbatch_z_spectral_jacobian_mujoco && \
+sbatch sbatch_z_decomp_proj_jacobian_ettm2 && \
+sbatch sbatch_z_decomp_proj_jacobian_mujoco && \
+
+
+
+sbatch sbatch_z_hybrid_jac_decomp_ettm2 && \
+sbatch sbatch_z_hybrid_jac_decomp_mujoco && \
+sbatch sbatch_z_freq_gated_score_ettm2 && \
+sbatch sbatch_z_freq_gated_score_mujoco && \
+sbatch sbatch_z_trend_seasonal_score_ettm2 && \
+
+
+
+
+sbatch sbatch_z_trend_seasonal_score_mujoco && \
+sbatch sbatch_z_decomp_consistency_ettm2 && \
+sbatch sbatch_z_decomp_consistency_mujoco && \
+sbatch sbatch_z_warmstart_cg_ettm2 && \
+sbatch sbatch_z_warmstart_cg_mujoco && \
+
+
+
+sbatch sbatch_z_preconditioned_cg_ettm2 && \
+sbatch sbatch_z_preconditioned_cg_mujoco && \
+sbatch sbatch_z_fourier_cg_ettm2 && \
+sbatch sbatch_z_fourier_cg_mujoco && \
+sbatch sbatch_z_annealed_obs_mask_ettm2 && \
+
+
+
+sbatch sbatch_z_annealed_obs_mask_mujoco && \
+sbatch sbatch_z_multiscale_cascade_ettm2 && \
+sbatch sbatch_z_multiscale_cascade_mujoco && \
+sbatch sbatch_z_periodic_correction_ettm2 && \
+sbatch sbatch_z_periodic_correction_mujoco && \
+
+
+
+sbatch sbatch_z_temporal_kernel_sigma_y_sine && \
+sbatch sbatch_z_temporal_kernel_sigma_y_electricity && \
+sbatch sbatch_z_freq_dependent_sigma_y_sine && \
+sbatch sbatch_z_freq_dependent_sigma_y_electricity && \
+sbatch sbatch_z_annealed_sigma_y_sine && \
+sbatch sbatch_z_annealed_sigma_y_electricity && \
+sbatch sbatch_z_spectral_jacobian_sine && \
+sbatch sbatch_z_spectral_jacobian_electricity && \
+sbatch sbatch_z_decomp_proj_jacobian_sine && \
+sbatch sbatch_z_decomp_proj_jacobian_electricity && \
+sbatch sbatch_z_hybrid_jac_decomp_sine && \
+sbatch sbatch_z_hybrid_jac_decomp_electricity && \
+sbatch sbatch_z_freq_gated_score_sine && \
+sbatch sbatch_z_freq_gated_score_electricity && \
+sbatch sbatch_z_trend_seasonal_score_sine && \
+sbatch sbatch_z_trend_seasonal_score_electricity && \
+sbatch sbatch_z_decomp_consistency_sine && \
+sbatch sbatch_z_decomp_consistency_electricity && \
+sbatch sbatch_z_warmstart_cg_sine && \
+sbatch sbatch_z_warmstart_cg_electricity && \
+sbatch sbatch_z_preconditioned_cg_sine && \
+sbatch sbatch_z_preconditioned_cg_electricity && \
+sbatch sbatch_z_fourier_cg_sine && \
+sbatch sbatch_z_fourier_cg_electricity && \
+sbatch sbatch_z_annealed_obs_mask_sine && \
+sbatch sbatch_z_annealed_obs_mask_electricity && \
+sbatch sbatch_z_multiscale_cascade_sine && \
+sbatch sbatch_z_multiscale_cascade_electricity && \
+sbatch sbatch_z_periodic_correction_sine && \
+sbatch sbatch_z_periodic_correction_electricity

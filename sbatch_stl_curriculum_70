@@ -1,0 +1,24 @@
+#!/bin/bash
+
+################################################################################################
+### sbatch configuration parameters must start with #SBATCH and must precede any other commands.
+### To ignore, just add another # - like so: ##SBATCH
+################################################################################################
+
+#SBATCH --partition rtx6000			### specify partition name where to run a job.
+#SBATCH --qos azencot
+#SBATCH --time 7-00:00:00			### limit the time of job running.
+#SBATCH --job-name stl_curric_70		### name of the job
+#SBATCH --output stl_curric_70-%J.out		### output log for running job - %J for job number
+
+#SBATCH --gpus=1				### number of GPUs
+
+### Print some data to output file ###
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+### Start your code below ####
+module load anaconda
+source activate idan2_env
+python run_diffem_mmps_stl_curriculum.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.7 --wandb true --tags "stl_curriculum" "energy" "70_missing_rate" "progressive_reveal"

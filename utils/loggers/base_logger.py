@@ -12,15 +12,27 @@ class BaseLogger(ABC):
         return self
 
     @abstractmethod
-    def stop(self):
+    def stop(self, exit_code=0):
         pass
 
-    def __exit__(self, type, value, traceback):
-        self.stop()
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type is not None:
+            self.stop(exit_code=1)
+        else:
+            self.stop(exit_code=0)
 
     @abstractmethod
     def log(self, name: str, data: Any, step=None):
         pass
+
+    def log_metrics(self, metrics: Dict[str, Any], step=None):
+        """Log multiple metrics in a single call (batched).
+
+        Subclasses like WandbLogger override this to emit one wandb.log()
+        call, which avoids the repeated-custom_step problem.
+        """
+        for name, value in metrics.items():
+            self.log(name, value, step)
 
     def log_dict(self, name: str, data: Dict[str, Any], step=None):
         for k, v in data.items():
@@ -49,4 +61,8 @@ class BaseLogger(ABC):
 
     @abstractmethod
     def log_name_params(self, name : str, params: Any):
+        pass
+
+    def log_file(self, name: str, file_path: str, step=None):
+        """Upload a file (e.g. image plot) to the logging backend."""
         pass

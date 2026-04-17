@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diffem"
+version = "0.0.0"
+description = "Diffusion EM research code"
+readme = "README.md"
+requires-python = ">=3.9"
+
+[project.scripts]
+diffem = "cli.main:app"
+
+
+[tool.setuptools]
+packages = ["priors", "experiments"]

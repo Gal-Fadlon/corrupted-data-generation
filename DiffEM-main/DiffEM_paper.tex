@@ -1,0 +1,782 @@
+\title{DiffEM: Learning from Corrupted Data with Diffusion Models via Expectation Maximization}
+
+\begin{document}
+
+
+\maketitle
+
+
+\begin{abstract}
+    Diffusion models have emerged as powerful generative priors for high-dimensional inverse problems, yet learning them when only corrupted or noisy observations are available remains challenging. In this work, we propose a new method for training diffusion models with Expectation-Maximization (EM) from corrupted data. Our proposed method, DiffEM, utilizes conditional diffusion models to reconstruct clean data from observations in the E-step, and then uses the reconstructed data to refine the conditional diffusion model in the M-step. Theoretically, we provide monotonic convergence guarantees for the DiffEM iteration, assuming appropriate statistical conditions. We demonstrate the effectiveness of our approach through experiments on various image reconstruction tasks.
+\end{abstract}
+
+\section{Introduction}
+
+Diffusion models~\citep{song2019generative,ho2020denoising,song2020score} have emerged as powerful tools for learning high-dimensional distributions, achieving remarkable success across a broad range of generative tasks. Their effectiveness as learned priors has led to significant advances in solving inverse problems~\citep{kawar2021snips,choi2021ilvr,saharia2022palette}, including image inpainting, denoising, and super-resolution. However, in many real-world scenarios, acquiring clean training data remains difficult or costly, and can raise significant concerns, as training on clean data might lead to memorization~\citep{somepalli2023diffusion,carlini2023extracting,somepalli2023understanding,shah2025does}, posing privacy and copyright risks. While data with mild or moderate corruption is often more readily available, particularly in domains like medical imaging~\citep{Wang2016Accelerating,Zbontar2018fastMRI} and compressive sensing, training diffusion models effectively using only corrupted or noisy observations presents substantial technical challenges.
+
+The fundamental difficulty lies in the fact that standard techniques for training diffusion models are designed for settings with access to clean data from the data distribution. When only corrupted or noisy observations are available, these techniques become inapplicable, and training diffusion models effectively reduces to learning a latent variable model from corrupted observations, a problem well-known for its theoretical and practical challenges.
+
+Recent work \citep{rozet2024learning,bai2024expectation} has proposed addressing this challenge by applying the Expectation-Maximization (EM) method with diffusion models as priors. However, this approach faces a critical difficulty: in each E-step, the algorithm must sample from the posterior distribution given the corrupted observations, whereas it only has access to the score function of the diffusion prior. To overcome this, these works adopt ad hoc posterior sampling schemes that rely on various approximations of the posterior score function that explicitly incorporate the likelihood function. Such approximation schemes, however, are based on implicit structural assumptions about the true data distribution and the likelihood function, making their approximation errors difficult to quantify.
+
+In this work, we propose a new method that combines diffusion models with the EM framework. Our key insight is that instead of learning a diffusion prior and then performing approximate sampling, we can directly model the posterior distribution using a conditional diffusion model \citep{saharia2022palette,daras2024survey}. The primary advantage of our approach is its independence from specific approximate posterior sampling schemes. Notably, it can handle any likelihood function, as it makes no assumptions about the data distribution and likelihood function beyond requiring that the posterior score function can be expressed by the denoiser network. Furthermore, we provide theoretical analysis of the proposed EM iteration, demonstrating its convergence under appropriate conditions on the approximation error of the denoiser network.
+We validate our approach through extensive experiments on both synthetic and real-world datasets with various types of corruption, including low-dimensional manifold learning and \textcolor{black}{unconditional generation} on CIFAR-10 and CelebA.
+
+\iclr{
+\paragraph{Related work} Due to space limitations, we discuss further related work in \cref{sec:related-work}, and provide more detailed discussions of the closest works to ours in the next couple of sections.
+}
+
+
+\subsection{Preliminaries}\label{sec:prelim}
+
+\paragraph{Problem setup}
+Formally, we consider the following setup. The \emph{data distribution} $\Pxs$ is a distribution over the space $\cX$ of latent variables, and the \emph{likelihood} $\Qd{X}$ maps each point $X\in\cX$ to a distribution over the observation space $\cY$. The observation is generated as
+\begin{align}\label{eq:Y-dist}
+    \ict
+    Y\sim \Qd{X}, \quad \text{where }X\sim 
+\Pxs,
+\end{align}
+and we denote $\Ps$ to be the joint distribution of $(X,Y)$ and $\Pys$ to be the marginal distribution of $Y$.
+This formulation encompasses classical inverse problems by specifying $\Qd{X}=\normal{\Aop(X),\sigy^2\id}$, where $\Aop:\cX\to\R^d$ is a known forward operator. 
+
+In our setting, the learner only has access to a dataset $\set{Y\sid{1},\cdots,Y\sid{N}}$ consisting of i.i.d. observations from $\Pys$, and $\Q$ is assumed to be known. The goal is two-fold:
+\begin{itemize}
+    \item \textbf{Unconditional generation}: to generate new samples from the ground-truth data distribution $\Pxs$ approximately.
+    \item \textbf{Posterior sampling}: to sample $X\sim \Ps(\cdot|Y)$ given an observation $Y$.
+\end{itemize}
+With this setup, the primary focus of recent work~\citep{daras2023ambient,daras2023consistent,rozet2024learning,bai2024expectation,daras2024consistent} has been on \textbf{reconstruction} under a special class of likelihood functions. In such settings, the latent space is $\cX=\R^{\dx}$ (consisting of ``clean images''), and there is a known distribution $\PA$ of corruption matrices $A\in\R^{d\times\dx}$. The observation is drawn as
+\begin{align}\label{eq:linear-corr}
+    \ict
+    Y=(AX+\epsilon,A), \quad \text{where }X\sim \Pxs, A\sim \PA, \epsilon\sim \normal{0,\sigy^2\id},
+\end{align}
+i.e., the observation $Y \in \R^{d} \times \R^{d \times d_x}$ is a (corrupted image, corruption matrix) pair, with the image corrupted by the matrix $A\sim \PA$ and the additive Gaussian noise $\epsilon$. By choosing different distributions $\PA$ for the corruption matrix, \eqref{eq:linear-corr} can model problems including random masking~\citep{daras2023ambient,rozet2024learning,bai2024expectation} and blurring~\citep{bai2024expectation}. 
+
+
+
+
+
+\paragraph{Diffusion models}
+Given samples from a data distribution $p_0$ over $\R^d$, diffusion models aim to learn how to generate new samples from $p_0$. Following \citet{song2020score}, we consider the diffusion process $(X_t)_{t\in[0,1]}$ with $X_0\sim p_0$, and $X_t|X_0\sim \normal{X_0, \sigma_t^2\id}$. Formally, the diffusion process can be described by the following stochastic differential equation (SDE):
+\begin{equation}\label{eqn:diffusion-process}
+    \ict
+    \d X_t = g(t)\d \B_t, \qquad X_0 \sim p_0,
+\end{equation}
+where $g(t)^2=\frac{d\sigma_t^2}{dt}$, and $(\B_t)_{t\in[0,1]}$ is the standard Brownian motion. Let $p_t(x)$ be the density function of $X_t\in\R^d$. It is well-known that the reverse of process \eqref{eqn:diffusion-process} can be described by the following reverse-time diffusion process:
+\begin{equation}\label{eqn:diffusion-process-reverse}
+    \ict
+    \d X_t = - g(t)^2 \nabla_x p_t(X_t)  \d t + g(t) \d \B_t, \qquad X_1\sim p_1.
+\end{equation}
+
+With $\sigma_1$ being sufficiently large, we have $p_1\approx \normal{0,\sigma_1^2\id}$. The score function $(x,t)\mapsto \nabla_x \log p_t(x)$ is typically parametrized by a neural network $\scf_\theta(x,t)$. By Tweedie's formula, $\nabla_x \log p_t(x)=\frac{\EE[X_0|X_t=x] - x}{\sigma_t^2}$,
+where the expectation is taken with respect to the diffusion process \eqref{eqn:diffusion-process}. Hence, $\scf_\theta(x,t)$ can be learned by optimizing the score-matching loss.
+
+
+
+
+
+
+\arxiv{
+\subsection{Related work}\label{sec:related-work}
+
+\input{related_work.tex}
+}
+
+\section{Expectation-Maximization Approach}\label{sec:EM}
+
+\newcommand{\ELBO}[1]{\cL_{\mathrm{ELBO},#1}}
+\newcommand{\thhat}{{\widehat{\theta}}}
+\newcommand{\ind}[1]{^{\scriptscriptstyle (#1)}}
+\newcommand{\qm}{q}
+
+\textcolor{black}{ When applied to our setup, the Expectation-Maximization (EM) method optimizes over a class of parameterized latent variable models $\set{\qm_\theta(x,y)}_{\theta}$ that aims to represent the joint ground-truth distribution of $(X,Y)$. Here, $\qm_\theta(x,y): \mathcal{X}\times\mathcal{Y}\rightarrow\R_{\ge 0}$ is the probability density function associated with the model parametrized by parameter $\theta$, and we denote $\qm_\theta(y): \mathcal{Y}\rightarrow \R_{\ge 0}$ to be the probability density function of the marginal distribution of the observable $Y$.} EM seeks a parameter $\theta$ that maximizes the population log-likelihood of the observable variable:
+\begin{align*}
+    \ict
+    \max_{\theta} \cL(\theta)\defeq \EE_{Y\sim\Pys} \log \qm_\theta(Y).
+\end{align*}
+This optimization problem is equivalent to minimizing the KL divergence between $\Pys$ and $\qm_\theta(y)$. However, direct optimization is computationally intractable for most problems. To overcome this computational challenge, each step of the EM method optimizes the following ELBO lower bound with a parameter $\thhat$:
+\begin{align*}
+    \ict
+    \cL(\theta)\geq \EE_{Y\sim \Pys}\EE_{X\sim \qm_\thhat(X|Y)} \log \frac{\qm_\theta(X,Y)}{\qm_\thhat(X|Y)}.
+\end{align*}
+In particular, the EM algorithm can be succinctly written as: Starting from an initial point $\theta^{(0)}$, iterate
+\begin{align*}
+    \theta\ind{k+1}=\argmax_{\theta} \EE_{Y\sim \Pys}\EE_{X\sim \qm_{\theta\ind{k}}(X|Y)} \log \qm_\theta(X,Y).
+\end{align*}
+In our setting, since the likelihood $\Q$ is known and simple, the parametrized model should satisfy $\qm_\theta(x,y)=\Q(Y=y|X=x)\qm_\theta(x)$. In this case, the EM iterations reduce to
+\begin{align}\label{eq:latent-EM}
+    \ict
+    \theta\ind{k+1}=\argmax_{\theta} \EE_{Y\sim \Pys}\EE_{X\sim \qm_{\theta\ind{k}}(X|Y)} \log \qm_\theta(X).
+\end{align}
+This specialization of EM has been studied in \citep{aubin2022mirror,rozet2024learning,bai2024expectation}, and it is also the basis of our framework.
+To simplify the notation, we consider the {\em mixture posterior distribution} $\pi\ind{k}$ with density $\pi\ind{k}(x)=\EE_{Y\sim \Pys}\brac{\qm_{\theta\ind{k}}(x|Y)}$, which is a mixture with respect to the observation distribution $\Pys$ of the posteriors $\qm_{\theta\ind{k}}(X|Y)$ ~\citep{rozet2024learning}. Then, the EM update \eqref{eq:latent-EM} can be rewritten as
+\begin{align}\label{eq:latent-EM-prior}
+    \ict
+    \theta\ind{k+1}=\argmin_{\theta} \KLd{\pi\ind{k}(x)}{ \qm_\theta(x)},
+\end{align}
+i.e., the model $q_{\theta\ind{k+1}}$ minimizes the distance to the mixture posterior distribution $\pi\ind{k}$.
+Crucially, to implement this update, we need to be able to sample from the conditional distribution $\qm_{\theta\ind{k}}(X|Y)$. 
+
+\subsection{Prior approach: EM with diffusion priors}\label{sec:EM-diffusion-discuss}
+In this section, we briefly review how prior work \citep{rozet2024learning,bai2024expectation} performs posterior sampling with diffusion models as priors. Their methods are restricted to the \emph{linear corruption model} \cref{eq:linear-corr}, where the observation is $Y=(AX+\epsilon,A)$, where $\epsilon\sim \normal{0,\sigy^2\id}$ is the noise and $A\sim \PA$ is a random corruption matrix. For simplicity, to describe these results, we focus on the case where $A$ is fixed, i.e.~$\Qd{X}=\Q_A(\cdot|{X})=\normal{AX,\sigy^2\id}$.
+
+In the EM approach of \citet{rozet2024learning,bai2024expectation}, the latent variable models are described by diffusion models. More precisely, each $\theta$ parametrizes a score function $\scf_\theta(x,t)$, and $\qm_\theta(x)$ corresponds to the distribution of $X_0$ obtained by running the backward diffusion process with the score function $\scf_\theta$. However, to sample from $\qm_{\theta}(X|Y)$, one needs to approximate the conditional score function $\nabla_{x} \log \qm_\theta(X_t=x|Y=y)$. Following previous work on posterior sampling with diffusion priors~\citep[etc.]{chung2022diffusion}, the conditional score is decomposed according to Bayes' rule:
+\begin{align*}
+    \ict
+    \nabla_{x} \log \qm_\theta(X_t=x|Y)=\nabla_x \log \qm_\theta(Y|X_t=x)+\nabla_x \log \qm_\theta(X_t=x).
+\end{align*}
+The second term is given by the score function $\scf_\theta(x,t)$. To approximate the first term, %
+\citet{rozet2024learning} applies a Gaussian approximation $\qm_\theta(X=\cdot|X_t=x)\approx \normal{\EE_\theta[X|X_t=x], \VV_\theta[X|X_t=x]}$. Consequently, the conditional distribution of $Y$ is approximately
+\begin{align*}
+    \ict
+    \qm_\theta(Y=\cdot|X_t=x)\approx \normal{A\EE_\theta[X|X_t=x], \sigy^2\id+A\VV_\theta[X|X_t=x]A^\top}.
+\end{align*}
+Then, to calculate $\nabla_x \log \qm_\theta(Y|X_t=x)$, \citet{rozet2024learning} introduces moment matching techniques to approximate the variance function $\VV_\theta[X|X_t=x]$. Alternatively, \citet{bai2024expectation} applies a simpler approximation $\qm_\theta(Y=\cdot|X_t=x)\approx \normal{A\EE_\theta[X|X_t=x], \sigy^2\id}$.
+
+However, these approximations all rely on the assumption that $\qm_\theta(X_0=\cdot|X_t=x)$ is close to a Gaussian distribution. This assumption may not hold for general diffusion priors, which are highly multi-modal. Therefore, errors in these approximation schemes can be difficult to control. Furthermore, even when the learned diffusion prior $\qm_\theta$ is close to the ground truth, the posterior distribution of $X|Y$ (obtained by approximating the score $\nabla_{x} \log \qm_\theta(X_t=x|Y)$) might not accurately represent the true conditional distribution $\qm_\theta(X|Y)$ under the diffusion prior $q_\theta(X)$. 
+
+Additionally, the moment matching techniques of \citet{rozet2024learning} are rather sophisticated and specialized to \cref{eq:linear-corr}. For general likelihood with non-linear transformations, calculating the score $\nabla_x \log \qm_\theta(Y|X_t=x)$ can be challenging even under the Gaussian approximation assumption.
+
+\subsection{Our Approach: EM with conditional diffusion model}\label{sec:cond-DM}
+
+Instead of parametrizing the data distribution $\qm_{\theta}(x)$ using a diffusion model, we directly model the posterior distribution $\qm_{\theta}(x|y)$ through a conditional score function network $\scf_\theta(x,t|y)$. Below, we describe the corresponding conditional diffusion process for generating posterior samples.
+
+\paragraph{Conditional diffusion process}
+Given a latent variable model $\qm$, we consider the diffusion process
+\begin{align}\label{eqn:cond-diffusion-process}
+    \ict
+    (X_0,Y)\sim \qm, \qquad
+    \d X_t=g(t) \d\B_t.
+\end{align}
+Let $p$ be the joint distribution of $(\crl*{X_t}_{t\in[0,1]},Y)$.
+To sample from $\qm(X_0|Y)$, we consider the following reverse-time process:
+\begin{equation}\label{eqn:cond-diffusion-process-rev}
+    \ict
+    \d X_t = - g(t)^2 \scf_\theta (X_t, t| Y)  \d t + g(t) \d \B_t, \qquad X_1\sim q_1(\cdot|Y),
+\end{equation}
+where the network $\scf_\theta$ directly approximates the true conditional score function
+\begin{align}
+\ict
+    \scf_\theta(x,t|y)\approx \nabla_x \log p(X_t=x|y)=\frac{\cond{X_0}{ X_t=x, Y=y } - x}{\sigma_t^2},
+\end{align}
+and the expectation is taken over the process \eqref{eqn:cond-diffusion-process} (see e.g. \citep{daras2024survey}). For a given parameter $\theta$ that parameterizes the conditional denoiser network $\scf_\theta$, we let $q_\theta(X=\cdot|Y)$ be the distribution of $X_0$ generated by \cref{eqn:cond-diffusion-process-rev}. In particular, when $\scf_\theta(x,t|y)=\nabla_x \log p(X_t=x|y)$, the reverse process \eqref{eqn:cond-diffusion-process-rev} indeed generates $X_0\sim q(\cdot|Y)$, i.e., $q_\theta(\cdot|Y)=q(\cdot|Y)$.
+
+
+\newcommand{\LSM}[1]{L_{\mathrm{SM},#1}}
+
+\paragraph{EM with conditional diffusion models}
+Based on the conditional diffusion process, we propose the EM procedure \cref{alg:EM}, using a conditional diffusion model to learn the \emph{posterior} directly. 
+
+
+\newcommand{\algcomment}[1]{\textcolor{blue!70!black}{\small{\texttt{\textbf{//\hspace{2pt}#1}}}}}
+\iclr{
+\vspace{-5pt}
+}
+\begin{algorithm}[t]
+\begin{algorithmic}
+\REQUIRE Dataset of corrupted observations $\cD_Y=\crl*{Y\sid{1},\cdots,Y\sid{N}}$, likelihood $\Qd{X}$, and a initialization for the conditional model $\theta\ind{0}$.
+\FOR{$k=0,1,\cdots,K-1$}
+\STATE \algcomment{E-step:}
+\FOR{$i\in[N]$}
+\STATE Generate the reconstruction $X\sid{i}\sim \qm_{\theta\ind{k}}(\cdot|Y\sid{i})$ using the current conditional model $\theta\ind{k}$.
+\ENDFOR
+\STATE \algcomment{M-step:} 
+\STATE Train a new conditional diffusion model using the dataset $\cD\ind{k}_X=\set{X\sid{1},\cdots,X\sid{N}}$ by minimizing the objective provided in \cref{def:cond-score-loss}:
+\begin{align*}
+    \theta\ind{k+1}=\argmin_\theta \LSM{k}(\theta).
+\end{align*}
+\ENDFOR
+\ENSURE (1) The conditional diffusion model $\theta\ind{K}$, and
+\ENSURE (2) An \emph{unconditional} diffusion model $\hth$ trained on the dataset $\cD_X\ind{K-1}$.
+\end{algorithmic}
+\caption{DiffEM: Expectation-Maximization with a conditional diffusion model}\label{alg:EM}
+\end{algorithm}
+\iclr{
+}
+
+{
+In the E-step, the algorithm generates the dataset $\cD_X\ind{k}=\set{X\sid{1},\cdots,X\sid{N}}$ consisting of the reconstruction $X\sid{i}\sim \qm_{\theta\ind{k}}(\cdot|Y\sid{i})$.
+Then, in the M-step, the algorithm uses the dataset $\cD_X\ind{k}$  to train the conditional diffusion model $\theta\ind{k+1}$, so that it learns to sample from $\widehat{P}\ind{k}(X|Y)$, the posterior of $\widehat{P}\ind{k}(X,Y)$ which samples $X\sim \cD_X\ind{k}$ and then samples $Y\sim \Qd{X}$. }
+To train this model, we consider the following conditional score matching loss:
+\begin{align}\label{def:cond-score-loss}
+    \ict
+    \LSM{k}(\theta)= \int_{0}^1 \lambda_t \EE_{X\sim \cD_X\ind{k}, Y\sim \Qd{X}} \EE_{X_t=X+\sigma_t Z}\nrm{ \scf_\theta(X_t,t|Y) +Z }^2 \d t,
+\end{align}
+where $Z\sim \normal{0,\id}$ is the unit noise, and $\lambda_t\geq 0$ is a weight sequence. It is straightforward to verify that, assuming the network $\scf_\theta$ is expressive enough, the minimizer $\theta^\star$ of $\LSM{k}$ satisfies %
+$\scf_{\theta^\star}(x,t|y)=\frac{\cond{X_0}{ X_t=x, Y=y } - x}{\sigma_t^2}$,
+where the conditional expectation is taken with respect to the distribution sampling variables as $X_0\sim \cD_X\ind{k}$, $Y\sim \Qd{X_0}$, $X_t\sim \normal{X_0,\sigma_t^2\id}$. Therefore, as long as the M-step is done successfully, we expect to have $\qm_{\theta\ind{k+1}}(X|Y)\approx \widehat{P}\ind{k}(X|Y)$ (cf. \cref{sec:EM-converge}). %
+
+
+\paragraph{The advantage of conditional diffusion model}
+Unlike approaches that rely on ad hoc approximation schemes for the posterior score function using unconditional diffusion models~\citep{rozet2024learning,bai2024expectation}, our framework directly employs a conditional diffusion model. Both the \emph{data distribution} and the \emph{likelihood function} are implicitly encoded in this model through the minimization of the conditional score matching loss~\eqref{def:cond-score-loss}. In experiments (\cref{sec:experiments}), we observe that DiffEM consistently outperforms EM methods with diffusion priors. As predicted by our theoretical analysis (\cref{sec:EM-converge}), this improvement is largely due to the fact that conditional models avoid the approximation bottleneck inherent in heuristic posterior sampling schemes.  
+
+
+
+
+\paragraph{Output: Posterior sampler $\theta\ind{K}$ and diffusion prior $\hth$} 
+Our framework is designed to address two complementary goals: (1) posterior sampling and (2) \textcolor{black}{unconditional generation} (cf. \cref{sec:prelim}). The conditional diffusion model trained by DiffEM naturally serves as a posterior sampler. For \textcolor{black}{unconditional generation}, we leverage the reconstructed dataset $\cD_X\ind{K-1}$ generated during the final EM iteration, and train an unconditional diffusion prior on this dataset. In particular, when the target application requires only a diffusion prior~\citep{daras2023ambient,rozet2024learning,bai2024expectation}, we may directly use $\hth$. In such cases, the conditional model adopted by our approach primarily serves as a means to accelerate EM convergence.
+
+
+
+
+
+\newcommand{\Ni}{T_{\sf init}}
+\newcommand{\Nf}{T_{\sf ft}}
+\newcommand{\Nu}{T_{\sf u}}
+
+\paragraph{Computational efficiency of DiffEM}
+The computational cost of DiffEM can be decomposed as
+\begin{align}\label{eq:comp-cost}
+    \text{Total Time}=\Ni+K\cdot \Nf+\Nu,
+\end{align}
+where
+$K$ is the number of EM iterations, 
+$\Ni$ is the time of training a standard conditional diffusion model from scratch, 
+$\Nf\leq \Ni$ is the average time of \emph{fine-tuning} the conditional diffusion model for each M-step,
+and $\Nu$ is the cost of training an unconditional model to output. The cost $\Ni\geq \Nf$ of training diffusion model is intrinsic to diffusion-based learning methods. Thus, DiffEM can be interpreted as increasing the training cost by a multiplicative factor of $K$ (the number of EM iterations), which we view as the \emph{unavoidable} cost of working with only corrupted data. 
+
+In general, the computational cost of EM-based methods~\citep{rozet2024learning,bai2024expectation} can always be decomposed as \cref{eq:comp-cost}. In our experiments, we compare the computation time $K$, $\Ni$, and $\Nf$ of DiffEM and EM-MMPS in CIFAR-10 experiments (\cref{tab:comp-cost}).
+
+
+
+
+
+
+
+
+
+
+
+
+\section{Monotonic Improvement Property and Convergence}\label{sec:EM-converge}
+
+
+\newcommand{\epsx}{\widetilde{\varepsilon}_{\sf SM}}
+\newcommand{\epskl}{\varepsilon_{\sf SM}}
+\newcommand{\Post}{P}
+
+In this section, we analyze the convergence properties of the EM iteration. As observed by \citet{aubin2022mirror}, when the iteration \eqref{eq:latent-EM-prior} is \emph{exact}, i.e., when the sample size is infinite and the conditional model $\qm_{\theta\ind{k+1}}$ learns the mixture posterior exactly in each M-step, the EM iteration is equivalent to \emph{mirror descent} in the space of measures. Therefore, the convergence of the \emph{exact} EM iteration follows immediately from the guarantees of mirror descent. 
+
+We study the DiffEM iteration, taking the \emph{score-matching error} introduced by the M-step into account. 
+{For simplicity, we analyze the EM iteration with \emph{fresh} corrupted samples. Specifically, we consider the variant of \cref{alg:EM} where, at each iteration $k=0,1,\cdots,K-1$, a new dataset of corrupted observations $\cD_Y\ind{k}=\crl*{Y\sid{1},\cdots,Y\sid{N}}\sim \Pys$ is drawn in the E-step. We continue to refer to this procedure as DiffEM throughout this section. 
+
+Under this variant, for each $k$, the reconstructed dataset $\cD_X\ind{k}=\set{X\sid{1},\cdots,X\sid{N}}$ consists of i.i.d samples from the posterior mixture distribution $\pi\ind{k}=\EE_{Y\sim\Pys}[\qm_{\theta\ind{k}}(\cdot|Y)]$. 
+We let $\Post\ind{k}$ be the joint probability distribution of $(X,Y)$ under $X\sim \pi\ind{k}, Y\sim\Qd{X}$, and write $\piy\ind{k}$ for the marginal of $Y$.} The convergence is measured in terms of $\KLd{ \Pys }{ \piy\ind{k} }$, the Kullback-Leibler (KL) divergence between the true observation distribution $\Pys$ and the distribution $\piy\ind{k}$. %
+Intuitively, this measures how plausible the prior $\pi\ind{k}$ is by comparing the induced observation distribution $\piy\ind{k}$ to $\Pys$.  \footnote{Here, the convergence is not measured as the divergence between the data distribution $\Pxs$ and $\pi\ind{k}$ because in general, the problem~\eqref{eq:Y-dist} might not be \emph{identifiable}, i.e., there can exist a distribution $P_X'\neq \Pxs$ that induces the same observation distribution $\Qp{P_X'}=\Pys$. Therefore, convergence of the data distribution can only be obtained under the additional assumption of \emph{identifiability} (cf. \cref{asmp:RSI}). }
+
+\paragraph{Score-matching error}
+We define the \emph{score-matching error} of the $k$th M-step as
+\begin{align*}
+    \epskl\ind{k}\defeq \EE_{Y\sim \Pys} \KLd{ \qmk{k+1}(\cdot|Y) }{ \Post\ind{k}(\cdot|Y) },
+\end{align*}
+which measures the KL divergence between the conditional diffusion model $\qmk{k+1}$ learned in the $k$th M-step and the true posterior $\Post\ind{k}(\cdot|Y)$. This error can be decomposed into two components: (1) the error of the learned score function, which is the statistical error of score matching~\eqref{def:cond-score-loss} with a finite sample size, and (2) the sampling error, which comes from the discretized backward diffusion process~\eqref{eqn:cond-diffusion-process-rev} starting from a noisy Gaussian. When the denoiser network is sufficiently expressive, the score matching error can be upper bounded through statistical learning theory~\citep[etc.]{dou2024optimal,zhang2024minimax,wibisono2024optimal,chen2024learning,gatmiry2024learning}. The sampling error is addressed by existing work on backward diffusion sampling \citep[see e.g.,][]{chen2022sampling,conforti2023score, conforti2025kl}). Therefore, under appropriate conditions, it can be shown that the score-matching error $\epskl\ind{k}\to 0$ as the sample size $N$ increases.
+
+
+\paragraph{Monotonicity of EM}
+Our first result (shown in~\cref{appendix:proof of lem:EM-improve}) is the following approximate \emph{monotonicity} property of the EM iteration in terms of the statistical error $\epskl\ind{k}$.
+\begin{lemma}[Monotonic improvement]\label{lem:EM-improve}
+For any $k\geq 0$, it holds that
+\begin{align*}
+    \underbrace{ \KLd{ \Pys }{ \piy\ind{k+1} } }_{\text{error of prior $\pi\ind{k+1}$}}
+    \leq \underbrace{ \KLd{ \Pys }{ \piy\ind{k} } }_{\text{error of prior $\pi\ind{k}$}}- \underbrace{ \KLd{ \pi\ind{k+1} }{ \pi\ind{k} } }_{ \text{difference between priors} }+ \underbrace{ \epskl\ind{k} }_{ \text{score-matching error of }\qmk{k+1} }.
+\end{align*}
+\end{lemma}
+\vspace{-10pt}
+Therefore, when the statistical error $\epskl\ind{k}\to 0$, the divergence $\KLd{ \Pys }{ \piy\ind{k} }$ is monotonically decreasing. In other words, in the EM iteration, the observation distribution induced by prior $\pi\ind{k+1}$ is always closer to $\Pys$ compared to the observation distribution induced $\pi\ind{k}$, modulo the score-matching error $\epskl\ind{k}$. In \cref{ssec:CIFAR-improve}, we corroborate this property in experiments, showing that DiffEM can improve upon the learned prior produced by EM-MMPS~\citep{rozet2024learning}. 
+
+\paragraph{Convergence rate} Beyond monotonicity, we show that the EM iteration enjoys a convergence rate guarantee. However, this guarantee requires that the conditional model achieves small approximation error measured in the latent space. Specifically, for each $k\geq 0$, we define the error
+\begin{align*}
+    \ict
+    \epsx\ind{k}
+    =\EE_{(X,Y)\sim \Ps}\brk*{\log\frac{\Post\ind{k}(X|Y)}{\qmk{k+1}(X|Y)}},
+\end{align*}
+which measures the closeness of the posterior likelihoods computed under $\Post\ind{k}$ and $\qmk{k+1}$ with respect to samples $(X,Y)\sim \Ps$.
+The error $\epsx\ind{k}$ can be larger than the $\epskl\ind{k}$ since it is measured under the unknown prior distribution $\Pxs$. Nevertheless, we show that $\epsx\ind{k}$ can be related to $\epskl\ind{k}$ under appropriate assumptions (detailed in \cref{appdx:X-to-KL}). Below, we state the convergence guarantee of the EM iteration. The proof is in~\cref{appdx:converge}.
+\begin{proposition}[Convergence of EM iteration]\label{prop:EM-converge}
+For each $K\geq 0$, we have
+\begin{align*}
+    \ict
+    \min_{k\leq K} \KLd{ \Pys }{ \piy\ind{k} }\leq \frac{1}{K+1}\sum_{i=0}^K \KLd{ \Pys }{ \piy\ind{k} }\leq \frac{\KLd{ \Pxs }{ \pi\ind{0} }}{ K+1 } + \max_{k\leq K} \epsx\ind{k}.
+\end{align*}
+\end{proposition}
+\vspace{-5pt}
+Therefore, as the number of EM iterations increases, $\piy\ind{k}$ converges to $\Pys$ at the rate of $\frac{1}{k}$, up to the statistical error $\epsx\ind{k}$. Furthermore, we can also derive the following last-iterate convergence by invoking \cref{lem:EM-improve}:
+\begin{align*}
+    \ict
+    \KLd{ \Pys }{ \piy\ind{K} }\leq \frac{\KLd{ \Pxs }{ \pi\ind{0} }}{ K+1 } + \max_{k\leq K} \epsx\ind{k}+\sum_{k=0}^{K} \epskl\ind{k}, \qquad \forall K\geq 0.
+\end{align*}
+Given that each EM update is computationally expensive, the above convergence rate is most relevant in the regime where $\KLd{ \Pxs }{ \pi\ind{0} }\leqsim 1$, i.e., where the initial diffusion model provides a prior that is not too far from the ground-truth $\Pxs$. Such a \emph{warm start} model can be trained using existing methods~\citep{daras2023ambient} that are computationally cheaper.
+
+\paragraph{Stronger convergence under identifiability}
+Under the assumption that the latent variable problem \eqref{eq:Y-dist} is \emph{identifiable}, we show that EM achieves \emph{linear} convergence in terms of $\KLd{ \Pxs }{ \pi\ind{k} }$. %
+\begin{assumption}[Identifiability]\label{asmp:RSI}
+    There exists parameter $\kappa\geq 1, R\geq 0$ such that for any distribution $P(x)$ with $\KLd{\Pxs}{P}\leq R$, it holds that
+\begin{align*}
+    \KLd{\Pxs}{P}\leq \kappa\cdot \KLd{\Pys}{\Qp{P}},
+\end{align*}
+where $\Qp{P}$ is the distribution of $Y$ under $X\sim P, Y\sim \Qd{X}$.
+\end{assumption}
+In other words, \cref{asmp:RSI} requires that for any prior $P$ whose induced observation distribution $\Qp{P}$ is close to $\Pys$, $P$ itself must be close to the true data distribution $\Pxs$. Intuitively, \cref{asmp:RSI} quantifies the \emph{identifiability} of the latent variable problem \eqref{eq:Y-dist}. We show the following in~\cref{appendix:proof of prop:EM-linear}.
+\begin{proposition}[Linear convergence of EM]\label{prop:EM-linear}
+Suppose that \cref{asmp:RSI} holds, $\KLd{ \Pxs }{ \pi\ind{0} }\leq R$, and $\epsx\ind{k}\leq \frac{R}{\kappa}$ for each $k\geq 0$. Then it holds that
+\begin{align*}
+    \ict
+    \KLd{ \Pxs }{ \pi\ind{K} }\leq \exp\paren{-\frac{K}{\kappa+1}}\cdot \KLd{ \Pxs }{ \pi\ind{0} }+(\kappa+1)\max_k \epsx\ind{k}.
+\end{align*}
+\end{proposition}
+
+
+
+
+\section{Experiments}\label{sec:experiments}
+
+We evaluate the proposed method, DiffEM, through a series of experiments. We begin with a synthetic manifold learning task (\cref{sec:curve}), where we show that the conditional diffusion model yields more accurate posterior samples than existing approximate posterior sampling schemes~\citep{rozet2024learning}. We then conduct \textcolor{black}{distributional learning and} image reconstruction experiments on CIFAR-10 (\cref{ssec:cifar-10}) and CelebA (\cref{ssec:celebA}), demonstrating that DiffEM outperforms prior approaches for learning diffusion models from corrupted data.
+
+
+
+
+
+
+\subsection{Corrupted CIFAR-10}\label{ssec:cifar-10}
+
+
+\newcommand{\cDrecon}{\cD_{\rm recon}}
+\newcommand{\DMuncond}{p_{\theta_{\rm uncond}}}
+\newcommand{\ISc}{IS $\uparrow$}
+\newcommand{\FIDc}{FID $\downarrow$}
+\newcommand{\DINO}{FD$_{\rm DINOv2}$}
+\newcommand{\FDINF}{FD$_{\infty}$}
+\newcommand{\DINOc}{FD$_{\rm DINOv2}$ $\downarrow$}
+\newcommand{\FDINFc}{FD$_{\infty}$ $\downarrow$}
+
+
+
+
+We next evaluate our method on the CIFAR-10 dataset~\citep{Krizhevsky2009LearningML}, treating the $50000$ training images as samples from the latent distribution $\Pxs$.
+
+\paragraph{Masked corruption}
+Following \citep{daras2023ambient,rozet2024learning}, we consider randomly masking each pixel with probability $\rho$, i.e., the matrix $A\sim \PA$ in \cref{eq:linear-corr} is diagonal with entries independently drawn from Bernoulli$(1-\rho)$. 
+In this setting, the observation is generated as $Y=(AX+\epsilon,A)$, with $A\sim \PA$, $X\sim \Pxs$, $\epsilon\sim \normal{0,\sigy^2\id}$. 
+In  other words, each image is corrupted by (1) first randomly deleting every pixel independently with probability $\rho$, and then (2) adding isotropic Gaussian noise with variance $\sigy^2$.
+
+In our experiments, we set $\rho=0.75$, $\sigy^2=10^{-6}$, i.e., each image has $75\%$ of the pixels deleted and is corrupted by negligible Gaussian noise. We also perform experiments with corruption level $\rho = 0.9$ and report the results in \cref{tab:cifar-90-results}. 
+
+\paragraph{Experiment setup}
+Our conditional diffusion model $\qm_{\theta}(x|y)$ is parametrized by a denoiser network $d_\theta(x_t, t, y)$ with U-net architecture. 
+We train the model for $21$ DiffEM iterations, initializing with a Gaussian prior (detailed in \cref{app:experiments}). For each iteration, we train the denoiser network with conditional score matching~\eqref{def:cond-score-loss} to learn the conditional mean $\E[X_0|X_t, Y]$.
+We then compare DiffEM to prior methods~\citep{daras2023ambient,rozet2024learning} under the following evaluation metrics, which correspond to the \emph{posterior sampling} task and \emph{\textcolor{black}{unconditional generation}} task (cf. \cref{sec:prelim}). 
+
+\paragraph{Eval 1: Posterior sampling performance}
+The final model returned by DiffEM is a \emph{conditional diffusion model}, i.e., given any corrupted observation $Y$, the model samples a reconstructed image $X\sim q_\theta(\cdot|Y)$. Therefore, to evaluate the performance of posterior sampling, for each observation $Y\sid{i}$ in our dataset, we use the trained model to generate a reconstructed image $X\sid{i}\sim q_{\theta}(\cdot|Y\sid{i})$ and obtain the reconstructed dataset $\cDrecon=\set{X\sid{1},\cdots,X\sid{50000}}$ (similar to the E-step of \cref{alg:EM}). 
+We then evaluate the quality of $\cDrecon$ by computing the Inception Score (IS) \citep{salimans2016improvedtechniquestraininggans} and the Fréchet distance to the uncorrupted dataset in various representation spaces\footnote{
+    The Fréchet distance measures discrepancies at the \emph{distributional} level. Under severe corruption ($75\%$ of pixels deleted), the posterior distribution $\Ps_{X|Y}$ may not concentrate around a single ground-truth. As a result, classical reconstruction metrics such as PSNR and LPIPS are less appropriate in this setting~\citep{rozet2024learning}.
+} to obtain the metrics FID \citep{NIPS2017_8a1d6947}, \DINO~\citep{oquab2023dinov2,stein2023exposing}, and \FDINF~\citep{chong2020effectively}. The results are reported in \cref{tab:Masking-results-merged}. \textcolor{black}{Furthermore, we evaluate Precision, Coverage, Recall, and Density following (\citet{stein2023exposing}). The results are provided in Table~\ref{tab:additional-evals}.}
+
+\paragraph{Eval 2: \textcolor{black}{Unconditional generation} performance}
+We also note that the models trained by existing works~\citep{daras2023ambient,rozet2024learning,bai2024expectation} are \emph{unconditional} diffusion models, which can be regarded as the reconstruction of the ground-truth data distribution $P_X$. In DiffEM, the reconstructed data distribution is implicitly described by the conditional diffusion model $q_\theta$.
+Therefore, to evaluate the data distribution recovered by DiffEM, we use the reconstructed dataset $\cDrecon$ to train a new (unconditional) diffusion model $\DMuncond$, which learns to sample from the data distribution induced by $\qm_\theta$. \textcolor{black}{We then evaluate the metrics (IS, FID, \FDINF, \DINO, Precision, Recall, Density, Coverage) of the model $\DMuncond$ as our performance on the \emph{\textcolor{black}{unconditional generation}} task. We report the metrics in \cref{tab:Masking-results-merged} and \cref{tab:additional-evals}.}
+
+\paragraph{Discussion and comparison}
+We compare DiffEM to Ambient-Diffusion~\citep{daras2023ambient}\footnote{We note that the Ambient-Diffusion model was trained on a dataset with corruption level $\rho'=0.6$, an easier setting than ours ($\rho=0.75$). } and EM-MMPS~\citep{rozet2024learning} under the above metrics in \cref{tab:Masking-results-merged} (higher IS and lower
+FID/FD scores indicate better performance) and \cref{tab:additional-evals} (higher recall, precision and coverage indicates better performance). 
+To evaluate the diffusion prior trained by these baselines, we apply their approximate posterior sampling scheme and report the metrics evaluated on the reconstructed dataset. 
+Under all four metrics, the diffusion models trained by DiffEM outperform both Ambient-Diffusion and EM-MMPS, demonstrating the power of our pipeline.\footnote{
+    We note that \citet{bai2024expectation} proposed EM-Diffusion and reported FID score $21.08$ (corruption level $\rho'=0.6$ and initialized with a diffusion prior trained on 50 clean images). However, we cannot reproduce their experiments to evaluate other metrics. Given that EM-MMPS~\citep{rozet2024learning} achieves a much better FID score than EM-Diffusion~\citep{bai2024expectation}, we believe it is sufficient to compare DiffEM to EM-MMPS.
+} 
+\cref{fig:Masked-CIFAR-pictures} shows qualitative results comparing the corrupted observations and reconstructions from our model.
+
+\textcolor{black}{We also compare the computational cost of DiffEM and EM-MMPS in \cref{tab:comp-cost} and in the \cref{fig:performance_vs_compute} following our discussion in \cref{sec:cond-DM}.}
+
+
+\subsubsection{DiffEM with warm-start}\label{ssec:CIFAR-improve}
+
+Additionally, we perform experiments on the masked CIFAR-10 dataset with \emph{warm-started} DiffEM. %
+Specifically, we take the diffusion prior trained by 32 iterations of EM-MMPS~\citep{rozet2024learning}, and perform 10 DiffEM iterations starting from this prior. We evaluate the final posterior sampling performance and \textcolor{black}{unconditional generation} quality (reported in \cref{tab:Masking-results-merged} and \cref{tab:additional-evals}). 
+
+The results show that using a high-quality initial prior accelerates the convergence of DiffEM: only 10 DiffEM iterations are needed. This observation is consistent with our theoretical results (\cref{sec:EM-converge}). Furthermore, warm-started DiffEM outperforms DiffEM with an initial Gaussian prior in terms of the scores \DINO~and \FDINF, indicating that DiffEM can converge to a better distribution when starting from an informed prior.\footnote{However, it is worth noting that warm-started DiffEM is computationally more expensive, as the warm-start prior requires training with 32 iterations of EM-MMPS.}
+We also plot the evolution of the IS, FID, DINO, and FD$_\infty$~scores in \cref{fig:cifar-monotonic-improvement}, which corroborates the monotonic improvement property of DiffEM (\cref{lem:EM-improve}). 
+
+\newcommand{\sigblur}{\sigma_{\rm kernel}}
+\newcommand{\deconv}{Richardson-Lucy deconvolution}
+
+\subsubsection{Additional experiment: CIFAR-10 under Gaussian blur}\label{ssec:CIFAR-blurred}
+
+In addition to the masked corruption experiment, we perform experiments on the \emph{blurred CIFAR-10} dataset.
+In the Gaussian blur model, each observation $Y\sim \normal{AX,\sigy^2}$ is generated by applying a Gaussian blur kernel on $X$ with standard deviation $\sigblur$ (represented by the matrix $A$), and then adding isotropic Gaussian noise $\epsilon\sim \normal{0,\sigy^2\id}$. In the experiment, we set $\sigblur=2$ and $\sigy^2=10^{-6}$ and follow the same training procedure as in the masked CIFAR-10 experiment (details in \cref{appdx:CIFAR-10-masking}). 
+
+\subsection{Corrupted CelebA}\label{ssec:celebA}
+
+We perform experiments on the CelebA dataset~\citep{liu2018large}, with images cropped to $64\times64$ pixels following \citep{wang2023patch,daras2023ambient}.
+We consider the setting in \cref{ssec:cifar-10} with masking probability $\rho\in\{0.5,0.75\}$ and noise level $\sigy^2=0$, i.e., the corruption level is moderate. We initialize the first iteration for DiffEM with the Gaussian prior (cf. \cref{app:experiments}).
+We evaluate the diffusion models trained by DiffEM following the protocol of \cref{ssec:cifar-10} (\cref{tab:celebA-results}). 
+As shown in \cref{tab:celebA-results}, DiffEM significantly outperforms EM-MMPS. 
+We also present sample reconstructed images in \cref{fig:CelebA-pictures} and an illustration of the pipeline in \cref{fig:celeba_data}.
+
+\arxiv{
+
+\section*{Acknowledgments}
+
+This research has been supported by NSF Awards CCF-1901292, ONR grants N00014-25-1-2116,  N00014-25-1-2296, a Simons Investigator Award, and the Simons Collaboration on the Theory of Algorithmic Fairness.
+FC acknowledges support from ARO through award W911NF-21-1-0328, Simons Foundation and the NSF through awards DMS-2031883 and PHY-2019786, and DARPA AIQ award.
+
+}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+
+\clearpage
+\appendix
+
+\iclr{
+\section{Related work}\label{sec:related-work}
+
+\input{related_work.tex}
+}
+
+
+\newpage
+
+\section{Proofs from \cref{sec:EM-converge}}
+
+\subsection{Proof of \cref{lem:EM-improve}} \label{appendix:proof of lem:EM-improve}
+
+Note that
+\begin{align*}
+    \KLd{ \Pys }{ \piy\ind{k} } - \KLd{ \Pys }{ \piy\ind{k+1} }
+    =&~ \EE_{Y\sim \Pys} \log \frac{\piy\ind{k+1}(Y)}{\piy\ind{k}(Y)}.
+\end{align*}
+By definition and Bayes' rule,
+\begin{align*}
+    \piy\ind{k+1}(y)=&~ \int \Qxy{y}{x} \pi\ind{k+1}(x) \d x 
+    =\int \Qxy{y}{x} \pi\ind{k}(x) \cdot \frac{\pi\ind{k+1}(x)}{\pi\ind{k}(x)} \d x \\
+    =&~ \int \Post\ind{k}(x,y)\cdot \frac{\pi\ind{k+1}(x)}{\pi\ind{k}(x)} \d x \\
+    =&~ \int \piy\ind{k}(y)\cdot \Post\ind{k}(x|y)\cdot \frac{\pi\ind{k+1}(x)}{\pi\ind{k}(x)} \d x \\
+    =&~ \piy\ind{k}(y) \cdot \EE_{X\sim \qmk{k+1}(\cdot|y)} \brac{\frac{\Post\ind{k}(X|y)}{\qmk{k+1}(X|y)}\cdot \frac{\pi\ind{k+1}(X)}{\pi\ind{k}(X)}}.
+\end{align*}
+Therefore, by Jensen's inequality, we have
+\begin{align*}
+    &~\KLd{ \Pys }{ \piy\ind{k} } - \KLd{ \Pys }{ \piy\ind{k+1} } \\
+    =&~ \EE_{Y\sim \Pys} \log \frac{\piy\ind{k+1}(Y)}{\piy\ind{k}(Y)} \\
+    =&~ \EE_{Y\sim \Pys} \log \EE_{X\sim \qmk{k+1}(\cdot|Y)} \brac{\frac{\pi\ind{k}(X|Y)}{\qmk{k+1}(X|Y)}\cdot \frac{\pi\ind{k+1}(X)}{\pi\ind{k}(X)}} \\
+    \geq&~ \EE_{Y\sim \Pys}\EE_{X\sim \qmk{k+1}(\cdot|Y)}  \brac{\log\paren{\frac{\Post\ind{k}(X|Y)}{\qmk{k+1}(X|Y)}\cdot \frac{\pi\ind{k+1}(X)}{\pi\ind{k}(X)}}} \\
+    =&~ \EE_{Y\sim \Pys}\EE_{X\sim \qmk{k+1}(\cdot|Y)} \log \frac{\pi\ind{k+1}(X)}{\pi\ind{k}(X)} - \EE_{Y\sim \Pys}\EE_{X\sim \qmk{k+1}(\cdot|Y)}  \log\frac{\qmk{k+1}(X|Y)}{\Post\ind{k}(X|Y)}\\
+    =&~ \KLd{ \pi\ind{k+1} }{ \pi\ind{k} } - \EE_{Y\sim \Pys} \KLd{ \qmk{k+1}(\cdot|Y) }{ \Post\ind{k}(\cdot|Y) }.
+\end{align*}
+Rearranging the terms completes the proof.
+\qed
+
+\subsection{Proof of \cref{prop:EM-converge}}\label{appdx:converge}
+We first show that: For each $k\geq 0$, it holds that
+\begin{align*}
+    \KLd{ \Pys }{ \piy\ind{k+1} }\leq \KLd{ \Pxs }{ \pi\ind{k} }-\KLd{ \Pxs }{ \pi\ind{k+1} }+\epsx\ind{k}.
+\end{align*}
+
+To simplify the presentation, we define $\tpi\ind{k+1}(x)=\EE_{Y\sim \Pys} \Post\ind{k}(x|Y).$
+Then, by definition, we have
+\begin{align*}
+    \tpi\ind{k+1}(x)
+    =&~ \EE_{Y\sim\Pys} \Post\ind{k}(x|Y) \\
+    =&~ \EE_{Y\sim\Pys} \brac{ \frac{\pi\ind{k}(x) \Qxy{Y}{x} }{ \piy\ind{k}(Y) }  } \\
+    =&~ \pi\ind{k}(x) \cdot \EE_{Y\sim \Qd{x}} \brac{ \frac{ \Pys(Y) }{ \piy\ind{k}(Y) }  }.
+\end{align*}
+Therefore, it follows that
+\begin{align*}
+    \KLd{ \Pxs }{ \pi\ind{k} } - \KLd{ \Pxs }{ \tpi\ind{k+1} }
+    =&~ \EE_{X\sim \Pxs} \log \frac{\tpi\ind{k+1}(X)}{\pi\ind{k}(X)} \\
+    =&~ \EE_{X\sim \Pxs} \log \EE_{Y\sim \Qd{x}} \brac{ \frac{ \Pys(Y) }{ \piy\ind{k}(Y) } } \\
+    \geq&~ \EE_{X\sim \Pxs} \EE_{Y\sim \Qd{x}} \brac{ \log \frac{ \Pys(Y) }{ \piy\ind{k}(Y) }   } \\
+    =&~ \EE_{Y\sim \Pys} \brac{ \log \frac{ \Pys(Y) }{ \piy\ind{k}(Y) }   }
+    = \KLd{ \Pys }{ \piy\ind{k} }.
+\end{align*}
+Furthermore, we have
+\begin{align*}
+    &~\KLd{ \Pxs }{ \pi\ind{k+1} }-\KLd{ \Pxs }{ \tpi\ind{k+1} } \\
+    =&~ \EE_{X\sim \Pxs} \brac{ \log\tpi\ind{k+1}(X)-\log\pi\ind{k+1}(X) } \\
+    =&~ \EE_{X\sim \Pxs} \brk*{ \log\EE_{Y\sim \Pys}[ \Post\ind{k}(X|Y) ] - \log\EE_{Y\sim \Pys} [ \qmk{k+1}(X|Y) ] } \\
+    \leq&~ \EE_{(X,Y)\sim \Pxs}\brk*{\log\frac{\Post\ind{k}(X|Y)}{\qmk{k+1}(X|Y)}}
+    =\epsx\ind{k}.
+\end{align*}
+Combining the above equations, we have shown that
+\begin{align*}
+    \KLd{ \Pys }{ \piy\ind{k} }\leq \KLd{ \Pxs }{ \pi\ind{k} }-\KLd{ \Pxs }{ \pi\ind{k+1} }+\epsx\ind{k}.
+\end{align*}
+This is the desired upper bound. Taking the summation over $k=0,1,\cdots,K$ completes the proof. For the last-iterate convergence rate, we only need to use the fact that $\KLd{ \Pys }{ \piy\ind{k} }\leq \KLd{ \Pys }{ \piy\ind{K} }+\sum_{\ell=k}^{K}\epskl\ind{\ell}$ (by \cref{lem:EM-improve}).
+\qed
+
+
+\subsection{Proof of \cref{prop:EM-linear}} \label{appendix:proof of prop:EM-linear}
+
+By \cref{prop:EM-converge}, we have
+\begin{align*}
+    \KLd{ \Pxs }{ \pi\ind{k+1} }+\KLd{ \Pys }{ \piy\ind{k+1} }\leq \KLd{ \Pxs }{ \pi\ind{k} }+\epsx\ind{k}.
+\end{align*}
+Using \cref{asmp:RSI}, we know that as long as $\KLd{ \Pxs }{ \pi\ind{k} }\leq R$, we have
+\begin{align*}
+    (1+\kappa^{-1}) \KLd{ \Pxs }{ \pi\ind{k+1} } \leq \KLd{ \Pxs }{ \pi\ind{k} }+\epsx\ind{k}.
+\end{align*}
+Denote $\epsx=\max_k \epsx\ind{k}$.
+Therefore, using the fact that $\epsx\ind{k}\leq \epsx\leq \frac{R}{\kappa}$, we can show by induction that $\KLd{ \Pxs }{ \pi\ind{k} }\leq R$ for each $k\geq 0$, and hence
+\begin{align*}
+    (1+\kappa^{-1}) \KLd{ \Pxs }{ \pi\ind{k+1} } \leq \KLd{ \Pxs }{ \pi\ind{k} }+\epsx.
+\end{align*}
+Applying this inequality recursively, we obtain
+\begin{align*}
+    \KLd{ \Pxs }{ \pi\ind{k} }\leq&~ \frac{\kappa}{1+\kappa} \KLd{ \Pxs }{ \pi\ind{k-1} } +\epsx \\
+    \leq&~ \paren{\frac{\kappa}{1+\kappa}}^2 \KLd{ \Pxs }{ \pi\ind{k-2} } +\paren{\frac{\kappa}{1+\kappa}}\epsx +\epsx \\
+    \leq&~ \cdots \\
+    \leq&~ \paren{\frac{\kappa}{1+\kappa}}^k \KLd{ \Pxs }{ \pi\ind{0} } + \sum_{i=0}^{k-1} \paren{\frac{\kappa}{1+\kappa}}^{k-1-i}\epsx \\
+    \leq&~ e^{-k/(\kappa+1)} \KLd{ \Pxs }{ \pi\ind{0} } +(1+\kappa)\epsx,
+\end{align*}
+where the last inequality follows from $\frac{\kappa}{1+\kappa}=1-\frac{1}{1+\kappa}\leq \exp\paren{-\frac{1}{1+\kappa}}$.
+\qed
+
+
+\subsection{Relation between the Score-Matching errors}\label{appdx:X-to-KL}
+
+In this section, we provide the following upper bound for $\epsx\ind{k}$ in terms of $\epskl\ind{k}$. Recall that $\epsx\ind{k}$ is defined as
+\begin{align*}
+    \epsx\ind{k}
+    =\EE_{(X,Y)\sim \Ps}\brk*{\log\frac{\Post\ind{k}(X|Y)}{\qmk{k+1}(X|Y)}},
+\end{align*}
+
+\begin{proposition}\label{prop:epsx-to-kl}
+Suppose that $\EE_{Y\sim \Pys}\chis{\Ps(\cdot|Y)}{\qmk{k+1}(\cdot|Y)}\leq C<+\infty$. Then it holds that $\epsx\ind{k}\leq 2\sqrt{(C+1)\epskl\ind{k}}$.
+\end{proposition}
+
+
+\begin{proof}[Proof of \cref{prop:epsx-to-kl}]
+By definition,
+\begin{align*}
+    \epsx\ind{k}
+    \leq&~ \EE_{(X,Y)\sim \Pxs} \paren{ \log\frac{\Post\ind{k}(X|Y)}{\qmk{k+1}(X|Y)} }_+ \\
+    =&~ \EE_{Y\sim \Pys}\EE_{X\sim \Pxs(\cdot|Y)} \paren{ \log\frac{\Post\ind{k}(X|Y)}{\qmk{k+1}(X|Y)} }_+ \\
+    \leq&~ \EE_{Y\sim \Pys}\sqrt{\prn*{1+\chis{\Ps(\cdot|Y)}{\qmk{k+1}(\cdot|Y)}}\cdot \EE_{X\sim \qmk{k+1}(\cdot|Y)} \paren{ \log\frac{\Post\ind{k}(X|Y)}{\qmk{k+1}(X|Y)}}_+^2 } \\
+    \leq&~ \EE_{Y\sim \Pys}\sqrt{\prn*{1+\chis{\Ps(\cdot|Y)}{\qmk{k+1}(\cdot|Y)}}\cdot 4\KLd{\qmk{k+1}(\cdot|Y)}{\Post\ind{k}(\cdot|Y)} } \\
+    \leq&~ 2\sqrt{ (C+1)\epskl\ind{k} },
+\end{align*}
+where we apply \cref{lem:KL+-to-KL}. 
+This yields the desired upper bound.
+\end{proof}
+
+\begin{lemma}\label{lem:KL+-to-KL}
+For any distributions $P$ and $Q$, it holds that
+\begin{align*}
+    \EE_{X\sim Q}\paren{\log P(X)-\log Q(X)}_{+}^2\leq 4\KLd{Q}{P}.
+\end{align*}
+\end{lemma}
+
+\begin{proof}
+Note that $\log x\leq 2(\sqrt{x}-1)$ for any $x\geq 1$, and hence $(\log x)_+^2\leq 4(\sqrt{x}-1)^2$. Applying this inequality, we have
+\begin{align*}
+    \EE_{X\sim Q}\paren{\log P(X)-\log Q(X)}_{+}^2
+    =&~ \EE_{X\sim Q}\paren{\log \frac{P(X)}{Q(X)}}_{+}^2 \\
+    \leq&~ 4\EE_{X\sim Q}\paren{\sqrt{\frac{P(X)}{Q(X)}}-1}^2=8\DH{P, Q}\leq 4\KLd{Q}{P}.
+\end{align*}
+This is the desired upper bound.
+\end{proof}
+
+
+
+
+\clearpage
+
+\section{Experiment Details}\label{app:experiments}
+
+
+
+
+
+
+
+
+
+
+
+
+
+\paragraph{Parametrization}
+Following \cref{sec:cond-DM}, we adopt the denoiser parametrization $d_\theta(x,t|y)$, and the conditional score function $\scf_\theta$ is thus given by %
+\begin{align*}
+    \scf_\theta(x,t|y)=\frac{d_\theta(x,t|y)-x}{\sigma_t^2}.
+\end{align*}
+Therefore, the score-matching loss defined in \eqref{def:cond-score-loss} can be equivalently written as
+\begin{align}\label{def:cond-score-loss-equiv}
+    \LSM{k}(\theta)= \int_{0}^1 \lambda_t' \EE_{X_0\sim \cD\ind{k}, Y\sim \Qd{X}} \EE_{X_t\sim \normal{X_0, \sigma_t^2\id}}\nrm{ d_\theta(X_t,t|Y)-X_0 }^2 \d t,
+\end{align}
+where $\lambda_t'=\frac{\lambda_t}{\sigma_t^2}$, and $\lambda_t$ is the weight function from \eqref{def:cond-score-loss}. 
+
+In our experiments, we adopt the following noise schedule:
+\begin{align*}
+    \sigma_t^2=\exp\paren{(1-t)\log(\sigma_0)+t\log(\sigma_1)},
+\end{align*}
+where $\sigma_0<\sigma_1$ are appropriate parameters, and the scalar $\sigma_t$ is encoded as a vector embedding. The input to the denoiser network is the concatenation of $X_t$, $Y$, and the vector embedding of the noise $\sigma_t$.
+We also choose $\lambda_t=(\sigma_t^2+1)\cdot f(t;\alpha,\beta)$, where $f(t;\alpha,\beta)$ is the density function of the Beta distribution with parameters $(\alpha,\beta)$. 
+
+For the manifold experiment (\cref{appdx:curve}), we choose $\alpha=3.5, \beta=1.5$, $\sigma_0=10^{-3}, \sigma_1=10^1$. For the remaining experiments, we set $\alpha=\beta=3$, $\sigma_0=10^{-3}, \sigma_1=10^2$.
+
+
+
+
+\paragraph{Initialization}
+As noted in \cref{sec:EM-converge}, the convergence rate of DiffEM depends on the quality of the initial prior $\pi\ind{0}$ through the quantity $\KLd{\Pxs}{\pi\ind{0}}$, i.e., the KL divergence between the ground-truth data distribution $\Pxs$ and the initial $\pi\ind{0}$. Therefore, a better initial prior may lead to faster convergence. In our experiments, we consider the following initialization strategies:
+\begin{enumerate}
+    \item[(a)] \textbf{Corrupted prior:} For \cref{eq:linear-corr}, the observation is $Y=(AX+\epsilon,A)$. When $\dy=\dx$, we can consider the \emph{corrupted prior} $\pi\ind{0}$, which is simply the distribution of $X'=AX+\epsilon$. To sample from $\pi\ind{0}$, we can draw $Y=(AX+\epsilon,A)\sim \Pys$ and set $X'=Y[0:\dy]$. 
+    \item[(b)] \textbf{Gaussian prior:} In general, we can fit a Gaussian prior $\pi\ind{0}=\normal{\mu_X,\Sigma_X}$ using the observations $\set{Y\sid{1},\cdots,Y\sid{N}}\sim \Pys$. 
+    \item[(c)] \textbf{Warm-start:} More generally, we can set $\pi\ind{0}$ to be any pre-trained diffusion prior as the \emph{warm-start} prior. In particular, this can be the diffusion prior trained on corrupted data by existing methods~\citep[etc.]{daras2023ambient,kawar2023gsure,rozet2024learning}.
+\end{enumerate}
+For the experiments (except \cref{ssec:CIFAR-improve}), we adopt initialization strategy (b). Following the implementation in \citep{rozet2024learning}, the Gaussian prior is fitted efficiently through a few closed-form EM iterations. An exception is the experiment on blurred CIFAR-10, where we adopt strategy (a).
+In \cref{ssec:CIFAR-improve}, we perform experiments with strategy (c), applying DiffEM to the warm-start prior trained by EM-MMPS~\citep{rozet2024learning}, demonstrating that DiffEM can monotonically improve upon the initial prior.
+
+
+\subsection{Additional Experiment: Synthetic manifold in $\R ^ 5$}\label{sec:curve}
+
+We evaluate our method's performance on a synthetic problem introduced by \citep{rozet2024learning}. In this setting, the latent space is $\cX=\R^5$, with the latent distribution $\Pxs$ supported on a one-dimensional curve in $\R^5$. The observation $Y=(AX+\epsilon,A)$ is generated through the following steps: (1) sample a latent point $X\sim \Pxs$, (2) sample a corruption matrix $A \in \R^{2 \times 5}\sim \PA$ with rows drawn uniformly from the unit sphere $\mathbb{S}^4$, and (3) add Gaussian noise $\epsilon\sim \normal{0,\sigy^2\id}$.
+
+Following \citet{rozet2024learning}, we apply our method to a dataset of $65536$ independent observations with noise variance $\sigy^2 = 10^{-4}$. Detailed experimental settings are presented in \cref{appdx:curve}. 
+Figure~\ref{fig:curve-2D-compare} illustrates the two-dimensional marginals of the reconstructed latent distribution compared to those obtained by \citep{rozet2024learning}. The results demonstrate that our method achieves better concentration around the ground-truth curve, providing empirical evidence that the conditional diffusion model learns the posterior distribution more accurately than the approximate posterior sampling scheme of \citep{rozet2024learning} (cf. \cref{sec:EM-diffusion-discuss}).
+
+\subsection{More details on the experiment in \cref{sec:curve}}\label{appdx:curve}
+
+
+We implement the denoiser network $d_\theta(x,t|y)$ using a Multi-Layer Perceptron (MLP). The network architecture and training hyperparameters are detailed in Table \ref{tab:architecture-manifold}. 
+
+To quantify the quality of the learned distribution, we compute the Sinkhorn divergence $S_\lambda$ \cite{ramdas2015wassersteinsampletestingrelated} with regularization parameter $\lambda = 10^{-3}$ after each epoch. The Sinkhorn divergence is defined as:
+\begin{align*}
+S_\lambda(\mu,\nu) & := T_\lambda(\mu,\nu) - \frac 12 (T_\lambda(\mu, \mu) + T_\lambda(\nu, \nu)) \\
+T_\lambda(\mu,\nu) & := \min_{\gamma \in \Pi(\mu, \nu)} \int_{(\R^d)^2} \|y-x\|_2^2d\gamma(x,y) + 2 \lambda H(\gamma, \mu \otimes \nu)
+\end{align*}
+We plot the evolution of Sinkhorn divergence over the iterations of DiffEM and EM-MMPS~\citep{rozet2024learning} in \cref{fig:manifold-divergence-comparison}. We also plot the 2D marginals of the distributions reconstructed by DiffEM and EM-MMPS in \cref{fig:manifold-samples-comparison}.
+
+Figure \ref{fig:manifold-divergence-comparison} demonstrates that while EM-MMPS provides effective initialization when the learned distribution is far from the true data distribution, it plateaus quickly and fails to achieve further improvements. This is likely due to the inherent approximation error of the approximate posterior sampling scheme (MMPS). In contrast, DiffEM continues to refine the reconstructed distribution, achieving better concentration around the ground-truth curve.
+
+\subsection{Details of Masked CIFAR-10 (\cref{ssec:cifar-10})}\label{appdx:CIFAR-10-masking}
+
+In this experiment, the conditional denoiser network $d_\theta$ is a U-Net \cite{unet}, and we adopt the same experimental setup as \cite{rozet2024learning} for a fair comparison. The only major difference in the architecture arises from the fact that our model is conditional and thus for the input we need to feed two images $X_t$ with shape $(32,32,3)$ and $Y$ with shape $(32, 32, 3)$ to the model, we concatenate the images on the third dimension and thus the input shape for the model is $(32, 32, 6)$, the output is also $(32,32,6)$ but in the whole training process we ignore the last three channels of the output. The details of network architecture and hyperparameters are presented in \cref{tab:architecture-CIFAR}.
+
+We apply DiffEM with $K=21$ iterations to train our conditional diffusion model and evaluate its performance for the posterior sampling task as described in \cref{ssec:cifar-10}. To evaluate the quality of the reconstructed data distribution, we also train an unconditional diffusion model with the same architecture on the reconstructed data. We compute the Inception Score (IS) \cite{salimans2016improvedtechniquestraininggans} and the Fréchet Inception Distance (FID) \cite{NIPS2017_8a1d6947} using the torch-fidelity package \citep{obukhov2021high}, and \DINO~\citep{oquab2023dinov2,stein2023exposing} and \FDINF~\citep{chong2020effectively} using the codebase from \citep{stein2023exposing}. The results are presented in \cref{tab:Masking-results-merged} and \cref{tab:additional-evals}. We also note that the results of EM-MMPS are obtained with 32 iterations, following the original setup of \citet{rozet2024learning}.
+
+As an illustration, we also plot the evolution of the IS and FID during DiffEM iterations, demonstrating that DiffEM monotonically improves the quality of the reconstructed data distribution, in accordance with our theoretical results (\cref{lem:EM-improve}).
+
+\paragraph{Experiments with higher corruption}
+In addition, we perform experiments on CIFAR-10 with corruption probability $\rho=0.9$ (i.e., $90\%$ of the pixels are randomly deleted) and present the results in \cref{tab:cifar-90-results}. Under such high corruptions, DiffEM also consistently outperforms EM-MMPS~\citep{rozet2024learning}.
+
+\subsection{DiffEM with warm-start}
+
+We plot the evolution of IS, FID, \DINO~and \FDINF~scores during training in \cref{fig:cifar-monotonic-improvement}.
+
+\subsection{Details of Blurred CIFAR-10}\label{appdx:CIFAR-10-blur}
+
+
+
+In the experiment on CIFAR-10 with Gaussian blur, we set $\sigblur=2$ and $\sigy^2=10^{-6}$. We apply DiffEM for $K=21$ iterations, with the same initialization, denoiser network architecture, and hyperparameters as in the masked CIFAR-10 experiment (detailed in \cref{tab:architecture-CIFAR}, \cref{appdx:CIFAR-10-masking}). Due to time constraints, we do not evaluate EM-MMPS~\citep{rozet2024learning}, as the moment-matching steps (based on the conjugate gradient method) are very time-consuming in this setting.
+
+
+
+
+\paragraph{Qualitative study}
+To evaluate the quality of the trained conditional model, we sample a set of blurred images from the CIFAR-10 training set and use the trained model to generate a reconstruction for each image. We present the images in \cref{fig:Blur-CIFAR-pictures}.
+
+
+\paragraph{Quantitative comparison}
+For comparison, we use the Richardson-Lucy deblurring algorithm \cite{Richardson:72} as a baseline, which is a widely used method for image deconvolution. We also plot the evolution of the IS and FID during DiffEM iterations in \cref{fig:cifar-monotonic-improvement-simple}.
+
+\subsection{\textcolor{black}{Corruption Model Mismatch}}\label{sec:model_mismatch}
+\textcolor{black}{
+In many real-world settings, the likelihood function is not known exactly. Instead, one typically works with an estimate $\hat{Q}(\cdot \mid X)$ rather than the true likelihood function $Q(\cdot \mid X)$. Notably, all of our experiments and those in prior work \citep{rozet2024learning, daras2023ambient, daras2025ambientdiffusionomnitraining}, assume access to the exact likelihood function.
+}
+
+\textcolor{black}{
+In this section, we investigate the more realistic scenario in which the data are corrupted by one channel while the model is trained using a misspecified one. Concretely, we use CIFAR-10 and apply random masking with true corruption probability $\rho = 0.75$ to generate the observations. However, during training we assume a mismatched corruption probability $\hat{\rho} = \rho + \Delta$. For $\Delta \in \{-0.1, -0.05, 0, 0.05, 0.1\}$, we train and evaluate DiffEM to study its robustness under corruption-model misspecification. Based on the results shown Figure ~\ref{fig:model_mismatch}, slightly over estimating the corruption probability, which will make the model be trained on a harder task would yield a better result than slightly underestimating the corruption probability.
+}
+
+\subsection{\textcolor{black}{Non-linear Discrete Corruption}}\label{sec:jpeg}
+\textcolor{black}{
+In this section, we investigate a corruption function that is neither linear nor continuous, but instead exhibits inherently discrete behavior. A canonical example of such corruption is JPEG compression. JPEG applies a sequence of nonlinear operations—including blockwise discrete cosine transforms (DCT), quantization, and rounding—which introduce structured, non-Gaussian artifacts that cannot be modeled as additive noise. This setting is especially relevant, as many real-world image pipelines (e.g., internet images, mobile devices, and storage-limited datasets) rely heavily on JPEG or similar codecs.
+}
+
+\textcolor{black}{
+To study the effect of such discrete corruption, we compress and decompress all CIFAR-10 images using JPEG with a quality factor of $0.2$. At this low quality level, the quantization step is extremely aggressive, removing a substantial portion of the high-frequency content and producing severe compression artifacts. In practice, this corruption destroys a significant amount of the original information in the dataset. We train our diffusion models directly on these JPEG-compressed images to evaluate the robustness of our method under realistic, non-smooth likelihood functions that differ significantly from the Gaussian processes assumed in prior work.
+}
+
+\textcolor{black}{The results in Figure~\ref{fig:jpeg_fid} indicate that under this high level of corruption the model converges rapidly and exhibits the MAD (Model Autophagy Disorder) effect much earlier than in our other experiments. Further discussion of MAD is provided in Section~\ref{sec:mad}. Notably, this experiment also shows that MAD can have a pronounced impact: after sufficient EM iterations, performance may degrade significantly, with the model at iteration~21 performing worse (in terms of distributional metrics) than after a single iteration.}
+
+
+\subsection{\textcolor{black}{MAD: Model Autophagy Disorder}}\label{sec:mad}
+
+\textcolor{black}{We consistently observe the MAD effect \citep{alemohammad2023selfconsuminggenerativemodelsmad} across nearly all of our experiments when the EM procedure is continued for sufficiently many iterations. In the case of CIFAR-10 with random masking at corruption level $\rho = 0.75$, evaluating the conditional model after each EM iteration yields the behavior shown in Figure~\ref{fig:cifar-mad-two-metrics}.}
+\textcolor{black}{
+Figure~\cref{fig:jpeg_fid} demonstrates the MAD effect for JPEG corruption under three different compression qualities ($20\%$, $50\%$, and $70\%$). The results suggest that stronger corruption leads to more pronounced MAD behavior. An interesting phenomenon emerges when we relate this observation to the theoretical bound in \cref{prop:EM-linear}. In that bound, the second term is non-decreasing in $K$, while the first term becomes negligible for sufficiently large $K$, as it decays exponentially fast. Under the proposition’s assumption
+\[
+\varepsilon_x^{(k)} \le \frac{R}{\kappa},
+\]
+we obtain the bound
+}
+\textcolor{black}{
+\begin{align*}
+    \ict
+    \KLd{\Pxs}{\pi^{(K)}}
+    \le
+    \exp\!\left(-\frac{K}{\kappa+1}\right) \KLd{\Pxs}{\pi^{(0)}}
+    + \frac{\kappa+1}{\kappa} R.
+\end{align*}
+}
+\textcolor{black}{
+Because $\kappa \ge 1$ (as guaranteed by the identifiability condition in \cref{asmp:RSI}), we have $\frac{\kappa+1}{\kappa} R \le 2R$. Thus, after sufficiently many EM iterations, the model cannot drift arbitrarily far from the true distribution: once it reaches a distance larger than $2R$, it is forced to move back with an exponential rate. Indeed, \cref{fig:jpeg_fid} shows that under \emph{reasonable} corruption levels, the MAD effect is always present but remains well-controlled.
+}
+
+\textcolor{black}{
+However, when the corruption becomes very severe (e.g., JPEG quality $20\%$), the model can diverge significantly after many EM iterations. This is expected, because in such regimes the identifiability assumption no longer holds due to substantial information loss introduced by the corruption channel. In summary, the MAD effect always appears, but under moderate corruption—where identifiability is valid—it remains controlled. For high corruption levels, where the corruption channel destroys too much information, no theoretical guarantees prevent the MAD effect from becoming extreme.
+}
+
+\subsection{\textcolor{black}{Analysis of Discretization Error}}
+
+\textcolor{black}{In Section~\ref{sec:EM-converge}, we decomposed the score-matching error $\varepsilon_{\mathrm{KL}}^{(k)}$ into a discretization error and a learning error. In this section, we examine how the model's performance varies under different discretization choices. We train on randomly masked CIFAR-10 with corruption probability $\rho = 0.75$, and for discretization step counts $N \in \{64, 128, 256, 512\}$ we train the model and evaluate it after each EM iteration. The resulting performance curves are shown in Figure~\ref{fig:discretization_analysis}.
+}
+
+\textcolor{black}{
+We observe that in the beginning iterations there is a large performance gap and then it closes to a smaller gap. We decomposed the score-matching error $\varepsilon_{\mathrm{KL}}^{(k)}$ into a discretization error and a learning error. In the beginning iterations the learning error is high and is causing the large gaps and when the learning error is decreased we could see the discretization error causing the gaps in performances.
+}
+
+
+\subsection{\textcolor{black}{Masking $+$ Gaussian Noise Corruption}}\label{sec:maskandnoise}
+
+\textcolor{black}{We also evaluate our method under a mixed corruption model combining masking with additive Gaussian noise. Specifically, we run the CIFAR-10 experiment with a masking probability of $\rho = 0.5$, which is milder than the high-corruption setting $\rho = 0.75$, and additionally add Gaussian noise with standard deviation $\sigma = 0.2$. The resulting likelihood function is
+\[
+Q(Y \mid X) = A \bigl( X + \sigma Z \bigr),
+\quad Z \sim \mathcal{N}(0, I), \quad A_{ij} \sim \mathrm{Ber}(0.75),
+\]
+where $A$ denotes the random masking matrix. Qualitative samples are shown in Figure~\ref{fig:samples_Asimga02}, and the evolution of evaluation metrics across EM iterations is presented in Figure~\ref{fig:fid_Asimga02}.
+}
+
+\subsection{Masked CelebA}
+
+As a demonstration, we sample seven masked images from the CelebA training set under the $75\%$ corruption setting. Using the trained model, we generate reconstructions for each image after the $1^{\text{st}}$, $2^{\text{nd}}$, $4^{\text{th}}$, $8^{\text{th}}$, and $16^{\text{th}}$ iterations. The results are shown in \cref{fig:CelebA-pictures}.
+
+The denoiser architecture is detailed in \cref{tab:architecture-CIFAR}. For the $50\%$ corruption setting, we trained the conditional diffusion model for 20 EM iterations, while for the $75\%$ corruption setting we trained it for 24 iterations. In both cases, we trained EM-MMPS for 9 iterations. The computational overhead of Moment Matching Posterior Sampling becomes particularly evident in this experiment, as the CelebA dataset is larger (202,599 images) and each image is higher-dimensional ($64 \times 64$) compared to CIFAR-10. We observed that each EM iteration of EM-MMPS required $4.85 \pm 0.02$ hours, whereas each iteration of DiffEM required $1.19 \pm 0.03$ hours.
+
+
+\hide{
+
+\subsection{Accelerated MRI Reconstruction}
+
+
+Following \citet{kawar2023gsure,rozet2024learning}, we evaluate our method on single-coil knee MRI scans from the fastMRI dataset~\citep{Zbontar2018fastMRI,Knoll2020fastMRI}. In this setting, the likelihood function follows the standard accelerated MRI acquisition, where the observation $Y$ is generated by first applying a discrete Fourier transform and then performing horizontal frequency sub-sampling with acceleration factor $R=6$~\citep{Jalal2021Robust}. In other words, each frequency is observed with probability $\frac{1}{R}$. Finally, we add isotropic Gaussian noise with variance $\sigy^2=10^{-4}$ to match the experimental settings of~\citep{kawar2023gsure,rozet2024learning}.
+
+
+
+\newcommand{\FT}{\mathbf{F}}
+\newcommand{\IFT}{\mathbf{F}_{i}}
+
+In the fastMRI experiment, the observation is generated as
+\begin{align*}
+    Y=(\IFT S \FT X+\epsilon, S), \qquad \epsilon\sim \normal{0,\sigy^2\id},~~ S\sim P_S,
+\end{align*}
+where $X$ is the clean MRI scan, $\FT$ ($\IFT$) is the matrix corresponding to the (inverse) discrete Fourier transform, and $S\sim P_S$ is the subsampling matrix. For accelerated MRI with subsampling factor $R$, $S$ is a diagonal matrix where each diagonal entry is sampled from Bernoulli$(\frac{1}{R})$.
+
+In the experiment, we set $R=6$, $\sigy^2=10^{-4}$ following \citep{kawar2023gsure,rozet2024learning} and apply DiffEM with 50 iterations. The network architecture and hyperparameters are presented in \cref{tab:architecture-CIFAR}. We present reconstructed sample images in \cref{fig:fastMRI-pictures}.
+
+
+Figure~\ref{fig:fastmri} demonstrates the effectiveness of our method in reconstructing MRI images from sub-sampled measurements. 
+
+}
+
+\end{document}

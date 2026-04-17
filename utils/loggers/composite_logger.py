@@ -12,16 +12,25 @@ class CompositeLogger(BaseLogger):
     def __enter__(self):
         return self
 
-    def stop(self):
+    def stop(self, exit_code=0):
         for logger in self.loggers:
-            logger.stop()
+            logger.stop(exit_code=exit_code)
 
-    def __exit__(self, type, value, traceback):
-        self.stop()
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type is not None:
+            import logging
+            logging.error(f"Run failed with {exc_type.__name__}: {exc_value}")
+            self.stop(exit_code=1)
+        else:
+            self.stop(exit_code=0)
 
     def log(self, name: str, data: Any, step=None):
         for logger in self.loggers:
             logger.log(name, data, step)
+
+    def log_metrics(self, metrics: Dict[str, Any], step=None):
+        for logger in self.loggers:
+            logger.log_metrics(metrics, step)
 
     def _log_fig(self, name: str, fig: Any):
         for logger in self.loggers:
@@ -42,3 +51,7 @@ class CompositeLogger(BaseLogger):
     def log_name_params(self, name : str, params: Any):
         for logger in self.loggers:
             logger.log_name_params(name, params)
+
+    def log_file(self, name: str, file_path: str, step=None):
+        for logger in self.loggers:
+            logger.log_file(name, file_path, step)

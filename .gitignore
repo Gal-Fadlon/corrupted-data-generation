@@ -1,5 +1,6 @@
 # IDE
 .idea/
+.cursor/
 
 # Data files
 data/
@@ -7,8 +8,14 @@ data/
 # SLURM batch scripts
 sbatch
 
-# Neptune logs
+# Wandb logs
+wandb/
+
+# Neptune credentials
 neptune/
+
+# Python cache
+__pycache__/
 
 # OS files
 .DS_Store

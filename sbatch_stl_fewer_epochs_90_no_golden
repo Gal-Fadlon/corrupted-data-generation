@@ -1,0 +1,24 @@
+#!/bin/bash
+
+################################################################################################
+### sbatch configuration parameters must start with #SBATCH and must precede any other commands.
+### To ignore, just add another # - like so: ##SBATCH
+################################################################################################
+
+#SBATCH --partition main			### specify partition name where to run a job.
+#SBATCH --qos normal
+#SBATCH --time 7-00:00:00			### limit the time of job running.
+#SBATCH --job-name stl_fewer_ep_90		### name of the job
+#SBATCH --output stl_fewer_ep_90-%J.out		### output log for running job - %J for job number
+
+#SBATCH --gpus=1				### number of GPUs
+
+### Print some data to output file ###
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+### Start your code below ####
+module load anaconda
+source activate idan2_env
+python run_diffem_mmps_ema_reset_stl_init.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.9 --m_step_epochs 20 --em_iters 30 --wandb true --tags "stl_fewer_epochs" "energy" "90_missing_rate" "m_step_20_em_30"

@@ -1,0 +1,28 @@
+# training:
+epochs: 1000
+batch_size: 64
+first_epoch: 30
+learning_rate: 0.0001 #1e-4
+weight_decay: 0.00001 #1e-5
+
+# data:
+dataset: electricity
+seq_len: 48
+
+# transform:
+delay: 4
+embedding: 12
+
+# model:
+img_resolution: 12
+attn_resolution: [12, 6, 3]
+input_channels: 321
+unet_channels: 128
+ch_mult: [1,2,2,4]
+diffusion_steps: 18
+ema: true
+ema_warmup: 100
+# logging:
+logging_iter: 10
+# TST:
+input_size: 321
