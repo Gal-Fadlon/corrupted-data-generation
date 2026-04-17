@@ -1,0 +1,39 @@
+#!/bin/bash
+
+################################################################################################
+### sbatch configuration parameters must start with #SBATCH and must precede any other commands.
+### To ignore, just add another # - like so: ##SBATCH
+################################################################################################
+
+#SBATCH --time 2-00:00:00
+#SBATCH --job-name rs_e
+#SBATCH --output /home/galfad/corrupted-data-generation/slurm_logs/%J.out
+#SBATCH --error /home/galfad/corrupted-data-generation/slurm_logs/%J.err
+#SBATCH --gpus=rtx_4090:1
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --mem=32G
+#SBATCH --cpus-per-task=6
+
+### Print some data to output file ###
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+### Start your src_code below ####
+umask 0000
+module load anaconda
+source activate /home/galfad/.conda/envs/time_series_nev
+export WANDB_API_KEY="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"
+
+#python run_diffem_mmps_residual_shrinkage.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.0 --noise_level 0.05 --gaussian_noise_level 0.05 --wandb true --tags "residual_shrinkage" "energy" "noise_0.05" "gaussian_noise" "fix_missing_rates" "seq_len=24" 2>&1
+#python run_diffem_mmps_residual_shrinkage.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.0 --noise_level 0.3 --gaussian_noise_level 0.3 --wandb true --tags "residual_shrinkage" "energy" "noise_0.3" "gaussian_noise" "fix_missing_rates" "seq_len=24" 2>&1
+#python run_diffem_mmps_residual_shrinkage.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.0 --noise_level 0.1 --gaussian_noise_level 0.1 --wandb true --tags "residual_shrinkage" "energy" "noise_0.1" "gaussian_noise" "fix_missing_rates" "seq_len=24" 2>&1
+#python run_diffem_mmps_residual_shrinkage.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.0 --noise_level 0.25 --gaussian_noise_level 0.25 --wandb true --tags "residual_shrinkage" "energy" "noise_0.25" "gaussian_noise" "fix_missing_rates" "seq_len=24" 2>&1
+#python run_diffem_mmps_residual_shrinkage.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.0 --noise_level 0.15 --gaussian_noise_level 0.15 --wandb true --tags "residual_shrinkage" "energy" "noise_0.15" "gaussian_noise" "fix_missing_rates" "seq_len=24" 2>&1
+#python run_diffem_mmps_residual_shrinkage.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.0 --noise_level 0.2 --gaussian_noise_level 0.2 --wandb true --tags "residual_shrinkage" "energy" "noise_0.2" "gaussian_noise" "fix_missing_rates" "seq_len=24" 2>&1
+python run_diffem_mmps_residual_shrinkage.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.0 --noise_level 0.35 --gaussian_noise_level 0.35 --wandb true --tags "residual_shrinkage" "energy" "noise_0.35" "gaussian_noise" "fix_missing_rates" "seq_len=24" 2>&1
+#python run_diffem_mmps_residual_shrinkage.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.0 --noise_level 0.4 --gaussian_noise_level 0.4 --wandb true --tags "residual_shrinkage" "energy" "noise_0.4" "gaussian_noise" "fix_missing_rates" "seq_len=24" 2>&1
+#python run_diffem_mmps_residual_shrinkage.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.0 --noise_level 0.45 --gaussian_noise_level 0.45 --wandb true --tags "residual_shrinkage" "energy" "noise_0.45" "gaussian_noise" "fix_missing_rates" "seq_len=24" 2>&1
+
+chmod 666 /home/galfad/corrupted-data-generation/slurm_logs/$SLURM_JOBID.out /home/galfad/corrupted-data-generation/slurm_logs/$SLURM_JOBID.err

@@ -1,0 +1,33 @@
+#!/bin/bash
+
+################################################################################################
+### sbatch configuration parameters must start with #SBATCH and must precede any other commands.
+### To ignore, just add another # - like so: ##SBATCH
+################################################################################################
+
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name dp_ml_electricity
+#SBATCH --output /home/galfad/corrupted-data-generation/slurm_logs/%J.out
+#SBATCH --error /home/galfad/corrupted-data-generation/slurm_logs/%J.err
+#SBATCH --gpus=rtx_4090:1
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --mem=32G
+#SBATCH --cpus-per-task=6
+
+### Print some data to output file ###
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+### Start your src_code below ####
+umask 0000
+module load anaconda
+source activate /home/galfad/.conda/envs/time_series_nev
+export WANDB_API_KEY="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"
+
+python run_diffem_mmps_iter_stl_decomp_proj_curr_masked_loss.py --config ./configs/seq_len_24/electricity.yaml --missing_rate 0.3 --wandb true --tags "stl_decomp_proj_curr_masked_loss" "electricity" "30_missing_rate" "fix_missing_rates" "seq_len=24" 2>&1
+python run_diffem_mmps_iter_stl_decomp_proj_curr_masked_loss.py --config ./configs/seq_len_24/electricity.yaml --missing_rate 0.5 --wandb true --tags "stl_decomp_proj_curr_masked_loss" "electricity" "50_missing_rate" "fix_missing_rates" "seq_len=24" 2>&1
+python run_diffem_mmps_iter_stl_decomp_proj_curr_masked_loss.py --config ./configs/seq_len_24/electricity.yaml --missing_rate 0.7 --wandb true --tags "stl_decomp_proj_curr_masked_loss" "electricity" "70_missing_rate" "fix_missing_rates" "seq_len=24" 2>&1
+
+chmod 666 /home/galfad/corrupted-data-generation/slurm_logs/$SLURM_JOBID.out /home/galfad/corrupted-data-generation/slurm_logs/$SLURM_JOBID.err

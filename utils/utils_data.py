@@ -143,16 +143,19 @@ def compute_sigma_from_schedule(timestep_fraction, sigma_min=0.002, sigma_max=80
 
 def add_gaussian_noise(data, noise_level=0.1):
     """
-    Add Gaussian noise to the data.
+    Add Gaussian noise to the data, scaled relative to each feature's std.
 
     Args:
       - data: input data (numpy array)
-      - noise_level: standard deviation of the Gaussian noise
+      - noise_level: fraction of each feature's std to use as noise std
 
     Returns:
       - noisy_data: data with added Gaussian noise
     """
-    noise = np.random.normal(0, noise_level, data.shape)  # Mean=0, Std=noise_level
+    flat = data.reshape(-1, data.shape[-1])
+    feature_std = np.nanstd(flat, axis=0, keepdims=True)
+    noise_std = noise_level * feature_std
+    noise = np.random.normal(0, 1, data.shape) * noise_std.reshape((1,) * (data.ndim - 1) + (-1,))
     noisy_data = data + noise
     return noisy_data
 
@@ -609,11 +612,29 @@ def save_reconstructions(reconstructions, save_path, em_iter):
     
     iter_path = os.path.join(save_path, f'em_iter_{em_iter}')
     os.makedirs(iter_path, exist_ok=True)
-    
+
+    # Ensure all directories in the path are world-writable (multi-user safety)
+    path_parts = iter_path.split(os.sep)
+    for i in range(1, len(path_parts) + 1):
+        partial = os.sep.join(path_parts[:i]) or '.'
+        if os.path.isdir(partial):
+            try:
+                os.chmod(partial, 0o777)
+            except PermissionError:
+                pass  # Can't chmod dirs we don't own, but they should already be 777
+
     if isinstance(reconstructions, torch.Tensor):
         reconstructions = reconstructions.cpu().numpy()
-    
-    np.save(os.path.join(iter_path, 'reconstructions.npy'), reconstructions)
+
+    filepath = os.path.join(iter_path, 'reconstructions.npy')
+    np.save(filepath, reconstructions)
+
+    # Make the saved file world-writable too
+    try:
+        os.chmod(filepath, 0o666)
+    except PermissionError:
+        pass
+
     print(f"Saved {len(reconstructions)} reconstructions to {iter_path}")
 
 
@@ -679,3 +700,21 @@ def gen_dataloader(args):
 
     # For the time series benchmark, the entire dataset for both training and testing
     return train_loader, test_loader, None
+
+
+def compute_per_feature_noise_std(data, noise_level):
+    """
+    Compute the actual per-feature noise std that add_gaussian_noise applies.
+
+    Mirrors the logic in add_gaussian_noise: sigma_f = noise_level * std(feature_f).
+
+    Args:
+        data: numpy array, shape (..., features). May contain NaN.
+        noise_level: the noise_level fraction passed to add_gaussian_noise.
+
+    Returns:
+        noise_std: numpy array of shape (features,) — the actual σ per feature.
+    """
+    flat = data.reshape(-1, data.shape[-1])
+    feature_std = np.nanstd(flat, axis=0)
+    return noise_level * feature_std

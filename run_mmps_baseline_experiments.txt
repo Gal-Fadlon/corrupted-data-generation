@@ -1,0 +1,11 @@
+sbatch sbatch_mmps_baseline_stock && \
+sbatch sbatch_mmps_baseline_energy && \
+sbatch sbatch_mmps_baseline_weather && \
+sbatch sbatch_mmps_baseline_etth1 && \
+sbatch sbatch_mmps_baseline_etth2 && \
+sbatch sbatch_mmps_baseline_ettm1 && \
+sbatch sbatch_mmps_baseline_ettm2 && \
+sbatch sbatch_mmps_baseline_mujoco && \
+sbatch sbatch_mmps_baseline_sine && \
+sbatch sbatch_mmps_baseline_electricity
+n the DiEM framework, the E-step quality dire

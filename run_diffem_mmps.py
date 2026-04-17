@@ -33,7 +33,6 @@ import logging
 from tqdm import tqdm
 
 from metrics import evaluate_model_irregular
-from metrics.memorization import compute_memorization_metric
 from utils.loggers import WandbLogger, PrintLogger, CompositeLogger
 from utils.utils import restore_state, create_model_name_and_dir, print_model_params, log_config_and_tags
 from utils.utils_data import (
@@ -556,30 +555,9 @@ def m_step(args, uncond_model, optimizer, reconstructions, em_iter, device, logg
 
 
 def evaluate_uncond(args, uncond_model, test_loader, em_iter, device, logger=None):
-    """
-    Evaluate the unconditional model via standard unconditional sampling.
-
-    Same evaluation as run_irregular.py for fair comparison:
-    generates completely new sequences and compares to real data.
-    Includes memorization metrics.
-
-    Args:
-        args: configuration arguments
-        uncond_model: unconditional diffusion model
-        test_loader: test data loader
-        em_iter: current EM iteration
-        device: target device
-        logger: optional logger
-
-    Returns:
-        scores: dict of evaluation metrics
-    """
     print(f"\n=== Evaluation (EM iter {em_iter}) ===")
-    print("Evaluating unconditional model (same as run_irregular.py)...")
-
     uncond_model.eval()
-    gen_sig = []
-    real_sig = []
+    gen_sig, real_sig = [], []
 
     with torch.no_grad():
         with uncond_model.ema_scope():
@@ -587,57 +565,22 @@ def evaluate_uncond(args, uncond_model, test_loader, em_iter, device, logger=Non
                 args, uncond_model.net,
                 (args.input_channels, args.img_resolution, args.img_resolution)
             )
-
             for data in tqdm(test_loader, desc="Evaluating"):
-                # Unconditional sampling — generates completely new sequences
                 x_img_sampled = process.sampling(sampling_number=data[0].shape[0])
                 x_ts = uncond_model.img_to_ts(x_img_sampled)
-
                 gen_sig.append(x_ts.cpu().numpy())
                 real_sig.append(data[0].cpu().numpy())
 
     gen_sig = np.vstack(gen_sig)
     real_sig = np.vstack(real_sig)
-
-    # Compute metrics
     scores = evaluate_model_irregular(real_sig, gen_sig, args)
 
-    print(f"EM iter {em_iter} metrics (unconditional):")
+    print(f"EM iter {em_iter} metrics:")
     for key, value in scores.items():
         print(f"  {key}: {value:.4f}")
         if logger is not None:
-            logger.log(f'test/{key}', value, em_iter)
-
-    # --- Memorization Check ---
-    mem_plot_path = f"memorization_hist_em_iter_{em_iter}.png"
-    mem_stats = compute_memorization_metric(
-        real_data=real_sig,
-        generated_data=gen_sig,
-        device=device,
-        plot_path=mem_plot_path
-    )
-
-    # Log memorization stats
-    print(f"EM iter {em_iter} memorization metrics:")
-    for k, v in mem_stats.items():
-        print(f"  {k}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
-        if logger is not None:
-            logger.log(f'test/memorization/{k}', v, em_iter)
-
-    if logger is not None:
-        upload_successful = False
-        try:
-            logger.log_file('test/memorization/histogram', mem_plot_path, em_iter)
-            upload_successful = True
-        except Exception as e:
-            print(f"Failed to upload memorization plot: {e}")
-
-        if upload_successful:
-            try:
-                if os.path.exists(mem_plot_path):
-                    os.remove(mem_plot_path)
-            except Exception as e:
-                print(f"Failed to delete temporary plot file {mem_plot_path}: {e}")
+            eval_step = (em_iter + 2) * args.m_step_epochs - 1
+            logger.log(f'test/{key}', value, eval_step)
 
     return scores
 

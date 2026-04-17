@@ -85,6 +85,7 @@ def parse_args_irregular():
     parser.add_argument('--ts_rate', type=float, default=0, help='teacher forcing rate for tst')
     parser.add_argument('--save_model', type=bool, default=False, help='save model')
     parser.add_argument('--gaussian_noise_level', type=float, default=0.0, help='noise level injected to the original data')
+    parser.add_argument('--noise_level', type=float, default=0.0, help='observation noise level (sigma_obs) for E-step denoising')
     parser.add_argument('--noise_timestep', type=float, default=None, 
                         help='timestep fraction [0,1] to compute noise level from diffusion schedule. '
                              'If set, overrides gaussian_noise_level. 0=max noise (sigma_max), 1=min noise (sigma_min)')
@@ -172,6 +173,11 @@ def parse_args_irregular():
                         help='Weight for seasonal spectral matching penalty')
     parser.add_argument('--use_component_loss', type=bool, default=True,
                         help='Use component-aware loss (trend TV + spectral) in M-step')
+    # TCPS (run_diffem_trajectory_correction.py)
+    parser.add_argument('--tcps_correction_strength', type=float, default=1.0,
+                        help='Correction strength α for TCPS Jacobian propagation (default=1.0)')
+    parser.add_argument('--tcps_correction_rounds', type=int, default=3,
+                        help='Number of iterative correction rounds per step for TCPS-C (default=3)')
 
     # --- AmbientEM Configuration ---
     parser.add_argument('--ambient_em', action='store_true', default=False,
