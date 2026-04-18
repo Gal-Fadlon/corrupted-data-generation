@@ -1,0 +1,25 @@
+#!/bin/bash
+
+################################################################################################
+### sbatch configuration parameters must start with #SBATCH and must precede any other commands.
+### To ignore, just add another # - like so: ##SBATCH
+################################################################################################
+
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name fgt156
+#SBATCH --output fgt156-%J.out
+
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+module load anaconda
+source activate idan2_env
+python run_diffem_mmps_kalman_freqgate_decomp_proj_temporal_corrupt.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.5 --wandb true --temporal_block_prob 0.15 --temporal_block_width 6 --tags "kalman_freqgate_decomp_proj_temporal_corrupt" "energy" "50_missing_rate" "hidden_dist" "temporal_block" "p015_w6" "no_golden"

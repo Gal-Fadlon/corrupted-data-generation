@@ -42,6 +42,7 @@ from utils.utils_data import (
 from utils.utils_args import parse_args_irregular
 from models.our import TS2img_Karras, TS2img_Karras_Cond
 from models.sampler import DiffusionProcess, ConditionalDiffusionProcess
+from utils.train_unconditional import train_unconditional_regular
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -878,24 +879,10 @@ def main(args):
             )
 
         # ================================================================
-        # Phase 3 — Ambient-aware unconditional training
+        # Phase 3 — Train unconditional model (same as run_regular.py)
         # ================================================================
-        print(f"\n{'='*60}\n"
-              f"Phase 3: Ambient-Aware Unconditional Training\n{'='*60}")
-
-        uncond_model = TS2img_Karras(
-            args=args, device=device).to(device)
-        print("Unconditional model created.")
-        print_model_params(logger, uncond_model)
-
-        # Zero-fill corrupted data for the ambient dataset
-        corrupted_for_ambient = corrupted_data.copy()
-        corrupted_for_ambient = np.nan_to_num(corrupted_for_ambient, nan=0.0)
-
-        best_metrics = train_unconditional_ambient(
-            args, uncond_model, reconstructions,
-            corrupted_for_ambient, obs_masks,
-            test_loader, device, logger,
+        final_metrics = train_unconditional_regular(
+            args, reconstructions, test_loader, device, logger,
         )
 
         # ================================================================
@@ -903,9 +890,9 @@ def main(args):
         # ================================================================
         print(f"\n{'='*60}\n"
               f"AmbientEM — Complete\n{'='*60}")
-        if best_metrics:
-            print(f"Best metrics:")
-            for k, v in best_metrics.items():
+        if final_metrics:
+            print(f"Final metrics:")
+            for k, v in final_metrics.items():
                 print(f"  {k}: {v:.4f}")
 
         logging.info("Training complete.")

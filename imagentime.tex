@@ -1,0 +1,1309 @@
+\documentclass{article}
+
+
+% if you need to pass options to natbib, use, e.g.:
+\PassOptionsToPackage{numbers, compress}{natbib}
+% before loading neurips_2024
+
+
+% ready for submission
+\usepackage[final]{neurips_2024}
+
+
+% to compile a preprint version, e.g., for submission to arXiv, add add the
+% [preprint] option:
+%     \usepackage[preprint]{neurips_2024}
+
+
+% to compile a camera-ready version, add the [final] option, e.g.:
+%     \usepackage[final]{neurips_2024}
+
+
+% to avoid loading the natbib package, add option nonatbib:
+%    \usepackage[nonatbib]{neurips_2024}
+
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+\usepackage{amsmath}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{overpic}
+\usepackage{wrapfig}
+\usepackage{adjustbox}
+\usepackage{enumitem}
+
+
+\newcommand {\omri}[1]{{\color{red}[#1]}}
+\newcommand {\ilan}[1]{{\color{blue}[#1]}}
+\newcommand {\nimrod}[1]{{\color{violet}[#1]}}
+\newcommand {\gal}[1]{{\color{teal}[#1]}}
+\newcommand {\idan}[1]{{\color{purple}[#1]}}
+\newcommand {\itai}[1]{{\color{olive}[#1]}}
+
+\makeatletter
+\newcommand{\@giventhatstar}[2]{$\left(#1\,\middle|\,#2\right)$}
+\newcommand{\@giventhatnostar}[3][]{#1(#2\,#1|\,#3#1)}
+\newcommand{\giventhat}{\@ifstar\@giventhatstar\@giventhatnostar}
+\makeatother
+
+\newcommand{\rev}[1]{{\color{red}#1}}
+\newcommand{\mt}[1]{\text{#1}}
+\newcommand{\dist}[3]{#1\giventhat{#2}{#3}}
+
+\newcommand{\code}[1]{\texttt{#1}}
+
+
+\title{Utilizing Image Transforms and Diffusion Models for  Generative Modeling of Short and Long Time Series}
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to LaTeX to determine where to break the
+% lines. Using \AND forces a line break at that point. So, if LaTeX puts 3 of 4
+% authors names on the first line, and the last on the second line, try using
+% \AND instead of \And before the third author name.
+
+\author{%
+Ilan Naiman\thanks{Equal Contribution} \hspace{0.3em}
+Nimrod Berman\footnotemark[1] \hspace{0.3em}
+Itai Pemper \hspace{0.3em}
+Idan Arbiv \hspace{0.3em}
+Gal Fadlon \hspace{0.3em}
+Omri Azencot \\
+Department of Computer Science \\
+Ben-Gurion University of The Negev \\
+% \texttt{azencot@cs.bgu.ac.il} \\
+\tt\small{{\{naimani, bermann, itaipem, arbivid, galfad\}@post.bgu.ac.il}} \\
+\tt\small{{azencot@cs.bgu.ac.il}} \\
+}
+
+
+\begin{document}
+
+
+\maketitle
+
+
+\begin{abstract}
+  Lately, there has been a surge in interest surrounding generative modeling of time series data. Most existing approaches are designed either to process short sequences or to handle long-range sequences. This dichotomy can be attributed to gradient issues with recurrent networks, computational costs associated with transformers, and limited expressiveness of state space models. Towards a unified generative model for varying-length time series, we propose in this work to transform sequences into images. By employing invertible transforms such as the delay embedding and the short-time Fourier transform, we unlock three main advantages: i) We can exploit advanced diffusion vision models; ii) We can remarkably process short- and long-range inputs within the same framework; and iii) We can harness recent and established tools proposed in the time series to image literature. We validate the effectiveness of our method through a comprehensive evaluation across multiple tasks, including unconditional generation, interpolation, and extrapolation. We show that our approach achieves consistently state-of-the-art results against strong baselines. In the unconditional generation tasks, we show remarkable mean improvements of $58.17\%$ over previous diffusion models in the short discriminative score and $132.61\%$ in the (ultra-)long classification scores. Code is at \url{https://github.com/azencot-group/ImagenTime}.
+\end{abstract}
+
+
+\section{Introduction}
+
+% generative modeling of varying-length sequences
+Generative modeling of real-world information such as images~\cite{ramesh2022hierarchical}, texts~\cite{brown2020language}, and other types of data~\cite{yoon2019time, li2021sp, bar2024lumiere} has drawn increased attention recently. In this work, we focus on the setting of generative modeling (GM) of general time series information. There are several factors that govern the complexity required from sequential data generators including the sequence length, its number of features, the appearance of transient vs. long-range effects, and more. Existing generative models for time series are typically designed either for multivariate short-term sequences~\cite{jeon2022gt, coletta2024constrained} or univariate long-range data~\cite{zhou2023deep}, often resulting in separate and completely different neural network frameworks. However, a natural question arises: Can one develop a unified framework equipped to handle both high-dimensional short sequences and low-dimensional long time series? 
+
+
+% modeling of long-range time series: RNN, transformers
+Earlier approaches for processing time series based on recurrent neural networks (RNNs) handled short sequences well~\cite{mcculloch1943logical, amari1972learning, hopfield1982neural, rumelhart1985learning}, however, modeling long-range dependencies turned out to be significantly more challenging. Particularly, RNNs suffer from the well-known vanishing and exploding gradient problem \cite{bengio1994learning, pascanu2013difficulty} that prevents them from learning complex patterns and long-range dependencies. To address long-context modeling and memory retention, extensive research is devoted to approaches such as long short-term memory (LSTM) models~\cite{hochreiter1997long}, unitary evolution RNNs \cite{arjovsky2016unitary} and Lipschitz RNNs \cite{erichson2021lipschitz}. A different approach for processing sequential information is based on the Transformer~\cite{vaswani2017attention}, eliminating any recurrent connections. Recent remarkable results have been obtained with transformers on natural language processing~\cite{brown2020language} and time series forecasting~\cite{wu2021autoformer, zhou2022fedformer, nie2023time} tasks. Alas, transformers are underexplored as generative models for long-range time series data. This may be in part due to their computational costs that scale quadratically as $\mathcal{O}(L^2)$ with the sequence length $L$, and in part because transformer forecasters are inferior to linear tools~\cite{zeng2023transformers}. 
+
+
+% generative modeling of long-range sequences: SSM
+Beyond RNNs and the Transformer, recent works have considered the state space model (SSM) for modeling long-range time series information. For instance, the structured SSM (S4)~\cite{gu2021efficiently} employed a parameterization that reduced computational costs via evaluations of Cauchy kernels. Further, the deep linear recurrent unit (LRU) is inspired by the similarities between SSMs and RNNs, and it demonstrated impressive performance in modeling long-range dependencies (LRD). Still, generative modeling of long-range sequential data via state space models remains largely underexplored. Recent work suggested LS4~\cite{zhou2023deep}, a latent time series generative model that builds upon linear state space equations. LS4 utilizes autoregressive dependencies to expressively model time series (potentially non-stationary) distributions. However, this model struggles with short-length sequences as we show in our study, potentially due to limited expressivity of linear SSMs.
+
+
+% temporal costs
+
+To overcome gradient issues of recurrent backbones, temporal computational costs of transformers, and expressivity problems of SSMs, we represent time series information via small-sized \emph{images}. Transforming raw sequences to other encodings has been useful for processing audio~\cite{greenberg2004automatic} as well as general time series data~\cite{wang2015imaging, hatami2018classification, li2024time}. Moreover, a similar approach was employed to generative modeling of time series with generative adversarial networks (GANs)~\cite{brophy2019quick, hellermann2021leveraging}. However, unstable training dynamics and mode collapse negatively affect the performance of GAN-based tools~\cite{lucic2018gans}. In contrast, transforming time series to images is underexplored in the context of generative \emph{diffusion} models. There are several fundamental advantages to our approach. First, there have been remarkable advancements in diffusion models for vision data that we can exploit~\cite{sohl2015deep, ho2020denoising, song2021scorebased, karras2022elucidating}. Second, using images instead of sequences elegantly avoids the challenges of long-term modeling. For instance, a moderately-sized $256 \times 256$ image corresponds to a time series of length up to $65k$, as we show in Sec.~\ref{sec:background}. Finally, there is a growing body of literature dealing with time series as images on generative, classification, and forecasting tasks, whose results can be applied in our work and in future studies.
+
+
+% our evaluation
+In this work, we propose a new diffusion-based framework for generative modeling of general time series data, designed to seamlessly process both short-, long-, and \emph{ultra}-long-range sequences. To evaluate our method, we consider standard benchmarks for short to ultra-long time series focusing on unconditional generation. Our approach supports efficient sampling, and it attains state-of-the-art results in comparison to recent generative models for sequential information. As far as we know, there are no existing tools handling both short and long sequence data. In addition to its strong unconditional generation capabilities, our approach is also tested in conditional scenarios involving the interpolation of missing information and extrapolation. Overall, we obtained state-of-the-art results in such cases with respect to existing tools. We further analyze and ablate our technique to motivate some of our design choices. The contributions of our work can be summarized as follows:
+% contributions
+\begin{enumerate}[wide, labelwidth=!, labelindent=2pt]
+    \item We view generative modeling of time series as a visual challenge, allowing to harness advances in time series to image transforms as well as vision diffusion models.
+
+    \item We develop a novel generative model for time series that scales from short to very long sequence lengths without significant modifications to the neural architecture or training method.
+
+    
+    \item Our approach achieves state-of-the-art results in comparison to strong baselines in unconditional and conditional generative benchmarks for time series of lengths in the range $[24, 17.5k]$. Particularly, we attain the best scores on a new challenging benchmark of very long sequences that we introduce.
+\end{enumerate}
+
+
+\section{Related work}
+
+\paragraph{Time series to image works.} Motivated by the success of convolutional neural networks on vision data, several works have transformed time series to images using Gramian Angular Fields~\cite{wang2015imaging}, Recurrence Plots~\cite{hatami2018classification}, and Line Graphs~\cite{li2024time}. This innovation allows leveraging computer vision techniques, tested on tasks such as time series classification and imputation. In speech analysis and processing, the short-time Fourier transform (STFT) stands out as a widely used method \cite{allen1977short, allen1977unified, vetterli1992wavelets, flandrin2004empirical}. It tracks the changes in frequency components over time, making it essential for analyzing and understanding audio and speech data. Recent research \cite{popov2021grad, chen2022resgrad} has explored mel-spectrogram transforms within diffusion models, including integration with advanced latent diffusion spaces~\cite{liu2023audioldm}. Furthermore, combining time series images and Wasserstein GANs~\cite{brophy2019quick, hellermann2021leveraging} have been considered for generative modeling. Yet, representing general time series as images within diffusion models for tasks such as unconditional generation, interpolation, and extrapolation, remains largely underexplored. The goal of this work is to make a step toward bridging this gap.
+
+
+\paragraph{Diffusion models.} Both denoising diffusion probabilistic models (DDPM)~\cite{sohl2015deep,ho2020denoising} and score-based generative models \cite{song2019generative, song2020improved} have demonstrated their effectiveness across diverse domains including images \cite{rombach2022high,ho2022jmlr}, audio~\cite{chen2021wavegrad, kong2021diffwave}, and graphs~\cite{niu2020permutation,yan2023swingnn,berman2024generative}. Song et al.~\cite{song2021scorebased} showed that DDPM and score-based models can be both interpreted as stochastic differential equations (SDE). Further works focused on improving generation quality by using latent diffusion processes in autoencoder architectures~\cite{rombach2022high}. Another research direction deals with lowering the number of neural function evaluations (NFEs), which originally ranged from hundreds to thousands NFEs. For instance, Karras et al.~\cite{karras2022elucidating} obtain a low Fr\'echet inception distance (FID) with only $35$ evaluations, whereas the recent consistency models~\cite{song2024improved} achieved comparable results with only a single function evaluation.
+
+
+\paragraph{Generative modeling of time series.} Generative adversarial networks (GANs)~\cite{goodfellow2014generative} have shown remarkable success in generating realistic data across various domains. Specifically, their application to time series information by joint optimization of supervised and adversarial objectives via TimeGAN captured the inherent dynamics of real-world signals~\cite{yoon2019time}. Similarly, GT-GAN~\cite{jeon2022gt} utilizes diverse tools including ordinary differential equations (DE)~\cite{chen2018neural}, neural controlled DE~\cite{kidger2020neural}, and continuous time-flow processes to model both regularly- and irregularly-sampled data~\cite{deng2020modeling}. Nevertheless, GANs suffer from challenges, primarily due to unstable training dynamics and mode collapse~\cite{lucic2018gans}. Beyond GANs, variational autoencoders (VAEs) have been also considered for generative modeling of sequential data~\cite{desai2021timevae, li2023causal, ren2024learning}, where the work~\cite{naiman2024generative} achieved strong results using Koopman-based approaches~\cite{azencot2019consistent, azencot2020forecasting, naiman2023, berman2023multifactor}. To process long-range dependencies and stiff dynamics~\cite{shampine2007stiff}, Zhou et al.~\cite{zhou2023deep} introduced LS4, a latent generative model based on linear state space equations. Following the success of diffusion models in other domains, there is a growing desire to adapt them for time series data. However, this adaption is not straightforward and entails the design of a suitable backbone~\cite{tashiro2021csdi, lim2023tsgm, coletta2024constrained, yuan2024diffusion, narasimhan2024time}. Other approaches focused on regression problems~\cite{kaufman2024first}, based on manifold learning tools~\cite{kaufman2023data, kaufman2024analyzing}. Instead, we propose a new framework for generative modeling of time series by transforming such data to images and using existing strong diffusion vision models.
+
+    
+\section{Background}
+\label{sec:background}
+
+In what follows, we state the problem, we mention two effective time series to image transformations, and we briefly discuss the essentials of diffusion-based generative modeling. 
+
+\paragraph{Problem statement.} We address the problem of generating time series (TS), sampled from a learned distribution $\tilde{p}(x)$ that is similar to an unknown distribution $p(x)$, for which we have a set of observed TS data. The given observations include data samples $x \in \mathbb{R}^{L \times K}$, where $L$ represents the sequence length and $K$ denotes the number of features. Formally, the generative modeling task is often termed "unconditional generation" \cite{guo2022systematic}, and it entails learning a model $M$ capable of sampling unseen time series $\tilde{x}$ from $\tilde{p}(x)$. Additionally, our work addresses a secondary problem known as "conditional generation". In this setting, given an additional signal $c$, we learn the unknown (conditional) distribution $p(x|c)$. For example, the signal $c$ can be an observed part from the TS. This conditional modeling proves useful for tasks such as time series interpolation and extrapolation.
+
+\paragraph{Time series to image transforms.} We focus in our study on two invertible time series to image transformations: 1) the delay embedding; and 2) the short time Fourier transform. We provide below a brief overview of these transforms and their inverse. We consider additional transforms and we discuss more details in App.~\ref{appendix:additional_info:domain_transformation}. Fig.~\ref{fig:transforms} illustrates a time series signal and its related images.
+
+\emph{Delay embeddings}~\cite{takens2006detecting} transform a univariate time series $x_{1:L} \in \mathbb{R}^L$ to an image by arranging the information of the series in columns and pad if needed. Let $m, n$ be two user parameters representing the skip value and the column dimension, respectively. We construct the following matrix $X$,
+\begin{equation}
+    X = \begin{bmatrix}
+        x_1 & x_{m+1}  & \dots  & x_{L-n} \\
+        \vdots & \vdots & \dots & \vdots \\
+        x_n & x_{n+m+1} & \dots & x_L
+        \end{bmatrix} \in \mathbb{R}^{n \times q} \ ,
+\end{equation}
+% $q = \lfloor L / m \rfloor - n $
+where \( q = \lceil (L-n)/m \rceil \). The image $x_\text{img}$ is created by padding with zeros to fit the neural network input constraints. Given $x_\text{img}$, the original time series $x_{1:L}$ can be extracted in multiple ways. For instance, if $m=1$, then $x_{1:L}$ is formed by concatenating the first row and last column of $x_\text{img}$. The delay embedding scales naturally to long sequences, e.g., setting $m=n=256$ allows to encode $65k$ sequences with $256 \times 256$ images.
+
+
+\emph{Short Time Fourier Transform (STFT)}~\cite{griffin1984signal} is a well-known transformation that maps a signal from its original domain into the frequency domain. To preserve the temporal structure, STFT applies a rolling window on the time axis, extracting time series segments for which the fast Fourier transform (FFT) is applied. Given an input signal $x\in\mathbb{R}^{L \times K}$, STFT produces an image $x_\text{img} \in \mathbb{R}^{2K \times H \times W}$, where the channels are doubled to store the real and imaginary parts, and $H, W$ are derivatives of user parameters. STFT requires a minimum window length, and thus, short sequences may require a linear interpolation to match length constraints. Remarkably, the short time Fourier transform is invertible via reverse STFT with a negligible loss of information. Importantly, in contrast to the common practice in audio processing, we do not further compute the spectrogram of STFT, avoiding non-trivial inverse transformations.
+
+
+\paragraph{Diffusion models.} Diffusion processes gradually add noise to an image, following a predefined noise scheduling scheme. Generating new images is possible by learning a model that removes noise. The diffusion process $\{\mathbf{x}(t)\}_{t=0}^T$ is the path of a stochastic differential equation (SDE)~\cite{song2021scorebased}, where an initial sample $\mathbf{x}(0)$ is drawn from the data distribution $p_0( \mathbf{x})$. The initial sample is modified to $\mathbf{x}(T)$, sampled from a simple prior distribution such as a normal Gaussian $\mathcal{N}(0, I)$. Formally, the forward process is governed by an SDE of the form,
+\begin{equation}
+    \mathrm{d}\mathbf{x} = f(\mathbf{x}, t) \mathrm{d}t + g \mathrm{d}w \ ,
+\end{equation}
+where $f(\cdot, t):\mathbb{R}^d \rightarrow \mathbb{R}^d$ represents the drift coefficient, $g \in \mathbb{R}$ is the diffusion scalar, and $w$ denotes a standard Wiener process. To facilitate sampling, we need to derive the reverse SDE. It is well-known that the reverse process~\cite{anderson1982reverse} is given by,
+\begin{equation}
+    \label{eq:reverse_sde}
+    \mathrm{d}\mathbf{x} = [f(\mathbf{x}, t) - g^2 \nabla_\mathbf{x} \log p_t(\mathbf{x})] \mathrm{d}\bar{t} + g \mathrm{d}\bar{w} \ ,
+\end{equation}
+where $\bar{t}$ denotes reverse time and $\bar{w}$ is a reverse Wiener process. Given Eq.~\eqref{eq:reverse_sde}, one can derive a deterministic process, characterized by trajectories that share identical marginal probability densities. Formally, we obtain the following ordinary differential equation (ODE),
+\begin{equation}
+    \label{eq:reverse_ode}
+    \mathrm{d}\mathbf{x} = f(\mathbf{x}, t) - g^2 \nabla_\mathbf{x} \log p_t(\mathbf{x}) \ .
+\end{equation}
+Diffusion models compute an estimator $s_\theta(\mathbf{x}, t)$ to approximate the infeasible $\nabla_\mathbf{x} \log p_t(\mathbf{x})$ via
+\begin{equation} \label{eq:loss_sde}
+    \min_\theta \mathbb{E}_t \{ \mathbb{E}_{x_0, x_t} | s_\theta(\mathbf{x}, t) - \nabla_\mathbf{x} \log p_{0t} (\mathbf{x}_t | x_0) |^2_2 \} \ ,
+\end{equation}
+where $p_{0t}$ denotes the joint distribution of the initial data and noisy sample. In practice, minimizing Eq.~\eqref{eq:loss_sde} is done by learning the noise pattern of input images. For a more comprehensive discussion regarding score-based models, we refer to~\cite{song2021scorebased, karras2022elucidating}. We specify in Sec.~\ref{sec:method} the particular diffusion model employed in this work, along with further additional details.
+
+
+\begin{figure}[t!]
+    \centering
+    \begin{overpic}[width=1\textwidth]{figures/arch_lr}
+        \put(0, 18) {\rotatebox{90}{Training}}
+        \put(0, 2) {\rotatebox{90}{Inference}}
+
+        \put(24, 23){$\mathcal{T}$} 
+        \put(40.5, 23){$+\mathcal{N}$}
+        \put(58.5, 10){$\mathcal{T}^{-1}$}
+
+        \put(17.5, 10){in} \put(41, 10){out}
+        \put(59.5, 23){in} \put(82.5, 23){out}
+
+        \put(7, 29){Time Series} \put(32, 29){Img.} \put(46, 29){Noisy Img.} \put(69, 29){U-Net} \put(88, 29){Clean Img.}
+
+        \put(7, 0){Noise} \put(28, 0){U-Net} \put(46.5, 0){Clean Img.} \put(67, 0){Time Series}
+
+        \put(89,4.25){trained}
+        \put(89,0.75){frozen}
+    \end{overpic}
+    \caption{Our training pipeline (top) involves transforming a time series signal to its e.g., delay embedding image, process the image with a diffusion model, and output its cleaned version. During inference (bottom), we sample from a standard normal distribution and obtain a clean image using the trained diffusion model. Finally, we transform the image back to the time series domain.}
+    \label{fig:arch}
+    \vspace{-5mm}
+\end{figure}
+
+\section{Method}
+\label{sec:method}
+
+% general overview, ref illustration, formal description
+Our approach to generative modeling of time series information is based on the following simple observation and straightforward idea. We observe that diffusion models for vision have demonstrated remarkable progress and results recently~\cite{ho2020denoising, rombach2022high, ramesh2022hierarchical}. Therefore, our idea is to transform sequences to images, allowing their processing using established diffusion vision models. Fortunately, there are several efficient time series to image maps with effective inverse transforms~\cite{takens2006detecting, griffin1984signal, wang2015imaging, li2024time}. Our computational pipeline is composed of three main building blocks: 1) a time series to image module; and 2) a diffusion model; and 3) an image to time series component. The diffusion model is the only learnable parameter-based part of our neural network. We illustrate our generative modeling framework for time series information in Fig.~\ref{fig:arch}, depicting the above building blocks with proper notations for inputs and outputs. Formally, given an input time series $x \in \mathbb{R}^{L \times K}$ with $L$ the sequence length and $K$ the number of features, we transform it to an image $x_\text{img} \in \mathbb{R}^{C \times H \times W}$. Noise is added to the latter image yielding the tensor $x_\text{img}(t)$ which is processed with our diffusion model, whose output $s(x_\text{img}, t) \in \mathbb{R}^{C \times H \times W}$ represents the cleaned image. During inference, noise $x_\text{img}(T)$ is sampled from $\mathcal{N}(0, I)$, iterated backward to $x_\text{img}(0)$ and transformed to a time series $\tilde{x} \in \mathbb{R}^{L \times K}$.
+
+There are several options to choose from regarding the time series to image (\code{ts2img}) transform, $\mathcal{T} : \mathbb{R}^{L \times K} \rightarrow \mathbb{R}^{C \times H \times W}$. While all transforms are applicable in our framework, we opt for \code{ts2img} maps that are efficient to compute, provide informative images, scalable across short and long sequences, and have a closed-form inverse. For instance, line graphs~\cite{li2024time} are efficient with a closed-form inverse, however, they produce images that are mostly non-informative as they contain blank pixels. Similarly, the Gramian angular field transform~\cite{wang2015imaging} essentially stores the sequence in its main diagonal, and thus, it is not straightforward to apply it to long-range data. In this work, we focus on using the delay embedding and short time Fourier transforms. Both \code{ts2img} maps satisfy all requirements above. Moreover, our empirical ablation analysis in Sec.~\ref{sec:ablations} highlights that these transformations attain the best results on average. The inverse transforms $\mathcal{T}^{-1}$ for delay embedding and STFT are parameter-less, deterministic, and highly efficient. See Sec.~\ref{sec:background} and App.~\ref{appendix:additional_info:domain_transformation}.
+
+
+% diffusion, motivate EDM, 
+At the heart of our \textbf{ImagenTime} framework lies the generative diffusion model backbone. Diffusion models for vision data have enjoyed increased attention over the past few years, with strong techniques appearing at an unprecedented rate~\cite{sohl2015deep, song2019generative, ho2020denoising, song2020improved, song2021scorebased, rombach2022high}. One limitation, shared among all diffusion models, is the requirement to iteratively denoise the image during inference, resulting in costly neural function evaluations (NFEs). While multiple works focused on alleviating this issue~\cite{salimans2022progressive, song2023consistency, geng2024one, song2024improved}, the work by Karras et al.~\cite{karras2022elucidating} offers an enhanced score-based model with a good balance between rapid sampling and high-quality generations. Specifically, they presented a clearer design space for the factors that determine the performance of diffusion models, and they suggested EDM that employs a second-order ODE for the reverse process, yielding low FID images in $35$ NFEs. Thus, we utilize in this work the EDM diffusion model as our generative backbone. 
+
+
+% training & inference
+We conclude by briefly discussing the training and inference procedures. During \emph{training}, we process batches of time series data $X$, for which we apply $\mathcal{T}$ using either delay embedding or STFT to obtain a batch of images, i.e., $X_\text{img} = \mathcal{T}(X)$. Subsequently, we employ the training procedure of EDM to learn the score function $s_\theta(X_\text{img}, t)$. For \emph{inference}, we use the trained EDM model and we compute the reverse ODE in Eq.~\eqref{eq:reverse_ode} for sampling new data points. In practice, we follow the same inference procedure specified in~\cite{karras2022elucidating}. Finally, given a batch of sampled images, $\tilde{X}_\text{img}$, we apply the inverse transform $\mathcal{T}^{-1}$ to achieve a batch of generated time series samples, i.e., $\tilde{X} = \mathcal{T}^{-1}(\tilde{X}_\text{img})$.
+
+
+\section{Experiments}
+
+We use standard unconditional and conditional quantitative and qualitative benchmarks to extensively validate our framework's ability to generate high-quality time series samples. First, we test our framework on short-term and long-term standard time series unconditional generation benchmarks (Sec.~\ref{subsec:experimets_short_time_series}, Sec.~\ref{subsec:experimets_long_time_series}). Then, we introduce a novel benchmark for ultra-long sequences (above 10k steps) and evaluate our method in comparison to strong baselines (Sec.~\ref{subsec:experimets_ultra_long_time_series}). Then, we consider interpolation and extrapolation benchmarks, similar to~\cite{schirmer2022modeling}, to test our model on conditional generation tasks (Sec.~\ref{sec:experiments:conditional_generation}). Further, we extended these benchmarks with additional short- and ultra-long setups, which test the framework's robustness to lengths. Finally, we conclude with an extensive ablation of our framework (Sec.~\ref{sec:ablations}). More details on the experimental settings can be found in App.~\ref{app:experimental_setting}.
+
+
+\subsection{Short-Term Unconditional Generation}
+\label{subsec:experimets_short_time_series}
+
+\paragraph{Data, baselines, and metrics.} We employ our framework on the unconditional generation benchmark reported in \cite{coletta2024constrained}. The benchmark includes four synthetic and real-world datasets with a fixed length of $24$. The first dataset, \textit{Stocks}, consists of daily historical Google stock data from 2004 to 2019, comprising six channels: high, low, opening, closing, and adjusted closing prices, as well as volume. This data lacks periodicity and is dominated by random walks. The second dataset, \textit{Energy}, is a multivariate appliance energy prediction dataset \cite{candanedo2017data}, featuring 28 channels with correlated features, and it exhibits noisy periodicity and continuous-valued measurements. The third dataset, \textit{MuJoCo} (Multi-Joint dynamics with Contact), serves as a versatile physics generator for simulating TS data with 14 channels \cite{todorov2012mujoco}. We report results on the simple synthetic \textit{Sine} dataset of sine functions in App.~\ref{app:exp:short_term_unconditional_generation}. Our framework is compared with state-of-the-art short-term time series generative models. KoVAE \cite{naiman2024generative}, DiffTime \cite{coletta2024constrained}, GT-GAN \cite{jeon2022gt}, TimeGan \cite{yoon2019time}, RCGAN \cite{esteban2017real}, C-RNN-GAN \cite{mogren2016continuous}, T-Forcing \cite{graves2013generating}, P-forcing \cite{lamb2016professor}, WaveNet \cite{van2016wavenet}, WaveGAN \cite{donahue2018adversarial}, and LS4 \cite{zhou2023deep}, which is the state-of-the-art generative model for modeling long sequences. The benchmark employs two metrics: 1) The \textit{Predictive (pred)} metric assesses the utility of the generated data. 2) The \textit{Discriminative (disc)} metrics gauge the similarity of distributions using a proxy discriminator. For all experiments, we used the \textit{delay embedding} transform with an embedding of $n=8$ and a delay of $m=3$, yielding a $8 \times 8$ image. We use $18$ sampling steps with the EDM model~\cite{karras2022elucidating} as the diffusion generative backbone.  
+
+\begin{table*}[t]
+    \centering
+    \caption{Error measures for the short time series unconditional discriminative and prediction tasks.}
+    \label{tab:short_ts_uncond}
+    \setlength{\tabcolsep}{1pt}
+    % \begin{adjustbox}{max width=\textwidth}
+    \resizebox{.9\textwidth}{!}{
+    \begin{tabular}{l|c|c|c|c|c|c}
+        \toprule
+        & \multicolumn{2}{c|}{Stocks} & \multicolumn{2}{c|}{Energy} & \multicolumn{2}{c}{MuJoCo} \\ 
+        Method & disc$\downarrow$ & pred$\downarrow$ & disc$\downarrow$ & pred$\downarrow$ & disc$\downarrow$ & pred$\downarrow$  \\
+        \midrule
+        KoVAE & $\boldsymbol{.009 \pm .006}$ & $.037 \pm .000$ & $.143 \pm .011$ & $.251 \pm .000$ & $.076 \pm .017$  & $.038 \pm .002$ \\
+        DiffTime & $.050 \pm .017$ & $.038 \pm .001$ & $.101 \pm .019$ & $.250 \pm .003$ & $.059 \pm .009$  & $.042 \pm .000$ \\
+        GT-GAN & $.077 \pm .031 $ & $.040 \pm .000$ & $.221 \pm .068$ & $.312 \pm .002$ & $.245 \pm .029$ & $.055 \pm .000$ \\
+        TimeGAN & $.102 \pm .021$ & $.038 \pm .001$ & $.236 \pm .012$ & $.273 \pm .004$ & $.409 \pm .028$ & $.082 \pm .006$ \\
+        RCGAN & $.196 \pm .027$ & $.040 \pm .001$ & $.336 \pm .017$ & $.292 \pm .004$ & $.436 \pm .012$ & $.081 \pm .003$ \\
+        C-RNN-GAN &  $.399 \pm .028$ &  $.038 \pm .000 $ & $.449 \pm .001$ & $.483 \pm .005$ & $.412 \pm .095$ & $.055 \pm .004$ \\
+        T-Forcing & $.226 \pm .035$ & $.038 \pm .001 $ & $.483 \pm .004$ & $.315 \pm .005$ & $.499 \pm .000$ & $ .142 \pm .014$\\
+        P-Forcing & $.257 \pm .026$ & $.043 \pm .001$ & $.412 \pm .006$ & $.303 \pm .005$ & $.500 \pm .000$ & $.102 \pm .013$ \\
+        WaveNet & $.232 \pm .028$ & $.042 \pm .001 $ & $.397 \pm .010$ & $.311 \pm .006$ & $.385 \pm .025$ & $.333 \pm .004$ \\
+        WaveGAN & $.217 \pm .022$ & $.041 \pm .001 $ & $.363 \pm .012$ & $.307 \pm .007$ & $.357 \pm .017$ & $.324 \pm .006$\\
+        LS4 & $ .199 \pm .065$ & $ .068 \pm .013$ & $ .474 \pm .003$ & $ .251 \pm .000$ & $.333 \pm .029$ & $.062 \pm .006$ \\
+        \midrule
+        Ours  & $.037 \pm .006$& $\boldsymbol{.036 \pm .000}$ & $\boldsymbol{.040 \pm .004}$ & $\boldsymbol{.250 \pm .000}$ &  $\boldsymbol{.007 \pm .005}$ & $\boldsymbol{.033 \pm .001}$ \\
+        \bottomrule
+    \end{tabular}
+    % \end{adjustbox}
+    }
+    \vspace{-3mm}
+\end{table*}
+
+\vspace{-1mm}
+
+\paragraph{Quantitative and qualitative results.} The results for the short-term unconditional benchmark are shown in Tab.~\ref{tab:short_ts_uncond}. Our framework achieves state-of-the-art results on all datasets and metrics. Particularly, we note MuJoCo, where we improved the second-best method by $88\%$ and $21\%$ in the discriminative and predictive scores. In general, the second-best approach is DiffTime. Importantly, while LS4 performs well on long sequences, our results indicate that it struggles with short sequences. In comparison, we will show below that in addition to obtaining SOTA results on short-term time series, we also achieve strong results in the long-term case (Sec.~\ref{subsec:experimets_long_time_series}). We also evaluate our method using two common qualitative tests~\cite{yoon2019time}. First, we compute a two-dimensional t-SNE~\cite{van2008visualizing} embedding for real and synthetic data. The desired outcome is that both datasets span similar regions and shapes in 2D. We plot the embeddings of the real data, ours and GT-GAN in Fig.~\ref{fig:mix_tsne_density}A, highlighting that our generated point clouds are closer to the real data in comparison GT-GAN. Tab.~\ref{tab:wass_dist} reports the Wasserstein distances between the t-SNE embeddings of the generated data and the real data, showing that our approach is superior to GT-GAN.  Second, we estimate the probability density functions in Fig.~\ref{fig:mix_tsne_density}D. Our approach generates densities similar to the real densities, whereas GT-GAN introduces noticeable errors. The rest of the short-term datasets' qualitative analysis appears in App.~\ref{app:additional_qual_analysis}.
+
+\begin{figure}[t!]
+    \centering
+    \begin{overpic}[width=1\textwidth]{figures/mix_tsne_density}
+        \put(1, 38){A} \put(34.5, 38){B} \put(67.5, 38){C}
+        \put(1, 18){D} \put(34.5, 18){E} \put(67.5, 18){F}
+    \end{overpic}
+    \caption{We plot the 2D t-SNE embeddings of synthetic data generated with our method and SOTA tools vs. the real data (top). Then, we compare their probability density functions (bottom).}
+    \label{fig:mix_tsne_density}
+    \vspace{-3mm}
+\end{figure}
+
+
+\begin{table*}[t]
+    \centering
+    \caption{Long time series unconditional marginal, classification, and prediction tasks' results.}
+    \label{tab:long_term_ts_uncond}
+    % \setlength{\tabcolsep}{2.8pt}
+    \setlength{\tabcolsep}{1pt}
+    % \begin{adjustbox}{max width=\textwidth}
+    \resizebox{.65\textwidth}{!}{
+    \begin{tabular}{l|c|c|c|c|c|c|c|c|c}
+        \toprule
+        Method & \multicolumn{3}{c|}{FRED-MD} & \multicolumn{3}{c|}{NN5 Daily} & \multicolumn{3}{c}{Temp Rain} \\ 
+         & marg$\downarrow$ & class $\uparrow$ & pred $\downarrow$ & marg$\downarrow$ & class $\uparrow$ & pred $\downarrow$ & marg$\downarrow$ & class $\uparrow$ & pred $\downarrow$  \\
+        \midrule
+        RNN-VAE & $.132$ & $.036$ & $1.47$ & $.137$ & $.000$ & $.967$ & $.017$ & $.000$ & $159$  \\
+        GP-VAE  & $.152$ & $.016$ & $2.05$ & $.117$ & $.002$ & $1.17$ & $.183$ & $.000$ & $2.31$  \\
+        ODE$^{2}$VAE  & $.122$ & $.028$ & $.567$ & $.211$ & $.001$ & $1.19$ & $1.83$ & $.000$ & $1.13$  \\
+        Latent ODE   & $.042$ & $.327$ & $.013$& $ .107$ & $.000$ & $1.04$ & $\boldsymbol{.011}$ & $.000$ & $145$   \\
+        TimeGAN   & $.081$ & $.029$ & $.058$ & $.040$ & $.001$ & $1.34$ & $.498$ & $.003$ & $1.96$  \\
+        SDEGAN   & $.084$ & $.501$ & $.677$ & $.085$ & $.085$ & $1.01$ & $.990$ & $.017$ & $2.46$  \\
+        SaShiMi  & $.048$ & $.001$ & $.232$ & $.020$ & $.045$ & $.849$ & $.758$ & $.000$ & $2.12$   \\
+        LS4  & $.022$& $.544$ & $.037$ & $.007$ & $.636$ & $\boldsymbol{.241}$ & $.083$ & $.976$ & $.521$  \\
+        \midrule
+        Ours  & $\boldsymbol{.021}$ & $\boldsymbol{.862} $ & $\boldsymbol{.009}$& $\boldsymbol{.005}$ & $\boldsymbol{1.02}$ & $.393$ & $.409$ & $\boldsymbol{5.80}$ & $\boldsymbol{.377}$ \\
+        \bottomrule
+    \end{tabular}
+    % \end{adjustbox}
+    }
+    \vspace{-3mm}
+\end{table*}
+
+\vspace{-1mm}
+
+\subsection{Long-Term Unconditional Generation}
+\label{subsec:experimets_long_time_series}
+
+\paragraph{Data, baselines, and metrics.} We utilize the long-term time series benchmark presented in~\cite{zhou2023deep}. It includes three long-term real-world time series datasets obtained from the Monash Time Series Forecasting Repository~\cite{godahewa2021monash}: FRED-MD, NN5 Daily, and Temperature Rain. We omit Solar Weekly as it is short-term. These datasets were chosen based on their average 1-lag autocorrelation metric, measuring their correlation over time. Their 1-lag values range from $0.38$ to $0.98$, highlighting a diverse range of temporal dynamics that present challenges for generative learning tasks. Each dataset contains approximately 750 time steps. We compare our method with state-of-the-art long-term generative methods: LS4 \cite{zhou2023deep}, SaShiMi \cite{goel2022s}, SDEGAN \cite{kidger2021neural}, TimeGAN \cite{yoon2019time}, Latent ODE \cite{rubanova2019latent}, ODE$^{2}$VAE  \cite{yildiz2019ode2vae}, GP-VAE \cite{fortuin2020gp} and RNN-VAE \cite{chung2014empirical}. Three different metrics are used to evaluate the generative performance: Marginal (marg), Classification (class), and Prediction (pred). Marginal scores measure the absolute difference between the empirical probability density functions of two distributions. Classification scores use a sequence model to classify samples as real or generated; high scores indicate less distinguishable samples. Prediction scores utilize a train-on-synthetic-test-on-real sequence-to-sequence model to predict future steps; lower scores indicate higher predictability. We used the STFT transform in all our experiments, creating a $32 \times 32$ size image.  The number of sampling steps is $18$ and we use the EDM model \cite{karras2022elucidating} as the diffusion generative backbone.
+
+
+\vspace{-1mm}
+
+\paragraph{Quantitative and qualitative results.} We present the results in Tab.~\ref{tab:long_term_ts_uncond}. LS4 performs well across most datasets and metrics. In comparison, our method outperforms LS4 and the other techniques in almost all cases. On NN5 Daily pred and on Temp Rain marg we achieve inferior results. Notably, Zhou et al.~\cite{zhou2023deep} discuss the challenge of measuring the marginal score for the Temp Rain dataset due to frequent zero values. We highlight that our approach substantially improves the classification and prediction scores for the Temp Rain dataset. Additionally, our framework achieves strong results in the classification scores for the FRED-MD and NN5 Daily datasets. We report our results with standard deviations in App.~\ref{app:additional_exp:long_ts_uncond_with_std}; the results emphasize the statistical significance improvement our framework achieves. Our qualitative results are shown in Fig.~\ref{fig:mix_tsne_density}(B, D) and in App.~\ref{app:additional_qual_analysis}.
+
+
+\subsection{Ultra-long Term Unconditional Generation}
+\label{subsec:experimets_ultra_long_time_series}
+
+
+\paragraph{Data, baselines, and metrics.}  We conclude our unconditional generation evaluation by considering the challenging setting of \emph{ultra-long} sequences. As far as we know, this setup is underexplored in the literature, and moreover, considering short, long, and ultra-long time series for a single framework is novel to our work. Specifically, we use the following real-world datasets from the Monash Time Series Forecasting Repository~\cite{godahewa2021monash}: San Francisco Traffic (Traffic)~\cite{lai2018modeling} and KDD-Cup 2018 (KDD-Cup)~\cite{luo2019accuair}. The datasets' lengths are $17544$ and $10920$, respectively. Traffic includes an hourly time series detailing the road occupancy rates on the San Francisco Bay Area freeways from $2015$ to $2016$. KDD-Cup represents the air quality level from $2017$ to $2018$ estimated by $59$ stations across two cities, Beijing ($35$ stations) and London ($24$ stations), measured in an hourly rate. We process Traffic with the delay embedding transform ($n=144, m=136$), yielding $144 \times 144$ images. KDD-Cup is transformed by STFT, resulting in $112 \times 112$ images. The sampling steps are $36$ in both datasets. 
+
+\begin{wraptable}{r}{0.5\textwidth}
+    \centering
+    \caption{Ultra-long unconditional generation.}
+    \label{tab:ultra_long_uncond}
+    \setlength{\tabcolsep}{1pt}
+    \resizebox{0.5\textwidth}{!}{
+    \begin{tabular}{l|ccc|ccc}
+        \toprule
+        & \multicolumn{3}{c|}{Traffic} & \multicolumn{3}{c}{KDD-Cup} \\ 
+        Method & pred $\downarrow$ & class $\uparrow$ & marg $\downarrow$ & pred $\downarrow$ & class $\uparrow$ & marg $\downarrow$ \\
+        \midrule
+        Latent-ODE & $1.01$ & $.000$ & $.180$ & $.079$ & $.013$ & $.009$\\
+        LS4 & $.170$ & $.630$ & $.002$ & $.049$  & $.488$ & $.002$ \\
+        Ours & $\boldsymbol{.138}$ & $\boldsymbol{.684}$ & $\boldsymbol{.001}$ & $\boldsymbol{.001}$ & $\boldsymbol{.842}$ & $\boldsymbol{.001}$\\
+        \bottomrule
+    \end{tabular}}
+\end{wraptable}
+
+
+\paragraph{Quantitative and qualitative results.} 
+
+As shown in Tab.~\ref{tab:ultra_long_uncond}, our method consistently achieves superior results in all cases. Notably, it attains on KDD-Cup a pred score of $.001$ compared to LS4's second-best score of $.049$. These results highlight our framework's scalability to very long sequences, demonstrating impressive performance across all sequence lengths as we demonstrated in the previous sections. We also report results with standard deviations in App.~\ref{app:additional_exp:ultra_long_ts_uncond_with_std}, emphasizing the statistical significance of our framework. Finally, our qualitative results for this setting are shown in Fig.~\ref{fig:mix_tsne_density}(C, E) and in App.~\ref{app:additional_qual_analysis}.
+
+
+\subsection{Conditional Generation of Time Series}
+\label{sec:experiments:conditional_generation}
+
+In addition to the unconditional generation benchmark we consider above, we also evaluate our approach on conditional generation tasks. We focus on the imputation (interpolation) and forecasting (extrapolation) tasks, following the experimental setup in~\cite{rubanova2019latent, schirmer2022modeling}. Our approach can be adapted to solve these tasks via a simple modification. For instance, in the interpolation task, the goal is to generate the missing values. Thus, we apply our diffusion model only in the missing locations using a corresponding mask. The rest of the values are left unchanged. A similar mechanism can be applied to extrapolation. Generally, this approach is similar to image inpainting techniques~\cite{lugmayr2022repaint}. In the interpolation task, we randomly mask $50\%$ of the sequence values, whereas in the extrapolation challenge, we split the sequence in half, where the second half represents the target values. In this benchmark, we consider short, long, and ultra-long sequences. Our comparison focuses on generative methods that can handle long-range dependencies including ODE-RNN \cite{rubanova2019latent}, Latent ODE \cite{rubanova2019latent}, CRU \cite{schirmer2022modeling}, and LS4 \cite{zhou2023deep}. Further details about the experiments can be found in App.~\ref{app:experimental_setting}. 
+
+
+
+
+\paragraph{Datasets.} In the short-term setting, we use ETT* datasets~\cite{zhou2021informer}, that contain electricity loads of various resolutions (ETTh1, ETTh2, and ETTm1, ETTm2) from two electricity stations. The sequence length is $96$. For the long-term case, we utilize an established benchmark~\cite{rubanova2019latent, schirmer2022modeling, zhou2023deep}, including the Physionet and USHCN datasets. The Physionet dataset~\cite{silva2012predicting} includes health measurements of $41$ sensors collected from $8000$ ICU patients within the first $48$ hours of admission. The United States Historical Climatology Network (USHCN)~\cite{menne2015long} consists of daily measurements from $1218$ weather stations across the United States, including data on precipitation, snowfall, snow depth, and minimum and maximum temperatures. For the ultra-long setting, we use the datasets mentioned in Sec.~\ref{subsec:experimets_ultra_long_time_series}.
+
+\paragraph{Results.} The results of the conditional generation benchmark are detailed in Tab.~\ref{tab:interpolation_extrapolation}. Values represent the mean squared error (MSE), and thus, lower is better. MSE values are multiplied by $\times 10^{-3}$ and $\times 10^{-2}$ for Physionet and USHCN, respectively, in both experiments. We denote in bold the best method per dataset. The short, long, and ultra-long results are placed at the top, middle, and bottom sections of the table. Overall, our method presents stellar results in all settings, except for ETTm1 where it is second-best. Notably, we mention that in the short interpolation, our results are $\approx 4$ times better than the second-best method, CRU. Similarly, we improve the SOTA by $\approx 30\%$ in the short extrapolation. Our results are particularly strong in the long interpolation setting, where we improve by two- and one-orders of magnitude on Physionet and USHCN, respectively. Finally, we also highlight our ultra-long interpolation results which are $\approx 4$ times better than ODE-RNN. We conclude that our approach shows robustness to varying sequence lengths, presenting extremely strong results across several datasets and in comparison to state-of-the-art generative models.
+
+\begin{table}[t]
+    \centering
+    \caption{Interpolation and extrapolation results on datasets of varying lengths. The asterisk (*) denotes non-converging runs, running for over seven days.}
+    \label{tab:interpolation_extrapolation}
+    \resizebox{\textwidth}{!}{
+    \begin{tabular}{l|ccccc|ccccc}
+        \toprule
+        & \multicolumn{5}{c|}{Interpolation} & \multicolumn{5}{c}{Extrapolation} \\
+        Dataset & ODE-RNN  & Latent ODE & CRU & LS4 & Ours & ODE-RNN  & Latent ODE & CRU & LS4 & Ours \\
+        \midrule
+        ETTh1 & $.210$ & $.671$ & $.283$ & $.642$ & $\boldsymbol{.069}$ & - & $1.02$ & $1.02$ & $3.42$ & $\boldsymbol{.701}$ \\
+        ETTh2 & $.182$ & $.712$ & $.368$ & $3.40$ & $\boldsymbol{.058}$ & - & $1.17$ & $1.09$ & $3.83$ & $ \boldsymbol{.667}$ \\
+        ETTm1 & $.762$ & $.502$ & $.086$ & $.114$ & $\boldsymbol{.038}$ & - & $\boldsymbol{.592}$ & $.643$ & $3.05$ & $.634$ \\ 
+        ETTm2 & $.116$  & $.247$ & $.179$ & $.488$ & $ \boldsymbol{.049}$ & - & $.414$ & $.378$ & $3.64$ & $\boldsymbol{.348}$ \\ 
+        \bottomrule
+        \toprule
+        Physionet  & $2.30$ &  $2.12$ & $1.82$ & $.620$  & $\boldsymbol{.004}$ & $3.01$ & $4.21$ & $6.29$ & $4.94$ &  $\boldsymbol{1.34}$ \\
+        USHCN  & $8.31$  &  $ 17.9$ &  $.160$ &  $.050$ &  $\boldsymbol{.006}$ & $1.96$ & $2.03$ & $1.27$ & $4.36$ &  $\boldsymbol{1.20}$ \\
+        \bottomrule
+        \toprule
+        Traffic  & $.404$  &  $.985$ &  $*$ &  $.990$ &  $\boldsymbol{.090}$ & - & $1.01$ & $*$ & $2.23$ &  $\boldsymbol{.221}$ \\
+        KDD-Cup  & $.205$ &  $.847$ & $.190$ & $.970$  & $\boldsymbol{.144}$ & - & $.696$ & $.723$ & $6.51$ &  $\boldsymbol{.368}$ \\
+        \bottomrule
+    \end{tabular}
+    }
+    \vspace{-2mm}
+\end{table}
+
+
+
+\subsection{Ablation Studies}
+\label{sec:ablations}
+
+We conclude our empirical section by thoroughly inspecting different components of our framework. Specifically, we show that our approach is robust to different image resolutions (App.~\ref{app:abl_image_size}). We also experiment with a range of hyper-parameters (App.~\ref{app:abl_hyperparams}), demonstrating the stability of our approach. Our performance evaluation highlights that our method is comparable to LS4 in terms of training and inference time (App.~\ref{app:comp_analysis}). Below, we ablate the effect of various image transforms on the performance in the unconditional test. We evaluate our model using four different transforms: folding, Gramian angular field (GAF), delay embedding (DE) and STFT, and we detail the results in Tab.~\ref{tab:transforms_abl}. While DE and STFT are slightly better on short and long sequences, respectively, we emphasize that all other transforms perform reasonably well across the various datasets and metrics. GAF does not scale to long sequences as it produces huge images, and thus, it is omitted from the long-term test. We conclude that our framework is robust to the choice of image transformation.
+
+% Transformation ablation study. We utilize two long-term TS datasets: FRED-MD and NN5 Daily. And in addition, two short-term TS datasets: Energy and MuJoCo.
+
+\begin{table*}[!ht]
+    \vspace{-3mm}
+    \centering
+    \caption{Short- and long-term ablation of various image transforms using several datasets and metrics.}
+    \label{tab:transforms_abl}
+    % \setlength{\tabcolsep}{2.5pt}
+    \resizebox{.85\textwidth}{!}{
+    \begin{tabular}{l|cc|cc|ccc|ccc}
+        \toprule
+         & \multicolumn{2}{c|}{Energy} & \multicolumn{2}{c|}{MuJoCo} & \multicolumn{3}{c|}{FRED-MD} & \multicolumn{3}{c}{NN5 Daily} \\ 
+         & disc$\downarrow$ & pred $\downarrow$ & disc$\downarrow$ & pred $\downarrow$ & marg$\downarrow$ & class $\uparrow$ & pred $\downarrow$ & marg$\downarrow$ & class $\uparrow$ & pred $\downarrow$ \\
+        \midrule
+        Folding & $\underline{.074}$ & $\boldsymbol{.250}$ & $\underline{.017}$ & $\boldsymbol{.031}$ & $\boldsymbol{.012}$ & $\boldsymbol{1.67}$ & $\underline{.021}$ & $.010$ & $.776$ & $.436$ \\
+        GAF & $.349$ & $.269$ & $.049$ & $.034$ & - & - & - & - & - & - \\
+        DE & $\boldsymbol{.040}$  & $\boldsymbol{.250}$ & $\boldsymbol{.007}$ & $\underline{.033}$ & $\underline{.017}$ & $\underline{1.65}$ & $\underline{.021}$ & $\underline{.007}$ & $\boldsymbol{.871}$ & $\underline{.394}$ \\
+        STFT & $.271$ & $\underline{.256}$ & $.071$ & $\underline{.033}$ & $.021$ & $.862$ & $\boldsymbol{.009}$ & $\boldsymbol{.005}$ & $\underline{.822}$ & $\boldsymbol{.307}$ \\
+        \bottomrule
+    \end{tabular}
+    }
+    \vspace{-3mm}
+\end{table*}
+
+
+\section{Conclusion}
+ 
+While new generative models for general time series data appear rapidly, the majority of existing frameworks are specifically designed to process either short or long sequences. The lack of a unified framework for varying lengths time series can be justified by the shortcomings of current available tools: gradient issues of recurrent networks, temporal computational costs of transformers, and limited expressiveness of state space models. In this work, we address this problem by introducing a novel generative model for time series based on signal-to-image invertible transforms and a vision diffusion backbone. The benefit of our approach is threefold: we exploit advanced diffusion models for vision, we seamlessly process short-to-ultra-long sequences, and we can utilize tools from the signal-to-image literature. We extensively evaluate our framework in the unconditional and conditional settings using short, long, and ultra-long sequences, considering multiple datasets, and in comparison to state-of-the-art models. Our experiments show the superiority of our framework, setting new SOTA results. Further, we demonstrate the robustness of our method through several ablation studies. Our approach requires slightly higher computational resources, which we leave for further consideration and future work. Finally, we believe that the proposed framework has the potential to be applicable in additional tasks including classification, anomaly detection, few-shot learning, and more generally, serve as a foundation model.
+
+\clearpage
+
+\section*{Acknowledgements}
+This research was partially supported by the Lynn and
+William Frankel Center of the Computer Science Department, Ben-Gurion University of the Negev, an ISF grant
+668/21, an ISF equipment grant, and by the Israeli Council
+for Higher Education (CHE) via the Data Science Research
+Center, Ben-Gurion University of the Negev, Israel.
+
+
+
+{
+\small
+
+\bibliographystyle{abbrv}
+\bibliography{refs}
+}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\clearpage
+\appendix
+
+\section{Domain Transformations}
+\label{appendix:additional_info:domain_transformation}
+
+\begin{figure}[t!]
+    \centering
+    \begin{overpic}[width=1\textwidth]{figures/transforms}
+        \put(2, 0){A} \put(26, 0){B} \put(51, 0){C} \put(76, 0){D}
+    \end{overpic}
+    \caption{We plot above a time series signal (A), and its image transformations via the Gramian angular field (B), STFT (C), and the delay embedding (D).}
+    \label{fig:transforms}
+\end{figure}
+
+
+We give a detailed description for each domain transformation and its corresponding forward and inverse processes. We present in Fig.~\ref{fig:transforms} a visual example of a time series and its various different image transformations.
+
+\paragraph{Folding} is a simple na\"ive transformation. Given a time series $x$, we fold it into an image $x_\text{img}$ by starting from the first row on the left and continuing to the right, jumping to a new row whenever reaching the end of a row. Finally, if needed, we pad with zeroes at the end of the image. The inverse transformation back to the time series is simply taking the in-padded area of the image and unfolding it back to the time series. Although it is simple, this transformation can scale to very long sequences. Folding can be viewed as a particular example of delay embedding, as we detail below.
+
+\paragraph{Gramian Angular Field} is introduced in \cite{wang2015imaging} for subsequent imputation and classification tasks. It depicts a time series within a polar coordinate system rather than the usual Cartesian coordinates. In the Gramian matrix, each element corresponds to the cosine of the sum of angles. The inverse action, from the image to the time series, is to take the main diagonal. While being a very informative transformation, a major constraint of this transformation is that the height and the width are linear with the size of the time series, preventing it from scaling to long sequences.
+
+\paragraph{Delay Embedding}~\cite{takens2006detecting} transforms a univariate time series $x_{1:L} \in \mathbb{R}^L$ into an image by organizing the series' information into columns and padding as necessary. The hyperparameters for this transformation are $m$ and $n$, where $m$ represents the skip value and $n$ is the column dimension. For a given arbitrary channel of a time series, the transformation constructs the matrix $X$ as follows:
+\[
+X = \begin{bmatrix}
+    x_1 & x_{m+1}  & \dots  & x_{L-n} \\
+    \vdots & \vdots & \dots & \vdots \\
+    x_n & x_{n+m+1} & \dots & x_L
+    \end{bmatrix} \in \mathbb{R}^{n \times q} \ ,
+\]
+
+where \( q = \lceil (L-n)/m \rceil \). The image $ x_\text{img} $ is created by padding with zeros to meet the neural network input requirements. The example presented here is for a single channel; scaling to multiple dimensions is straightforward by concatenating each matrix $X$ along another channel. Given an input signal $ x \in \mathbb{R}^{L \times K} $, the transformation produces an output $ x_{\text{img}} \in \mathbb{R}^{K \times n \times q} $. We pad the image with zeroes right after to create an $ x_{\text{img}} \in \mathbb{R}^{K \times n \times n} $.
+
+The original time series $ x_{1:L} $ can be reconstructed from $x_\text{img}$ by taking each marginal progression from the columns of the matrix $X$. There are various methods to reverse the transformation. For instance, if $m=1$, $x_{1:L}$ is formed by concatenating the first row and the last column of $x_\text{img}$. The delay embedding naturally scales to long sequences; for example, setting $m=n=256$ allows encoding $65k$ sequences with $256 \times 256$ images.
+
+\paragraph{Short Time Fourier Transform (STFT)}~\cite{griffin1984signal} is a widely used transformation that converts a signal from its original time domain into the frequency domain. The process of computing STFT involves dividing a time-domain signal into shorter, fixed-length segments and then applying the Fourier transform to each segment individually. Given an input signal \( x \in \mathbb{R}^{L \times K} \), the STFT produces an output \( x_{\text{img}} \in \mathbb{R}^{2K \times H \times W} \). In this output, the number of channels is doubled to store both the real and imaginary parts of the transformed signal, and \( H \) and \( W \) are determined by user-defined parameters. These parameters include \textit{n\_fft}, which specifies the size of the Fourier transform, and \textit{hop\_length}, which defines the distance between successive sliding window frames. Unlike typical audio processing practices, we do not compute the magnitude spectrogram from the STFT output. Instead, we retain both the real and imaginary components within the image, thereby avoiding the need for additional complex spectrogram estimation. This approach maintains the integrity of the full spectral information. After obtaining the STFT images, we normalize them to the range \([-1,1]\), ensuring that the data is scaled appropriately for subsequent processing.
+
+
+\section{Experimental Setting }
+\label{app:experimental_setting}
+
+We use the same architectural backbone for all experiments: EDM~\cite{karras2022elucidating}. We use the AdamW optimizer and train for 1000 epochs, although in practice, all models converged in the range 300-500 epochs. For each task, we elaborate on specific variations in settings and hyperparameters and provide additional information on the training and evaluation protocol.
+
+
+\subsection{Short-term unconditional generation.} 
+
+\paragraph{Data.} For the short-term unconditional generation (Sec. \ref{subsec:experimets_short_time_series}), we utilize four synthetic and real-world datasets with a fixed length of $24$: \textit{Stocks}, consisting of daily historical Google stock data from 2004 to 2019, comprising six channels: high, low, opening, closing, and adjusted closing prices, as well as volume. This data lacks periodicity and is dominated by random walks. The second dataset, \textit{Energy}, is a multivariate appliance energy prediction dataset \cite{candanedo2017data}, featuring 28 channels with correlated features, and it exhibits noisy periodicity and continuous-valued measurements. The third dataset, \textit{MuJoCo} (Multi-Joint dynamics with Contact), serves as a versatile physics generator for simulating TS data with 14 channels \cite{todorov2012mujoco}. The last dataset, \textit{Sine}, is a multivariate simulated dataset, where each sample $x_{t}^{i}(j)$ is defined as $\text{sin}(2 \pi \eta t + \theta)$, where $\eta$ is sampled from a uniform distribution $[0,1]$ and $\theta$ is sampled from a uniform distribution $[-\pi, \pi]$, with five channels for $j$.  
+
+\paragraph{Hyperparameters.}
+We describe below in Tab.~\ref{tab:hp_short} the different hyperparameters used in our framework. For all datasets, we used the same default sampler of EDM~\cite{karras2022elucidating}, and we mention the hyperparameters of their U-net model that we tune in our work. Please see \cite{karras2022elucidating} for further details about the U-net model hyperparameters.
+
+\begin{table*}[!ht]
+    \centering
+    \caption{Short-term unconditional generation hyperparameters including short time Fourier transform (STFT), delay embedding (DE) hyperparameters and diffusion hyperparameters}
+    \label{tab:hp_short}
+    \setlength{\tabcolsep}{8pt} % Adjust the padding between columns
+    \begin{tabular}{lcccc}
+        \toprule
+        & \textbf{Stocks} & \textbf{Energy} & \textbf{MuJoCo} & \textbf{Sine} \\
+        \midrule
+        \textbf{General} \\
+        \emph{image size} & $8 \times 8$ & $8 \times 8$ & $8 \times 8$ & $8 \times 8$ \\
+        \emph{learning rate} & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ \\
+        \emph{batch size} & $128$ & $128$ & $128$ & $128$ \\
+        \midrule
+        \textbf{DE} \\
+        \emph{embedding (n)} & $8$ & $8$ & $8$ & $8$  \\
+        \emph{delay (m)} & $3$ & $3$ & $3$ & $3$\\
+        \midrule
+        \textbf{STFT} \\
+        \emph{n\_fft} & - & - & - & - \\
+        \emph{hop\_length} & - & - & - & - \\
+        \midrule
+        \textbf{Diffusion} \\
+        \emph{U-net channels} & $128$ & $128$ & $64$  & $128$\\
+        \emph{in channels} & $[1, 2, 2, 2]$ & $[1, 2, 2, 4]$ & $[1, 2, 2, 2]$ & $[1, 2, 2, 2]$\\
+        \emph{sampling steps} & $18$ & $18$ & $18$ & $18$ \\
+        \bottomrule
+    \end{tabular}
+\end{table*}
+
+\paragraph{Evaluation.} We utilize the benchmark proposed in~\cite{yoon2019time} to evaluate short-term unconditional generation and adhere to its evaluation protocol. This protocol comprises two scores: a predictive score and a discriminative score. The predictive score assesses the utility of the generated data by training an independent prediction model on the generated data; superior generations result in better prediction scores for this model. The discriminative score evaluates the similarity of distributions using a proxy discriminator trained to distinguish between generated and original samples; higher scores indicate that the generative model has accurately captured the underlying distribution of the data. For more details about the evaluation protocol, please refer to \cite{coletta2024constrained} or \cite{yoon2019time}.
+
+
+\subsection{Long-term unconditional generation.} 
+\label{app:log-term_uncond_details}
+
+\paragraph{Data.} In our exploration of long-term unconditional generation, we employ the benchmark for long-term time series data as presented in~\cite{zhou2023deep}. This benchmark encompasses three extensive real-world time series datasets from the Monash Time Series Forecasting Repository \cite{godahewa2021monash}: FRED-MD, NN5 Daily, and Temperature Rain. These datasets were meticulously selected based on their average 1-lag autocorrelation metric, which quantifies the 1-step correlation over time. The 1-lag values, ranging from 0.38 to 0.98, exemplify a broad spectrum of temporal dynamics, thereby presenting significant challenges for generative learning models. To ensure uniformity in the NN5 Daily and FRED-MD datasets, each sequence within these datasets is normalized such that each trajectory is centered at its mean and adheres to a normal distribution. This normalization approach is advantageous for datasets like NN5 Daily, where the minimum and maximum values can vary substantially across different data points. For the Temperature Rain dataset, sequences are scaled to the [0, 1] range, considering the data's consistently positive values and its tendency to cluster around the x-axis with occasional sharp spikes. Each dataset comprises approximately 750 time steps, providing a robust basis for evaluating long-term generative performance.
+
+\paragraph{Hyperparameters.} We describe below in Tab.~\ref{tab:long-hp_long} the different hyperparameters used in our framework. For all datasets, we used the same default sampler of EDM~\cite{karras2022elucidating}, and we mention the hyperparameters of the U-net model that we tune in our work, please see \cite{karras2022elucidating} for more details about these hyperparameters. In addition, For all long-term experiments, we use the AdamW optimizer with a weight decay of $10^{-5}$.
+
+\begin{table*}[!ht]
+    \centering
+    \caption{Long-term unconditional generation hyperparameters including short time Fourier transform (STFT), delay embedding (DE) hyperparameters and diffusion hyperparameters}
+    \label{tab:long-hp_long}
+    \setlength{\tabcolsep}{8pt} % Adjust the padding between columns
+    \begin{tabular}{lccc}
+        \toprule
+        & \textbf{Fred-MD} & \textbf{Temperature Rain} & \textbf{NN5 Daily} \\
+        \midrule
+        \textbf{General} \\
+        \emph{image size}  & $32 \times 32$ & $32 \times 32$ & $32 \times 32$  \\
+        \emph{learning rate} & $10^{-4}$ & $10^{-4}$ & $10^{-4}$  \\
+        \emph{batch size} & $32$ & $64$ & $32$  \\
+        \midrule
+        \textbf{DE} \\
+        \emph{embedding(n)} & $-$ & $-$ & $-$   \\
+        \emph{delay(m)} & $-$ & $-$ & $-$ \\
+        \midrule
+        \textbf{STFT} \\
+        \emph{n\_fft} & $63$ & $63$ & $63$ \\
+        \emph{hop\_length} & $23$ & $23$ & $25$ \\
+        \midrule
+        \textbf{Diffusion} \\
+        \emph{U-net channels} & $128$ & $128$ & $128$  \\
+        \emph{in channels} & $[1, 2, 4, 4]$ & $[1, 2, 4, 4]$ & $[1, 2, 4, 4]$ \\
+        \emph{sampling steps} & $18$ & $18$ & $18$  \\
+        \bottomrule
+    \end{tabular}
+\end{table*}
+
+\paragraph{Evaluation.} To assess model performance, we follow the benchmark used in \cite{zhou2023deep}. Our evaluation comprises classification and prediction models, each employing linear encoders and decoders with a single S4 layer having 16 hidden state dimensions. In the classification model, the encoder maps data dimensions to 16 hidden states. The S4 layer's output sequence is averaged before being passed to the decoder, which produces logits for binary classification using cross-entropy loss. Similarly, the prediction model's encoder maps input to a 16-dimensional hidden state, while the decoder maps it back to the original data dimension, predicting $k = 10$ future steps. Both models are trained using the AdamW optimizer, which has a learning rate of 0.01 over 100 epochs and a batch size of 128. The optimizer generates samples equal to testing data points to train the models together.
+
+
+\subsection{Ultra-long-term unconditional generation.}
+\label{app:subsec:ultra_long_exp_details}
+
+\paragraph{Data.} For the ultra-long-term unconditional task, we introduce a novel benchmark consisting of two datasets: San Francisco Traffic (Traffic)~\cite{lai2018modeling} and KDD-Cup 2018 (KDD-Cup)~\cite{luo2019accuair}. The datasets' lengths are $17544$ and $10920$, respectively. Traffic includes an hourly time series detailing the road occupancy rates on the San Francisco Bay Area freeways from $2015$ to $2016$. KDD-Cup represents the air quality level from $2017$ to $2018$ estimated by $59$ stations across two cities, Beijing ($35$ stations) and London ($24$ stations), measured in an hourly rate. We follow the same normalization procedure applied to Fred-MD and NN5 daily, as described in~\ref{app:log-term_uncond_details}.
+
+\paragraph{Hyperparameters.} In Tab.~\ref{tab:ultra-long_hyper} below, we outline the various hyperparameters used in our framework. For all datasets, we employed the default sampler of EDM \cite{karras2022elucidating}, and we specified the U-net model hyperparameters that we tuned in our study. For more information on the U-net model hyperparameters, please refer to \cite{karras2022elucidating}.
+
+\begin{table*}[!ht]
+    \centering
+    \caption{Ultra-long-term unconditional generation hyperparameters including short time Fourier transform (STFT), delay embedding (DE) hyperparameters and diffusion hyperparameters}
+    \label{tab:ultra-long_hyper}
+    \setlength{\tabcolsep}{8pt} % Adjust the padding between columns
+    \begin{tabular}{lcc}
+        \toprule
+        & \textbf{Traffic} & \textbf{KDD-Cup} \\
+        \midrule
+        \textbf{General} \\
+        \emph{image size}  & $144 \times 144 $ & $112 \times 112$ \\
+        \emph{learning rate} & $10^{-4}$ & $10^{-4}$  \\
+        \emph{batch size} & $8$ & $16$  \\
+        \midrule
+        \textbf{DE} \\
+        \emph{embedding(n)} & $144$ & $-$   \\
+        \emph{delay(m)} & $136$ & $-$ \\
+        \midrule
+        \textbf{STFT} \\
+        \emph{n\_fft} & $-$ & $223$  \\
+        \emph{hop\_length} & $-$ & $98$ \\
+        \midrule
+        \textbf{Diffusion} \\
+        \emph{U-net channels} & $128$ & $128$   \\
+        \emph{in channels} & $[1, 2, 4, 4]$ & $[1, 2, 4, 4]$\\
+        \emph{sampling steps} & $18$ & $18$  \\
+        \bottomrule
+    \end{tabular}
+\end{table*}
+
+\paragraph{Evaluation.} For the ultra-long-term unconditional generation task, we follow the same procedure outlined in~\ref{app:log-term_uncond_details}. We use the same classification and prediction models, as they effectively distinguish between low- and high-quality ultra-long-term generations.
+
+
+
+\subsection{Conditional generation}
+
+\paragraph{Data.} For short-term interpolation and extrapolation benchmarks (Sec.~\ref{sec:experiments:conditional_generation}), we use the \textit{ETT*} datasets \cite{zhou2021informer}, each with a fixed length of 96. The ETT datasets are crucial indicators for long-term electric power deployment, containing two years of data from two separate counties in China. The datasets are divided into \textit{ETTh1} and \textit{ETTh2} for 1-hour intervals, and \textit{ETTm1} and \textit{ETTm2} for 15-minute intervals. Each data point includes the target value "oil temperature" and six power load features.
+
+For long-term interpolation and extrapolation, we employ a well-established benchmark \cite{rubanova2019latent, schirmer2022modeling, zhou2023deep}, incorporating the Physionet and USHCN datasets. The data extraction for the USHCN dataset follows the procedure detailed by \cite{de2019gru}. Notably, both datasets exhibit sparsity across many features and contain numerous zero values. The Physionet dataset \cite{silva2012predicting} includes health measurements from 41 sensors collected from 8,000 ICU patients within the first 48 hours of admission. The United States Historical Climatology Network (USHCN) \cite{menne2015long} provides daily measurements from 1,218 weather stations across the United States, covering precipitation, snowfall, snow depth, and minimum and maximum temperatures. For the conditional tasks, we strictly follow the training and evaluation procedures described by \cite{schirmer2022modeling}, and we refer readers to this work for a comprehensive explanation of the evaluation protocol. Both datasets span approximately 1,000 to 2,000 time steps.
+
+For the ultra-long-term conditional generation task, we utilize the same data used in the ultra-long-term unconditional generation benchmark, and we refer to App.~\ref{app:subsec:ultra_long_exp_details} for more details about the datasets.
+
+\paragraph{Hyperparameters.} We describe below in Tab.~\ref{tab:hp_cond} the different hyperparameters used in our framework. The hyperparameters are similar for both tasks. Therefore, we present them in a unified table. For all datasets, we used the same default sampler of EDM\cite{karras2022elucidating}; we also present the hyperparameters of the U-net model; for further details about them, please see \cite{karras2022elucidating}.
+
+\begin{table*}[!h]
+    \centering
+    \caption{Conditional generation hyperparameters including short time Fourier transform (STFT), delay embedding (DE) hyperparameters and diffusion hyperparameters}
+    \label{tab:hp_cond}
+    \setlength{\tabcolsep}{8pt} % Adjust the padding between columns
+    \resizebox{1\textwidth}{!}{
+    \begin{tabular}{lcccc|cc|cc}
+        \toprule    
+        & \textbf{ETTh1} & \textbf{ETTh2} & \textbf{ETTm1} & \textbf{ETTm2} & \textbf{Physionet}  & \textbf{USHCN}  & \textbf{Traffic}  & \textbf{KDD-Cup} \\
+        \midrule
+        \textbf{General} \\
+        \emph{image size}  & $32 \times 32$ & $32 \times 32$ & $32 \times 32$  & $32 \times 32$ & $32 \times 32$  & $32 \times 32$  & $144$ & $128$ \\
+        \emph{learning rate} & $10^{-4}$ & $10^{-4}$ & $10^{-5}$ & $30^{-5}$ & $10^{-5}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ \\
+        \emph{batch size} & $32$ & $32$ & $16$ & $64$ & $8$ & $8$ & $8$ & $8$ \\
+        \midrule
+        \textbf{DE} \\
+        \emph{embedding(n)} & $32$  & $32$  & $32$  & $32$ & $32$ & $32$ & $144$ & $128$  \\
+        \emph{delay(m)} & $3$ & $3$  & $3$ & $3$ & $30$ & $30$ & $122$ & $86$\\
+        \midrule
+        \textbf{STFT} \\
+        \emph{n\_fft} & $-$ & $-$ & $-$ & $-$ & $-$ & $-$ & $-$ & $-$\\
+        \emph{hop\_length} & $-$ & $-$ & $-$ & $-$ & $-$ & $-$ & $-$ & $-$\\
+        \midrule
+        \textbf{Diffusion} \\
+        \emph{U-net channels} & $128$ & $128$ & $64$ & $128$ & $128$ & $128$ & $128$ & $128$ \\
+        \emph{in channels} & $[1, 2, 2, 2]$ & $[1, 2, 2, 4]$ & $[1, 2, 4, 8]$& $[1, 2, 4, 8]$ & $[1, 2, 4, 4]$ & $[1, 2, 4, 4]$ & $[1, 2, 4, 4]$ & $[1, 2, 4, 4]$ \\
+        \emph{sampling steps} & $18$ & $18$ & $18$ & $18$& $18$ & $18$ & $36$ & $36$ \\
+        \bottomrule
+    \end{tabular}}
+\end{table*}
+
+
+\paragraph{Evaluation.} For the short-term and ultra-long-term datasets (ETT*, Traffic, KDD-Cup), we follow the next procedure. In the interpolation task, we randomly mask $50\%$ of the input data and train the models to predict the missing masked $50\%$. In the extrapolation task, we mask the second half of the sequence and train the models to predict this missing half. We measure the distance between the models' generated outcomes and the ground truth using MSE loss. Accurate generation will lead to a smaller distance between the prediction and the ground truth, thus indicating the models' interpolation and extrapolation capabilities. For the long-term datasets, we follow a similar procedure as above; however, since the data is sparse and irregularly sampled, the masking is slightly different. We adhere to the exact interpolation and extrapolation processes described in \cite{schirmer2022modeling} and refer to that source for more details.
+
+
+\section{Additional Experiments and Analysis}
+
+\subsection{Short-term unconditional generation}
+\label{app:exp:short_term_unconditional_generation}
+
+Due to space constraints in the main paper, we report the rest of the benchmark here. In Tab.~\ref{tab:short_ts_uncond_cont}, we show our model performance on the simple toy \textbf{Sine} dataset. 
+
+\begin{table}[!ht]
+    \centering
+    \caption{Short time series unconditional generation task on the Sine dataset.}
+    \label{tab:short_ts_uncond_cont}
+    \setlength{\tabcolsep}{1pt}
+    \begin{tabular}{l|c|c}
+        \toprule
+        Method & \multicolumn{2}{c}{Sine} \\ 
+        & disc$\downarrow$ & pred$\downarrow$ \\
+        \midrule
+        KoVAE & $\boldsymbol{.005 \pm .003}$ & $\boldsymbol{.093 \pm .000}$ \\
+        DiffTime & $.013 \pm .006$ & $\boldsymbol{.093 \pm .000}$ \\
+        GT-GAN & $.012 \pm .014$ & $.097 \pm .000$ \\
+        TimeGAN & $.011 \pm .008$ & $.093 \pm .019$ \\
+        RCCGAN & $.022 \pm .0068$ & $.097 \pm .001$ \\
+        C-RNN-GAN & $.229 \pm .040$ & $.127 \pm .004$ \\
+        WaveNet & $.158 \pm .011$ & $.117 \pm .008 $ \\
+        WaveGAN & $.277 \pm .013$ & $.134 \pm .013$ \\
+        LS4 & $ .342 \pm .007$ & $ .132 \pm .011$ \\
+        \midrule
+        Ours  & $.014 \pm .009$ & $.094 \pm .000$ \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+
+\subsection{Wasserstein distance analysis}
+
+In Tab.~\ref{tab:wass_dist}, we present the Wasserstein distances calculated between our generated 2D point cloud and the actual data. A lower score indicates greater similarity between the clusters, meaning that a lower score is preferable. Our approach yields the best scores across all datasets in comparison to GT-GAN on short sequences and LS4 on long and ultra-long time series.
+
+\begin{table*}[h]
+    \centering
+    \caption{We calculate the Wasserstein distances between the original cluster, our generated samples cluster the other method cluster shown in Figs.~\ref{fig:short_tsne_density_cont}, \ref{fig:long_tsne_density_cont} and \ref{fig:very_long_tsne_density_cont}.}
+    \label{tab:wass_dist}
+    % \setlength{\tabcolsep}{2.8pt}
+    \resizebox{1\textwidth}{!}{
+    \begin{tabular}{l||c|c|c||c|c||c|c}
+        \toprule
+        Method & Stocks & Energy & MuJoCo & Temp Rain & NN5 Daily & Traffic & KDD-Cup\\ 
+        \midrule
+        GT-GAN & $6.20$ & $3.35$ & $3.83$ & - & - & - & -  \\
+        LS4 & - & - & - & $3.27$ & $5.23$ & $4.63$ & $11.84$ \\
+        Ours & $\boldsymbol{2.84}$ & $\boldsymbol{3.20}$ & $\boldsymbol{1.05}$ & $\boldsymbol{2.85}$ & $\boldsymbol{5.21}$ & $\boldsymbol{3.19}$ & $\boldsymbol{6.59}$ \\
+        \bottomrule
+    \end{tabular}}
+\end{table*}
+
+
+\subsection{Short-term unconditional generation qualitative analysis}
+\label{app:additional_qual_analysis}
+
+We include the \textit{Stocks}, \textit{Energy} and the \textit{MuJoCo} qualitative t-SNE evaluation (Fig.~\ref{fig:short_tsne_density_cont}(A,B,C)) and density analysis (Fig~.\ref{fig:short_tsne_density_cont}(D, E, F)). In addition, we show in Tab.~\ref{tab:wass_dist} a quantitative evaluation of the t-SNE clusters Wasserstein distance. Both the visual results and the quantitative results demonstrate our framework's ability to learn the true distribution across multiple datasets. 
+
+
+\begin{figure}[h!]
+    \centering
+    \begin{overpic}[width=1\textwidth]{figures/short_tsne_density}
+        \put(1, 38){A} \put(34.5, 38){B} \put(67.5, 38){C}
+        \put(1, 18){D} \put(34.5, 18){E} \put(67.5, 18){F}
+    \end{overpic}
+    \caption{We plot the 2D t-SNE embeddings of synthetic data generated with our method and SOTA tools vs. the real data (top). Then, we compare their probability density functions (bottom).}
+    \label{fig:short_tsne_density_cont}
+\end{figure}
+
+\subsection{Long-term unconditional generation with standard deviation}
+\label{app:additional_exp:long_ts_uncond_with_std}
+
+In Tab.~\ref{tab:long_uncond_with_std}, we present the results of our method on unconditional generation of long sequences with standard deviation. The results demonstrate our method's statistical significance compared to the state-of-the-art method LS4. 
+
+
+\begin{table*}[!h]
+    \centering
+    \caption{Long time series unconditional generation task with standard deviation.}
+    \label{tab:long_uncond_with_std}
+    \setlength{\tabcolsep}{3.4pt}
+    \begin{tabular}{l|c|c|c|c|c|c|c|c|c}
+        \toprule
+         & \multicolumn{3}{c|}{LS4} & \multicolumn{3}{c|}{Ours} \\ 
+         & marg$\downarrow$ & class $\uparrow$ & pred $\downarrow$ & marg$\downarrow$ & class $\uparrow$ & pred $\downarrow$ \\
+        \midrule
+        FRED-MD & $.022$& $.544$ & $.037$ & $\boldsymbol{.021\pm.000}$ & $\boldsymbol{.862\pm.227}$ & $\boldsymbol{.009 \pm .003}$  \\
+        NN5 Daily & $.007$ & $.636$ & $\boldsymbol{.241}$ & $\boldsymbol{.005 \pm .000}$ & $\boldsymbol{.822 \pm .157}$ & $.307 \pm .037$   \\
+        Temp Rain & $\boldsymbol{.083}$ & $.976$ & $.521$ & $.409 \pm .000$ & $\boldsymbol{5.80 \pm .974}$ & $\boldsymbol{.377 \pm .022}$  \\
+        \bottomrule
+    \end{tabular}
+\end{table*}
+
+
+
+\subsection{Long-term unconditional generation qualitative analysis}
+
+We include the qualitative t-SNE evaluation for \textit{Temp Rain} and \textit{NN5 Daily} (Fig.~\ref{fig:long_tsne_density_cont}(A, B)) and their density analysis (Fig.~\ref{fig:long_tsne_density_cont}(D, E)). Additionally, we provide in Tab.~\ref{tab:wass_dist} the quantitative evaluation of the t-SNE clusters using the Wasserstein distance. Our results indicate the superiority of our approach in comparison to other techqniques.
+
+\begin{figure}[h!]
+    \centering
+    \begin{overpic}[width=1\textwidth]{figures/long_tsne_density}
+        \put(1, 38){A} \put(51, 38){B}
+        \put(1, 18){C} \put(51, 18){D}
+    \end{overpic}
+    \caption{We plot the 2D t-SNE embeddings of synthetic data generated with our method and SOTA tools vs. the real data (top). Then, we compare their probability density functions (bottom).}
+    \label{fig:long_tsne_density_cont}
+\end{figure}
+
+
+\subsection{Ultra-long time series unconditional generation with standard deviation}
+\label{app:additional_exp:ultra_long_ts_uncond_with_std}
+
+In Tab.~\ref{tab:ultra_long_ts_uncond_with_std}, we present the results of our method for unconditional generation of ultra-long sequences, including standard deviations. These results demonstrate the statistical significance of our method compared to the state-of-the-art competitive methods.
+
+
+\begin{table*}[!h]
+    \centering
+    \caption{Ultra-long unconditional generation with standard devation}
+    \label{tab:ultra_long_ts_uncond_with_std}
+    \setlength{\tabcolsep}{2.5pt}
+    \begin{tabular}{l|ccc|ccc}
+        \toprule
+        Method & \multicolumn{3}{c|}{Traffic} & \multicolumn{3}{c}{KDD-Cup} \\ 
+         & pred $\downarrow$ & class $\uparrow$ & marg $\downarrow$ & pred $\downarrow$ & class $\uparrow$ & marg $\downarrow$ \\
+        \midrule
+        Latent ODE & $1.01 \pm .412 $ & $.000 \pm .000$ & $.180 \pm .000$ & $.079 \pm .055$ & $.013 \pm .020$ & $.009 \pm .000$\\
+        LS4 & $.170\pm.030$ & $.630\pm.060$ & $.002\pm.000$ & $.049\pm.046$  & $.488\pm.164$ & $.002\pm.000$ \\
+        
+        Ours & $\boldsymbol{.138\pm.014}$ & $\boldsymbol{.684\pm.019}$ & $\boldsymbol{.001\pm.000}$ & $\boldsymbol{.001\pm.000}$ & $\boldsymbol{.842\pm.245}$ & $\boldsymbol{.001\pm.000}$\\
+        \bottomrule
+    \end{tabular}
+\end{table*}
+
+\subsection{Ultra-long-term unconditional generation qualitative analysis}
+
+We include the qualitative t-SNE evaluation for \textit{Traffic} and \textit{KDD-Cup} (Fig.~\ref{fig:very_long_tsne_density_cont}(A, B)) and the density analysis (Fig.~\ref{fig:very_long_tsne_density_cont}(D, E)). Additionally, we provide in Tab.~\ref{tab:wass_dist} the quantitative evaluation of the t-SNE clusters using the Wasserstein distance. Our results highlight our method ability to handle very long sequences.
+
+
+\begin{figure}[t!]
+    \centering
+    \begin{overpic}[width=1\textwidth]{figures/very_long_tsne_density}
+        \put(1, 38){A} \put(51, 38){B}
+        \put(1, 18){C} \put(51, 18){D}
+    \end{overpic}
+    \caption{We plot the 2D t-SNE embeddings of synthetic data generated with our method and SOTA tools vs. the real data (top). Then, we compare their probability density functions (bottom).}
+    \label{fig:very_long_tsne_density_cont}
+\end{figure}
+
+\subsection{Image size ablation}
+\label{app:abl_image_size}
+
+Given the significant impact of image size on the computational resources required by our method, we investigate whether varying image size influences different transformations. We explore the effect of different image sizes on our framework, utilizing long-term datasets with short time Fourier transform (STFT) and short-term datasets with delay embedding. For short time series consisting of 24 time steps, we test image sizes of 8 and 16, as we observe that scaling to larger sizes may not yield benefits. For long time series of approximately 750 steps, we experiment with sizes of 32, 64, and 128. Notably, 32 is the minimum size required to contain enough pixels for representing the long sequence adequately. We present the results in Tab.~\ref{tab:image_size_abl}. While most results demonstrate high competitiveness compared to other methods, inconclusive experimental results indicate that image size does not significantly affect generation quality. Therefore, it is reasonable to use the minimum length that a transformation can accommodate to benefit from minimum computational costs.
+
+
+
+\begin{table*}[!ht]
+    \centering
+    \caption{Image size ablation study.}
+    \label{tab:image_size_abl}
+    \setlength{\tabcolsep}{2.5pt}
+    \begin{tabular}{l|ccc|ccc|cc|cc}
+        \toprule
+        Image Size & \multicolumn{3}{c|}{FRED-MD} & \multicolumn{3}{c|}{NN5 Daily} & \multicolumn{2}{c|}{Energy} & \multicolumn{2}{c}{MuJoCo} \\ 
+         & marg$\downarrow$ & class $\uparrow$ & pred $\downarrow$ & marg$\downarrow$ & class $\uparrow$ & pred $\downarrow$ & disc$\downarrow$ & pred $\downarrow$ & disc$\downarrow$ & pred $\downarrow$   \\
+        \midrule
+        Short Series\\
+        8 x 8 & - & - & - & - & - & - & $\boldsymbol{.040}$ & $\boldsymbol{.250}$ & $\boldsymbol{.007}$ & $.033$ \\
+        16 x 16 & - & - & - & - & - & - & $.059$ & $\boldsymbol{.250}$ & $.036$ & $\boldsymbol{.032}$ \\
+        \midrule
+        Long Series \\
+        32 x 32 & $.021$ & $.862$ & $\boldsymbol{.009}$ & $\boldsymbol{.005}$ & $.822$ & $\boldsymbol{.307}$ & - & - & - & - \\
+        64 x 64 & $.021$ & $\boldsymbol{1.82}$ & $.021$ & $.008$ & $\boldsymbol{.829}$ & $.440$ & - & - & - & - \\
+        128 x 128 & $\boldsymbol{.016}$ & $1.65$ & $.023$ & $.012$ & $.733$ & $.430$ & - & - & - & - \\
+        \bottomrule
+    \end{tabular}
+\end{table*}
+
+
+
+
+
+\subsection{Hyeprparameters Ablation}
+\label{app:abl_hyperparams}
+
+\paragraph{Ablation study on diffusion sampling steps.} While \cite{karras2022elucidating} demonstrate an improvement in FID score with a larger number of steps in their work, we do not observe the same trend in our framework. The results are presented in Tab.~\ref{tab:hyperparameters_abl} in the first section, indicating an unclear trend across different datasets and metrics.
+
+\paragraph{Ablation study on batch size.} The results in Tab.~\ref{tab:hyperparameters_abl} in the middle section demonstrate that our framework is unaffected by different batch sizes. This is a positive indication of our framework's adaptability to various computational environments, whether with low memory or high memory capabilities.
+
+\paragraph{Ablation study on learning rate.} In our examination of the learning rate, we have made an intriguing observation. We have found that when the learning rate equals or exceeds $10^{-3}$, the diffusion backbone \cite{karras2022elucidating} tends to collapse, resulting in the generation of irrelevant signals. This phenomenon is clearly demonstrated in Tab.~\ref{tab:hyperparameters_abl} in the middle section. With a learning rate of $10^{-3}$, the \textit{disc} scores are $.256$ and $0.499$ for the MuJoCo and Energy datasets, respectively, indicating random generation. However, when the learning rate is lowered, we have not observed any such collapse of the backbone on any dataset or task.
+
+\begin{table*}[!ht]
+    \centering
+    \caption{Hyperparameters ablation study. We study the effect of different hyperparameters on our framework. We utilize four short and long-term datasets.}
+    \label{tab:hyperparameters_abl}
+    \setlength{\tabcolsep}{2.5pt}
+    \begin{tabular}{l|ccc|ccc|cc|cc}
+        \toprule
+        Hyperparameter & \multicolumn{3}{c|}{FRED-MD} & \multicolumn{3}{c|}{NN5 Daily} & \multicolumn{2}{c|}{Energy} & \multicolumn{2}{c}{MuJoCo} \\ 
+         & marg$\downarrow$ & class $\uparrow$ & pred $\downarrow$ & marg$\downarrow$ & class $\uparrow$ & pred $\downarrow$ & disc$\downarrow$ & pred $\uparrow$ & disc$\downarrow$ & pred $\uparrow$   \\
+        \midrule
+        Diffusion Sampling Steps\\
+        18 & $.021$ & $.862$ & $.009$ & $.005$ & $.822$ & $.307$ & $.040$ & $.250$ & $.007$ & $.033$ \\
+        36 & $.015$ & $1.33$ & $.020$ & $.009$ & $.829$ & $.399$ & $.052$ & $.250$ & $.017$ & $.032$ \\
+        72 & $.017$ & $1.36$ & $.022$ & $.009$ & $.836$ & $.395$ & $.057$ & $.250$ & $.025$ & $.031$ \\
+        144 & $.018$ & $1.32$ & $.024$ & $.010$ & $.836$ & $.397$ & $.058$ & $.250$ & $.025$ & $.030$ \\
+        \midrule
+        Batch Size \\
+        16 & $.022$ & $1.41$ & $.023$ & $.009$ & $.804$ & $.403$ & $.060$ & $.250$ & $.012$ & $.032$ \\
+        32 & $.018$ & $1.31$ & $.021$ & $.010$ & $.850$ & $.396$ & $.059$ & $.250$ & $.009$ & $.032$ \\
+        64 & $.019$ & $1.32$ & $.021$ & $.009$ & $.842$ & $.394$ & $.050$ & $.250$ & $.019$ & $.032$ \\
+        \midrule
+        Learning Rate\\
+        $10^{-3}$ & $.019$ & $1.02$ & $.025$ & $.012$ & $.827$ & $.415$ & $.499$ & $.252$ & $.256$ & $.043$ \\
+        $10^{-4}$ & $.021$ & $1.54$ & $.024$ & $.010$ & $.813$ & $.401$ & $.065$ & $.249$ & $.007$ & $.033$ \\
+        $10^{-5}$ & $.021$ & $1.16$ & $.025$ & $.007$ & $1.01$ & $.421$ & $.056$ & $.250$ & $.020$ & $.031$ \\
+        \bottomrule
+    \end{tabular}
+\end{table*}
+
+
+
+\subsection{Computational Resources Comparison}
+\label{app:comp_analysis}
+
+In this section, we compare the computational resources required by our proposed method and the LS4 method, focusing on training and inference wall-clock runtime and model size in terms of parameters, and we analyze the FLOPs used per method. Although our method, which utilizes image transforms and diffusion models, has a larger model size in terms of parameters, it remains comparable to LS4 regarding training and inference time. Despite the larger model size, our method achieves similar training and inference efficiency, making it a viable and scalable solution for large-scale time series generation tasks as shown in Tab.\ref{tab:comutational_resources}. Furthermore, the rapid advancements and growing research interest in faster sampling techniques for diffusion models \cite{song2024improved} present an opportunity to further enhance our method's efficiency. Leveraging these developments, our approach can integrate even more optimized diffusion models, potentially reducing the computational time and resources required for training and inference, thus improving scalability for large-scale time series generation tasks. Finally, we analyze the FLOPs used in our method compared to LS4 and DiffTime on the Stock, nn5daily and KDD Cup datasets in Tab.~\ref{tab:flops_methods}.
+
+\begin{table*}[!ht]
+    \centering
+    \caption{Computational resources in terms of training wall-clock runtime (WCR) in minutes(m) or hours(h), and model parameters (MP) in millions (M)}
+    \label{tab:comutational_resources}
+    \resizebox{0.9\textwidth}{!}{
+    \begin{tabular}{l|cc|cc|cc|cc}
+        \toprule
+        Method & \multicolumn{2}{c|}{Stocks} & \multicolumn{2}{c|}{Energy} & \multicolumn{2}{c|}{NN5 Daily} & \multicolumn{2}{c}{Temp Rain}  \\ 
+         & WCR & MP & WCR & MP & WCR & MP & WCR & MP  \\
+        \midrule
+        TimeGAN & 2h 59m & 48K & 3h 37m & 1M & - & - & - &  - \\
+        GT-GAN & 12h 20m & 41K & 10h 39m & 57k & - & - & - &  - \\
+        DiffTime & 52m & 240k & - & - & 46m & 32M & - & - \\
+        LS4 & 5h 30m  & 2.7M  & 2h   & 2.1M & 53m & 2.1M & 27h  & 2.3M  \\
+        Ours & 1h 10m  & 575K & 1h  & 2M & 58m & 5.9M & 30h  & 6.4M \\
+        \bottomrule
+    \end{tabular}
+    }
+\end{table*}
+
+\begin{table*}[!ht]
+        \centering
+        \caption{FLOPs analysis on DiffTime, LS4 and Our method}
+        \label{tab:flops_methods}
+        % \resizebox{0.9\textwidth}{!}{
+        \setlength{\tabcolsep}{2.0pt}
+        \begin{tabular}{l|ccc|ccc|ccc}
+            \toprule
+            $\#$Params & \multicolumn{3}{c|}{DiffTime} & \multicolumn{3}{c|}{LS4}  & \multicolumn{3}{c|}{Ours}  \\ 
+             & Stocks  & nn5daily & KDD Cup & Stocks  & nn5daily & KDD Cup & Stocks  & nn5daily & KDD Cup \\
+            \midrule
+            500k &  $0.057$G & $0.751$G & $14.485$G & $0.003$G & $0.107$G & $1.480$G & $0.009$G & $0.123$G & $1.480$G\\ 
+            1M & $0.037$G & $1.301$G & $24.394$G & $0.007$G & $0.233$G & $3.225$G & $0.014$G & $0.217$G & $2.624$G\\
+            5M & $0.747$G & $4.289$G & $99.402$G & $0.048$G & $1.594$G & $22.015$G & $0.070$G & $1.084$G & $13.21$G\\
+            25M & $3.838$G & $20.864$G & $414.15$G & $0.191$G & $6.299$G & $86.966$G & $0.291$G & $4.683$G & $57.25$G\\ 
+            50M & $7.996$G & $41.060$G & $711.04$G & $0.352$G & $11.602$G & $160.172$G & $0.633$G & $10.06$G  & $123.0$G\\
+            100M & $14.544$G & $80.198$G & $1387.3$G & $0.759$G & $25.040$G & $-$ & $1.335$G & $21.27$G & $260.3$G\\
+            150M & $22.407$G & $118.865$G & $1874.5$G & $1.084$G & $35.739$G & $-$ & $1.890$G & $31.58$G & $386.6$G\\
+            \bottomrule
+        \end{tabular}
+        % }
+    \end{table*}
+
+
+\begin{figure}[t!]
+    \centering
+    \begin{minipage}[b]{0.5\textwidth} % Slightly larger width
+        \centering
+        \includegraphics[width=\linewidth]{figures/scaling_laws_stocks_difftime.pdf}
+        % No caption for individual subfigures
+        \label{fig:diff_time_stocks}
+    \end{minipage}\hfill
+    \begin{minipage}[b]{0.5\textwidth} % Slightly larger width
+        \centering
+        \includegraphics[width=\linewidth]{figures/scaling_laws_stocks_ls4.pdf}
+        % No caption for individual subfigures
+        \label{fig:ls4_stocks}
+    \end{minipage}\hfill
+    \begin{minipage}[b]{0.5\textwidth} % Slightly larger width
+        \centering
+        \includegraphics[width=\linewidth]{figures/scaling_laws_stocks_ours.pdf}
+        % No caption for individual subfigures
+        \label{fig:ours_stocks}
+    \end{minipage}
+    \caption{Scaling analysis of different models on Stocks data. A lower discriminative score is better.}
+    \label{fig:comparative_analysis}
+\end{figure}
+
+\subsection{Scaling Laws Analysis}
+In this section, we investigate how the performance of our proposed method scales with the size of the underlying image diffusion model. Specifically, we evaluate the impact of increasing the model size from a few thousand parameters to several hundred million on various time-series datasets. Additionally, we compare this trend with other state-of-the-art time-series generative models, analyzing how their performance is affected by model size increments. Interestingly, merely increasing the model parameters does not improve their performance. It demonstrates that simply enlarging previous methods does not necessarily enhance their generation capabilities. Moreover, in the case of LS4 on the KDD Cup dataset, increasing the model's parameters to 100 million results in memory collapse, making it infeasible to run a batch size of one with the current resources used for training all models. We present the results for our method in Tab.~\ref{tab:our_framework_scaling_laws}, for LS4 in Tab.~\ref{tab:ls4_scaling_laws} and the results for DiffTime, in Tab.~\ref{tab:difftime_scaling_laws} and Tab.~\ref{tab:difftime_kdd_scaling_laws}. Finally, we add a visualization of the results for the Stocks dataset in Fig.~\ref{fig:comparative_analysis}.
+
+\clearpage
+
+\begin{table*}[!ht]
+    \centering
+    \caption{Our framework scaling laws}
+    \label{tab:our_framework_scaling_laws}
+    \setlength{\tabcolsep}{3.8pt}
+    \begin{tabular}{l|c|c|c|c|c|c|c|c}
+        \toprule
+        & \multicolumn{2}{c|}{Stocks} & \multicolumn{2}{c|}{Energy} & \multicolumn{3}{c|}{nn5daily} \\
+        $\#$P & disc$\downarrow$ & pred$\downarrow$ & disc$\downarrow$ & pred$\downarrow$ & marg$\downarrow$ & class$\uparrow$ & pred$\downarrow$ \\
+        \midrule
+        0.5M & $ .009 \pm .006$ & $.036 \pm .000$ & $.100 \pm .009$ & $.253 \pm .000 $ & $.012$ & $.765 \pm .275 $ & $.407 \pm .640$ \\ 
+        1M & $ .009 \pm .005$ & $.036 \pm .000$ & $.087 \pm .005$ & $.251 \pm .000 $  & $.010$ & $1.10 \pm .315$ & $.421 \pm .076$ \\ 
+        2M & $ .009 \pm .005$ & $.036 \pm .000 $ & $.04 \pm .006$ & $.250 \pm .000 $ & $.006$ & $1.03 \pm .263$ & $.389 \pm .056$ \\ 
+        4M & $ .011 \pm .006$ & $.036 \pm .000$ & $.053 \pm .004$ & $.250 \pm .000 $ & $.005$ & $.859 \pm .368$ & $.443 \pm .117$ \\
+        10M & $ .009 \pm .006$ & $.036 \pm .000$ & - & - & $.006$ & $.859 \pm .153$ & $.428 \pm .032$ \\
+        15M & $ .010 \pm .004$ & $.036 \pm .000$ & - & - & - & - & - \\
+        25M & $ .009 \pm .005$ & $.036 \pm .000$ & - & - & - & - & - \\
+        50M & $ .032 \pm .007$ & $.036 \pm .000$ & - & - & $.005$ & $.420 \pm 0.021$ & $.884 \pm 0.223$ \\
+        \bottomrule
+    \end{tabular}
+\end{table*}
+
+
+\begin{table*}[!ht]
+    \centering
+    \caption{LS4 scaling laws}
+    \setlength{\tabcolsep}{3.8pt}
+    \label{tab:ls4_scaling_laws}
+    \begin{tabular}{l|c|c|c|c|c|c|c|c}
+        \toprule
+        & \multicolumn{2}{c|}{Energy} & \multicolumn{2}{c|}{Stocks} & \multicolumn{3}{c|}{nn5daily} \\
+        $\#$P & disc$\downarrow$ & pred$\downarrow$ & disc$\downarrow$ & pred$\downarrow$ & marg$\downarrow$ & class$\uparrow$ & pred$\downarrow$ \\
+        \midrule
+        0.69M  & $ .498 \pm .000$ & $ .374 \pm .019$ & $ .427 \pm .047$ & $ .047 \pm .0045$ & $.061$ & $ .002 \pm .003$  & $ 1.97 \pm 1.17$ \\
+        2.1M   & $ .474 \pm .003$ & $ .251 \pm .000$ & $ .199 \pm .065$ & $ .068 \pm .013$ & $.011$ & $ .719 \pm .138$  & $ .305 \pm .054$ \\
+        7.3M   & $ .488 \pm .002$ & $ .311 \pm .003$ & $ .306 \pm .071$ & $ .058 \pm .001$ & $ .067 $ & $ .005 \pm .009 $ & $ 1.33 \pm .288 $ \\
+        16.2M  & $ .489 \pm .003$ & $ .262 \pm .001$ & $ .238 \pm .066$ & $ .038 \pm .000$ & $.011$ & $ .733 \pm .344$  & $ .335 \pm .105$ \\
+        26.8M  & $ .494 \pm .002$ & $ .311 \pm .003$ & $ .312 \pm .029$ & $ .054 \pm .001$ & $.019$ & $ .213 \pm .167$  & $ .275 \pm .034$ \\
+        35.4M  & $ - $  & $ - $ & $ .323 \pm .099$ & $ .071 \pm .003$ & $.008$ & $ .771 \pm .225$  & $ .294 \pm .069$ \\
+        43.2M  & $ - $  & $ - $ & $ .302 \pm .022$ & $ .067 \pm .000$ & $ - $ & $ - $  & $ - $ \\
+        49.5M  & $ .497 \pm .001$ & $ .294 \pm .002$ & $ .354 \pm .020$ & $ .037 \pm .000$ & $ - $ & $ - $  & $ - $ \\
+        102.4M & $ .497 \pm .001$ & $ .276 \pm .001$ & $ - $            & $ - $            & $.090$ & $ .006 \pm .000$  & $ 7.07 \pm 2.21$ \\
+        152.7M & $ .498 \pm .000$ & $ .296 \pm .005$ & $ - $ & $ - $ & $.165$ & $ .001 \pm .000$  & $ 2.02 \pm .897$ \\
+        \bottomrule
+    \end{tabular}
+\end{table*}
+
+\begin{table*}[!ht]
+    \centering
+    \caption{DiffTime scaling laws}
+    % \setlength{\tabcolsep}{8pt}
+    \label{tab:difftime_scaling_laws}
+    \begin{tabular}{l|cc|ccc}
+        \toprule
+        $\#$P & \multicolumn{2}{c|}{Stocks} & \multicolumn{3}{c|}{nn5 daily} \\ 
+        & disc$\downarrow$ & pred$\downarrow$ & marg$\downarrow$ & class$\uparrow$ & pred$\downarrow$ \\
+        \midrule
+        240k & $.153 \pm .008$ & $.037 \pm .037$ & $.030$ & $.179 \pm .131$ & $4.33 \pm 1.54$ \\ 
+        440k & $.142 \pm .050$ & $.038 \pm .038$ & $.026$ & $.284 \pm .252$ & $2.79 \pm .591$ \\
+        757k & $.108 \pm .015$ & $.038 \pm .038$ & $.015$ & $.421 \pm .316$ & $1.92 \pm .941$ \\
+        1.4M & $.179 \pm .010$ & $.037 \pm .037$ & $.021$ & $.525 \pm .410$ & $11.43 \pm 19.03$\\
+        2.7M & $.117 \pm .007$ & $.039 \pm .039$ & $.016$ & $.279 \pm .217$ & $.981 \pm .207$ \\
+        5.9M & $.027 \pm .012$ & $.037 \pm .037$ & $.006$ & $.324 \pm .160$ & $.666 \pm .199$ \\
+        10M & $.185 \pm .013$ & $.037 \pm .037$ & $.016$ & $.272 \pm .135$ & $.939 \pm .224$ \\
+        14M & $.097 \pm .010$ & $.037 \pm .037$ & $.011$ & $.308 \pm .199$ & $10.53 \pm 7.06$ \\
+        20M & $.166 \pm .008$ & $.037 \pm .037$ & $.017$ & $.312 \pm .147$ & $.441 \pm .084$ \\
+        28M & $.085 \pm .016$ & $.039 \pm .039$ & $.019$ & $.134 \pm .097$ & $.583 \pm .086$ \\
+        39M & $.182 \pm .025$ & $.042 \pm .042$ & $.021$ & $.182 \pm .155$ & $.681 \pm .187$ \\
+        53M & $.128 \pm .012$ & $.037 \pm .037$ & $.008$ & $.140 \pm .160$ & $.896 \pm .598$ \\
+        103M & -- & -- & $.015$ & $.345 \pm .132$ & $.584 \pm .211$ \\
+        156M & -- & -- & $.018$ & $.675 \pm .744$ & $1.700 \pm 1.161$ \\
+        \bottomrule
+    \end{tabular}
+\end{table*}
+
+
+\clearpage
+
+\subsection{Other Image Generative Models}
+Our goal in this paper is to leverage recent advancements in computer vision to develop an elegant and robust solution for time-series data, addressing different sequence lengths and setting a baseline for handling short, long, and ultra-long sequences. We aim to take advantage of the fact that image architectures are more thoroughly explored. We hypothesize that the improvements we observe are largely due to the more advanced development of image architectures compared to time-series architectures. To further investigate this, we used NVAE \cite{vahdat2020nvae}, and StyleGAN \cite{karras2019style}, instead of the diffusion model. We observe the results in Tab.~\ref{tab:other_img_gen_model_res}. The results imply that using recently better-explored architecture yields better results when using the same transformations. This understanding strengthens our hypothesis for the robustness and efficiency of diffusion models.
+
+\begin{table*}[!ht]
+    \centering
+    \caption{DiffTime scaling laws, KDD Cup}
+    \setlength{\tabcolsep}{3.8pt}
+    \label{tab:difftime_kdd_scaling_laws}
+    \begin{tabular}{l|ccc}
+        \toprule
+        $\#$P & \multicolumn{3}{c}{KDD Cup} \\ 
+        & marg$\downarrow$ & class$\uparrow$ & pred$\downarrow$ \\
+        \midrule
+        3.4M & $.026$ & $.001 \pm .000$ & $1103.27 \pm 753.21$ \\ 
+        13.5M & $.022$ & $.001 \pm .000$ & $902.77 \pm 632.74$ \\ 
+        54M & $.024$ & $.000 \pm .000$ & $930.83 \pm 607.39$ \\ 
+        104M & $.024$ & $.001 \pm .000$ & $970.21 \pm 693.19$ \\ 
+        121M & $.024$ & $.000 \pm .000$ & $968.18 \pm 611.15$ \\ 
+        \bottomrule
+    \end{tabular}
+\end{table*}
+
+
+
+\begin{table*}[!ht]
+    \centering
+    \caption{Other image generative models resutls}
+    \label{tab:other_img_gen_model_res}
+    \resizebox{1.\textwidth}{!}{
+    \begin{tabular}{l|ccc|ccc|cc}
+        \toprule
+        \textbf{Models/Datasets} & \multicolumn{3}{c|}{KDD} & \multicolumn{3}{c|}{NN Daily} & \multicolumn{2}{c}{Stocks} \\ 
+        & Marginal $\downarrow$ & Classifier $\uparrow$ & Predictor $\downarrow$ & Marginal $\downarrow$ & Classifier $\uparrow$ & Predictor $\downarrow$ & Disc $\downarrow$ & Pred $\downarrow$ \\
+        \midrule
+        Style GAN      & 0.020 & 0.001 & 0.233 & 0.020 & 0.091 & 2.100 & 0.276 & 0.042 \\
+        NVAE           & 0.008 & 0.031 & 0.107 & 0.020 & 0.089 & 0.600 & 0.081 & 0.049 \\
+        \bottomrule
+    \end{tabular}
+    }
+\end{table*}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\clearpage
+\section*{NeurIPS Paper Checklist}
+
+ 
+
+%%% END INSTRUCTIONS %%%
+
+
+\begin{enumerate}
+
+\item {\bf Claims}
+    \item[] Question: Do the main claims made in the abstract and introduction accurately reflect the paper's contributions and scope?
+    \item[] Answer: \answerYes{} % Replace by \answerYes{}, \answerNo{}, or \answerNA{}.
+    \item[] Justification: The experiment section, related work and method section support the main claims.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer NA means that the abstract and introduction do not include the claims made in the paper.
+        \item The abstract and/or introduction should clearly state the claims made, including the contributions made in the paper and important assumptions and limitations. A No or NA answer to this question will not be perceived well by the reviewers. 
+        \item The claims made should match theoretical and experimental results, and reflect how much the results can be expected to generalize to other settings. 
+        \item It is fine to include aspirational goals as motivation as long as it is clear that these goals are not attained by the paper. 
+    \end{itemize}
+
+\item {\bf Limitations}
+    \item[] Question: Does the paper discuss the limitations of the work performed by the authors?
+    \item[] Answer: \answerYes{} % Replace by \answerYes{}, \answerNo{}, or \answerNA{}.
+    \item[] Justification: The conclusion section discusses the shortcomings of our framework and future improvements.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer NA means that the paper has no limitation while the answer No means that the paper has limitations, but those are not discussed in the paper. 
+        \item The authors are encouraged to create a separate "Limitations" section in their paper.
+        \item The paper should point out any strong assumptions and how robust the results are to violations of these assumptions (e.g., independence assumptions, noiseless settings, model well-specification, asymptotic approximations only holding locally). The authors should reflect on how these assumptions might be violated in practice and what the implications would be.
+        \item The authors should reflect on the scope of the claims made, e.g., if the approach was only tested on a few datasets or with a few runs. In general, empirical results often depend on implicit assumptions, which should be articulated.
+        \item The authors should reflect on the factors that influence the performance of the approach. For example, a facial recognition algorithm may perform poorly when image resolution is low or images are taken in low lighting. Or a speech-to-text system might not be used reliably to provide closed captions for online lectures because it fails to handle technical jargon.
+        \item The authors should discuss the computational efficiency of the proposed algorithms and how they scale with dataset size.
+        \item If applicable, the authors should discuss possible limitations of their approach to address problems of privacy and fairness.
+        \item While the authors might fear that complete honesty about limitations might be used by reviewers as grounds for rejection, a worse outcome might be that reviewers discover limitations that aren't acknowledged in the paper. The authors should use their best judgment and recognize that individual actions in favor of transparency play an important role in developing norms that preserve the integrity of the community. Reviewers will be specifically instructed to not penalize honesty concerning limitations.
+    \end{itemize}
+
+\item {\bf Theory Assumptions and Proofs}
+    \item[] Question: For each theoretical result, does the paper provide the full set of assumptions and a complete (and correct) proof?
+    \item[] Answer: \answerNA{} % Replace by \answerYes{}, \answerNo{}, or \answerNA{}.
+    \item[] Justification:
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer NA means that the paper does not include theoretical results. 
+        \item All the theorems, formulas, and proofs in the paper should be numbered and cross-referenced.
+        \item All assumptions should be clearly stated or referenced in the statement of any theorems.
+        \item The proofs can either appear in the main paper or the supplemental material, but if they appear in the supplemental material, the authors are encouraged to provide a short proof sketch to provide intuition. 
+        \item Inversely, any informal proof provided in the core of the paper should be complemented by formal proofs provided in appendix or supplemental material.
+        \item Theorems and Lemmas that the proof relies upon should be properly referenced. 
+    \end{itemize}
+
+    \item {\bf Experimental Result Reproducibility}
+    \item[] Question: Does the paper fully disclose all the information needed to reproduce the main experimental results of the paper to the extent that it affects the main claims and/or conclusions of the paper (regardless of whether the code and data are provided or not)?
+    \item[] Answer: \answerYes{} % Replace by \answerYes{}, \answerNo{}, or \answerNA{}.
+    \item[] Justification: All models and hyperparameters are extensively reported in the appendix. In addition, the code will be publicly available at the end of the double-blind process.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer NA means that the paper does not include experiments.
+        \item If the paper includes experiments, a No answer to this question will not be perceived well by the reviewers: Making the paper reproducible is important, regardless of whether the code and data are provided or not.
+        \item If the contribution is a dataset and/or model, the authors should describe the steps taken to make their results reproducible or verifiable. 
+        \item Depending on the contribution, reproducibility can be accomplished in various ways. For example, if the contribution is a novel architecture, describing the architecture fully might suffice, or if the contribution is a specific model and empirical evaluation, it may be necessary to either make it possible for others to replicate the model with the same dataset, or provide access to the model. In general. releasing code and data is often one good way to accomplish this, but reproducibility can also be provided via detailed instructions for how to replicate the results, access to a hosted model (e.g., in the case of a large language model), releasing of a model checkpoint, or other means that are appropriate to the research performed.
+        \item While NeurIPS does not require releasing code, the conference does require all submissions to provide some reasonable avenue for reproducibility, which may depend on the nature of the contribution. For example
+        \begin{enumerate}
+            \item If the contribution is primarily a new algorithm, the paper should make it clear how to reproduce that algorithm.
+            \item If the contribution is primarily a new model architecture, the paper should describe the architecture clearly and fully.
+            \item If the contribution is a new model (e.g., a large language model), then there should either be a way to access this model for reproducing the results or a way to reproduce the model (e.g., with an open-source dataset or instructions for how to construct the dataset).
+            \item We recognize that reproducibility may be tricky in some cases, in which case authors are welcome to describe the particular way they provide for reproducibility. In the case of closed-source models, it may be that access to the model is limited in some way (e.g., to registered users), but it should be possible for other researchers to have some path to reproducing or verifying the results.
+        \end{enumerate}
+    \end{itemize}
+
+
+\item {\bf Open access to data and code}
+    \item[] Question: Does the paper provide open access to the data and code, with sufficient instructions to faithfully reproduce the main experimental results, as described in supplemental material?
+    \item[] Answer: \answerNA{} % Replace by \answerYes{}, \answerNo{}, or \answerNA{}.
+    \item[] Justification: All datasets are public, and the code will be publicly available at the end of the double-blind process.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer NA means that paper does not include experiments requiring code.
+        \item Please see the NeurIPS code and data submission guidelines (\url{https://nips.cc/public/guides/CodeSubmissionPolicy}) for more details.
+        \item While we encourage the release of code and data, we understand that this might not be possible, so “No” is an acceptable answer. Papers cannot be rejected simply for not including code, unless this is central to the contribution (e.g., for a new open-source benchmark).
+        \item The instructions should contain the exact command and environment needed to run to reproduce the results. See the NeurIPS code and data submission guidelines (\url{https://nips.cc/public/guides/CodeSubmissionPolicy}) for more details.
+        \item The authors should provide instructions on data access and preparation, including how to access the raw data, preprocessed data, intermediate data, and generated data, etc.
+        \item The authors should provide scripts to reproduce all experimental results for the new proposed method and baselines. If only a subset of experiments are reproducible, they should state which ones are omitted from the script and why.
+        \item At submission time, to preserve anonymity, the authors should release anonymized versions (if applicable).
+        \item Providing as much information as possible in supplemental material (appended to the paper) is recommended, but including URLs to data and code is permitted.
+    \end{itemize}
+
+
+\item {\bf Experimental Setting/Details}
+    \item[] Question: Does the paper specify all the training and test details (e.g., data splits, hyperparameters, how they were chosen, type of optimizer, etc.) necessary to understand the results?
+    \item[] Answer: \answerYes{} % Replace by \answerYes{}, \answerNo{}, or \answerNA{}.
+    \item[] Justification: Experimental Setting section in the appendix.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer NA means that the paper does not include experiments.
+        \item The experimental setting should be presented in the core of the paper to a level of detail that is necessary to appreciate the results and make sense of them.
+        \item The full details can be provided either with the code, in appendix, or as supplemental material.
+    \end{itemize}
+
+\item {\bf Experiment Statistical Significance}
+    \item[] Question: Does the paper report error bars suitably and correctly defined or other appropriate information about the statistical significance of the experiments?
+    \item[] Answer: \answerYes{} % Replace by \answerYes{}, \answerNo{}, or \answerNA{}.
+    \item[] Justification: On the main table and if note, reported in the appendix due to space constraints and convince reasons.
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer NA means that the paper does not include experiments.
+        \item The authors should answer "Yes" if the results are accompanied by error bars, confidence intervals, or statistical significance tests, at least for the experiments that support the main claims of the paper.
+        \item The factors of variability that the error bars are capturing should be clearly stated (for example, train/test split, initialization, random drawing of some parameter, or overall run with given experimental conditions).
+        \item The method for calculating the error bars should be explained (closed form formula, call to a library function, bootstrap, etc.)
+        \item The assumptions made should be given (e.g., Normally distributed errors).
+        \item It should be clear whether the error bar is the standard deviation or the standard error of the mean.
+        \item It is OK to report 1-sigma error bars, but one should state it. The authors should preferably report a 2-sigma error bar than state that they have a 96\% CI, if the hypothesis of Normality of errors is not verified.
+        \item For asymmetric distributions, the authors should be careful not to show in tables or figures symmetric error bars that would yield results that are out of range (e.g. negative error rates).
+        \item If error bars are reported in tables or plots, The authors should explain in the text how they were calculated and reference the corresponding figures or tables in the text.
+    \end{itemize}
+
+\item {\bf Experiments Compute Resources}
+    \item[] Question: For each experiment, does the paper provide sufficient information on the computer resources (type of compute workers, memory, time of execution) needed to reproduce the experiments?
+    \item[] Answer: \answerYes{} % Replace by \answerYes{}, \answerNo{}, or \answerNA{}.
+    \item[] Justification: Appendix computational resources analysis
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer NA means that the paper does not include experiments.
+        \item The paper should indicate the type of compute workers CPU or GPU, internal cluster, or cloud provider, including relevant memory and storage.
+        \item The paper should provide the amount of compute required for each of the individual experimental runs as well as estimate the total compute. 
+        \item The paper should disclose whether the full research project required more compute than the experiments reported in the paper (e.g., preliminary or failed experiments that didn't make it into the paper). 
+    \end{itemize}
+    
+\item {\bf Code Of Ethics}
+    \item[] Question: Does the research conducted in the paper conform, in every respect, with the NeurIPS Code of Ethics \url{https://neurips.cc/public/EthicsGuidelines}?
+    \item[] Answer: \answerYes{} % Replace by \answerYes{}, \answerNo{}, or \answerNA{}.
+    \item[] Justification: 
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer NA means that the authors have not reviewed the NeurIPS Code of Ethics.
+        \item If the authors answer No, they should explain the special circumstances that require a deviation from the Code of Ethics.
+        \item The authors should make sure to preserve anonymity (e.g., if there is a special consideration due to laws or regulations in their jurisdiction).
+    \end{itemize}
+
+
+\item {\bf Broader Impacts}
+    \item[] Question: Does the paper discuss both potential positive societal impacts and negative societal impacts of the work performed?
+    \item[] Answer: \answerNA{} % Replace by \answerYes{}, \answerNo{}, or \answerNA{}.
+    \item[] Justification: 
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer NA means that there is no societal impact of the work performed.
+        \item If the authors answer NA or No, they should explain why their work has no societal impact or why the paper does not address societal impact.
+        \item Examples of negative societal impacts include potential malicious or unintended uses (e.g., disinformation, generating fake profiles, surveillance), fairness considerations (e.g., deployment of technologies that could make decisions that unfairly impact specific groups), privacy considerations, and security considerations.
+        \item The conference expects that many papers will be foundational research and not tied to particular applications, let alone deployments. However, if there is a direct path to any negative applications, the authors should point it out. For example, it is legitimate to point out that an improvement in the quality of generative models could be used to generate deepfakes for disinformation. On the other hand, it is not needed to point out that a generic algorithm for optimizing neural networks could enable people to train models that generate Deepfakes faster.
+        \item The authors should consider possible harms that could arise when the technology is being used as intended and functioning correctly, harms that could arise when the technology is being used as intended but gives incorrect results, and harms following from (intentional or unintentional) misuse of the technology.
+        \item If there are negative societal impacts, the authors could also discuss possible mitigation strategies (e.g., gated release of models, providing defenses in addition to attacks, mechanisms for monitoring misuse, mechanisms to monitor how a system learns from feedback over time, improving the efficiency and accessibility of ML).
+    \end{itemize}
+    
+\item {\bf Safeguards}
+    \item[] Question: Does the paper describe safeguards that have been put in place for responsible release of data or models that have a high risk for misuse (e.g., pretrained language models, image generators, or scraped datasets)?
+    \item[] Answer: \answerNA{} % Replace by \answerYes{}, \answerNo{}, or \answerNA{}.
+    \item[] Justification:
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer NA means that the paper poses no such risks.
+        \item Released models that have a high risk for misuse or dual-use should be released with necessary safeguards to allow for controlled use of the model, for example by requiring that users adhere to usage guidelines or restrictions to access the model or implementing safety filters. 
+        \item Datasets that have been scraped from the Internet could pose safety risks. The authors should describe how they avoided releasing unsafe images.
+        \item We recognize that providing effective safeguards is challenging, and many papers do not require this, but we encourage authors to take this into account and make a best faith effort.
+    \end{itemize}
+
+\item {\bf Licenses for existing assets}
+    \item[] Question: Are the creators or original owners of assets (e.g., code, data, models), used in the paper, properly credited and are the license and terms of use explicitly mentioned and properly respected?
+    \item[] Answer: \answerYes{} % Replace by \answerYes{}, \answerNo{}, or \answerNA{}.
+    \item[] Justification: 
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer NA means that the paper does not use existing assets.
+        \item The authors should cite the original paper that produced the code package or dataset.
+        \item The authors should state which version of the asset is used and, if possible, include a URL.
+        \item The name of the license (e.g., CC-BY 4.0) should be included for each asset.
+        \item For scraped data from a particular source (e.g., website), the copyright and terms of service of that source should be provided.
+        \item If assets are released, the license, copyright information, and terms of use in the package should be provided. For popular datasets, \url{paperswithcode.com/datasets} has curated licenses for some datasets. Their licensing guide can help determine the license of a dataset.
+        \item For existing datasets that are re-packaged, both the original license and the license of the derived asset (if it has changed) should be provided.
+        \item If this information is not available online, the authors are encouraged to reach out to the asset's creators.
+    \end{itemize}
+
+\item {\bf New Assets}
+    \item[] Question: Are new assets introduced in the paper well documented and is the documentation provided alongside the assets?
+    \item[] Answer: \answerYes{} % Replace by \answerYes{}, \answerNo{}, or \answerNA{}.
+    \item[] Justification: Appendix
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer NA means that the paper does not release new assets.
+        \item Researchers should communicate the details of the dataset/code/model as part of their submissions via structured templates. This includes details about training, license, limitations, etc. 
+        \item The paper should discuss whether and how consent was obtained from people whose asset is used.
+        \item At submission time, remember to anonymize your assets (if applicable). You can either create an anonymized URL or include an anonymized zip file.
+    \end{itemize}
+
+\item {\bf Crowdsourcing and Research with Human Subjects}
+    \item[] Question: For crowdsourcing experiments and research with human subjects, does the paper include the full text of instructions given to participants and screenshots, if applicable, as well as details about compensation (if any)? 
+    \item[] Answer: \answerNA{} % Replace by \answerYes{}, \answerNo{}, or \answerNA{}.
+    \item[] Justification: 
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer NA means that the paper does not involve crowdsourcing nor research with human subjects.
+        \item Including this information in the supplemental material is fine, but if the main contribution of the paper involves human subjects, then as much detail as possible should be included in the main paper. 
+        \item According to the NeurIPS Code of Ethics, workers involved in data collection, curation, or other labor should be paid at least the minimum wage in the country of the data collector. 
+    \end{itemize}
+
+\item {\bf Institutional Review Board (IRB) Approvals or Equivalent for Research with Human Subjects}
+    \item[] Question: Does the paper describe potential risks incurred by study participants, whether such risks were disclosed to the subjects, and whether Institutional Review Board (IRB) approvals (or an equivalent approval/review based on the requirements of your country or institution) were obtained?
+    \item[] Answer: \answerNA{} % Replace by \answerYes{}, \answerNo{}, or \answerNA{}.
+    \item[] Justification: 
+    \item[] Guidelines:
+    \begin{itemize}
+        \item The answer NA means that the paper does not involve crowdsourcing nor research with human subjects.
+        \item Depending on the country in which research is conducted, IRB approval (or equivalent) may be required for any human subjects research. If you obtained IRB approval, you should clearly state this in the paper. 
+        \item We recognize that the procedures for this may vary significantly between institutions and locations, and we expect authors to adhere to the NeurIPS Code of Ethics and the guidelines for their institution. 
+        \item For initial submissions, do not include any information that would break anonymity (if applicable), such as the institution conducting the review.
+    \end{itemize}
+
+\end{enumerate}
+
+
+\end{document}

@@ -1,0 +1,35 @@
+#!/bin/bash
+#SBATCH --partition rtx6000
+#SBATCH --qos azencot
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name paper_energy70
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### Tier 2: Cross-dataset — Energy 70% missing (A2 full config)
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --missing_rate 0.7 \
+    --wandb true \
+    --tags "paper" "energy" "70_missing_rate" "cross_dataset" "tier2" \
+    --adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --sigma_y_floor 0.01 \
+    --mmps_cg_iters 5 \
+    --consistency_projection \
+    --obs_space_cg \
+    --no_warm_start_cg \
+    --lambda_obs 0 \
+    --lambda_rep 0 \
+    --em_iters 5 \
+    --phase3 \
+    --eval_all_metrics

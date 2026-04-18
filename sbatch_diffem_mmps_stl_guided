@@ -1,0 +1,24 @@
+#!/bin/bash
+
+################################################################################################
+### DiffEM MMPS + STL-Guided Structural Correction
+### Partition: rtx6000 / azencot (same as iter_stl_init baseline)
+################################################################################################
+
+#SBATCH --partition rtx6000
+#SBATCH --qos azencot
+#SBATCH --time 2-00:00:00
+#SBATCH --job-name diffem_stl_guided
+#SBATCH --output train-%J.out
+
+#SBATCH --gpus=1
+
+### Print some data to output file ###
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+### Start your src_code below ####
+module load anaconda
+source activate idan2_env
+python run_diffem_mmps_stl_guided.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.5 --wandb true --tags "stl_guided_mmps" "energy" "50_missing_rate" "structural_correction"

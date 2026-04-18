@@ -1,0 +1,34 @@
+#!/bin/bash
+
+################################################################################################
+### sbatch configuration parameters must start with #SBATCH and must precede any other commands.
+################################################################################################
+
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name gnoise_energy_fgate
+#SBATCH --output gnoise_energy_fgate-%J.out
+#SBATCH --gpus=1
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+echo "$(date)"
+echo -e "SLURM_JOBID:\t\t${SLURM_JOBID}"
+echo -e "SLURM_JOB_NODELIST:\t${SLURM_JOB_NODELIST}"
+echo -e "PWD:\t\t\t$(pwd)"
+
+module load anaconda
+source activate idan2_env
+
+python run_diffem_mmps_general_corruption.py \
+  --config ./configs/seq_len_24/energy.yaml \
+  --corruption_type gaussian_noise \
+  --corruption_noise_level 0.1 \
+  --mmps_freqgate_decomp_gaussian \
+  --freqgate_projection_strength 0.5 \
+  --freqgate_sigma_threshold_frac 0.5 \
+  --freqgate_schedule linear \
+  --wandb true \
+  --tags "gaussian_noise" "energy" "sigma0.10" "tier_b" "mmps_freqgate_decomp_gaussian" "seq_len_24"

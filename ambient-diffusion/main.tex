@@ -1,0 +1,957 @@
+\documentclass{article}
+% \usepackage{refcheck}
+\usepackage[nonatbib,preprint]{arxiv}
+\usepackage[utf8]{inputenc} %
+\usepackage[T1]{fontenc}    %
+\usepackage[colorlinks,citecolor=blue]{hyperref}       %
+\usepackage{url}            %
+\usepackage{booktabs}       %
+\usepackage{amsfonts}       %
+\usepackage{nicefrac}       %
+\usepackage{microtype}      %
+\usepackage{xcolor}         %
+\usepackage{subcaption}
+\usepackage{multirow} %
+\usepackage{caption} %
+\usepackage{hhline} %
+\usepackage{tikz}
+\usetikzlibrary{calc}
+\usepackage{arydshln}
+\usepackage{enumitem}
+\setitemize{noitemsep,topsep=0.pt,parsep=0pt,partopsep=0pt}
+\input{math_commands}
+\makeatletter
+\setlength{\@fptop}{0pt}
+\makeatother
+
+\title{Ambient Diffusion: \\ Learning Clean Distributions from Corrupted Data}
+
+\NewDocumentCommand\emojiturtle{}{
+\raisebox{0.0\height}{\includegraphics[scale=2]{figs/emojis/1F422.pdf}}
+}
+
+
+\author{%
+  \begin{minipage}[t]{0.33\linewidth}
+    \centering
+    Giannis Daras \\ \vspace{-1em}
+    UT Austin \\
+    \texttt{giannisdaras@utexas.edu}
+  \end{minipage}%
+  \begin{minipage}[t]{0.33\linewidth}
+    \centering
+    Kulin Shah\\ \vspace{-1em}
+    UT Austin \\
+    \texttt{kulinshah@utexas.edu}
+  \end{minipage}%
+  \begin{minipage}[t]{0.33\linewidth}
+    \centering
+    Yuval Dagan \\ \vspace{-1em}
+    UC Berkeley \\
+    \texttt{yuvald@berkeley.edu}
+  \end{minipage} \\
+  \begin{minipage}[t]{0.33\linewidth}
+    \centering
+    Aravind Gollakota \\
+    UT Austin \\
+    \texttt{aravindg@cs.utexas.edu}
+  \end{minipage}%
+  \begin{minipage}[t]{0.33\linewidth}
+    \centering
+    Alexandros G. Dimakis \\
+    UT Austin \\
+    \texttt{dimakis@austin.utexas.edu}
+  \end{minipage}%
+  \begin{minipage}[t]{0.33\linewidth}
+    \centering
+    Adam Klivans \\
+    UT Austin \\
+    \texttt{klivans@utexas.edu}
+  \end{minipage}%
+}
+
+
+\usepackage[style=numeric, maxbibnames=15, maxcitenames=3, natbib=true,maxalphanames=10, backend=biber, sorting=nty, backref=true]{biblatex}
+\addbibresource{references.bib}
+\DefineBibliographyStrings{english}{%
+  backrefpage = {page},%
+  backrefpages = {pages},%
+}
+
+
+\begin{document}
+\maketitle
+
+
+
+\begin{abstract}
+We present the first diffusion-based framework that can learn an unknown distribution using only highly-corrupted samples. This problem arises in scientific applications where access to uncorrupted samples is impossible or expensive to acquire. Another benefit of our approach is the ability to train generative models that are less likely to memorize individual training samples since they never observe clean training data.
+ Our main idea is to introduce {\em additional measurement distortion} during the diffusion process and require the model to predict the original corrupted image from the further corrupted image.  We prove that our method leads to models that learn the conditional expectation of the full uncorrupted image given this additional measurement corruption.  This holds for any corruption process that satisfies some technical conditions (and in particular includes inpainting and compressed sensing).  We train models on standard benchmarks (CelebA, CIFAR-10 and AFHQ) and show that we can learn the distribution even when all the training samples have $90\%$ of their pixels missing. We also show that we can finetune foundation models on small corrupted datasets (e.g. MRI scans with block corruptions) and learn the clean distribution without memorizing the training set.
+\end{abstract}
+
+\begin{figure}[t!]
+    \includegraphics[width=1.01\textwidth]{figs/fig1.jpg}
+    \caption{\textbf{Left panel:} Baseline method of vanilla finetuning Deepfloyd IF using $3000$ images from CelebA-HQ. We show generated sample images and nearest neighbors from the finetuning set. As shown, the generated samples are often near-identical copies from training data.  This verifies related work \citet{carlini_extracting_2021, somepalli2022diffusion, jagielski_measuring_2022} that pointed out that diffusions often generate training samples.
+    \textbf{ Right panel:} We finetune the same foundation model (Deepfloyd IF) using our method and $3000$ highly corrupted training images. The corruption adds noise and removes $80$ percent random pixels. We show generated samples and nearest neighbors from the training set. Our method still learns the clean distribution of faces (with some quality deterioration, as shown) but does not memorize training data. We emphasize that our training is performed without ever accessing clean training data. }
+    \label{fig1}
+\end{figure}
+
+\section{Introduction}
+
+Diffusion generative models~\cite{sohl_thermodynamics, ddpm, ncsn} are emerging as versatile and powerful frameworks for learning high-dimensional distributions and solving inverse problems~\citep{ddrm, dps, kawar2021snips, mri_paper}. Numerous recent developments~\cite{ncsnv3,karras2022elucidating} have led to text conditional foundation models like Dalle-2~\cite{nichol_dalle_2022}, Latent Diffusion~\cite{rombach2022high} and Imagen~\cite{imagen} with incredible performance in general image domains. Training these models requires access to high-quality datasets which may be expensive or impossible to obtain. For example, direct images of black holes cannot be observed~\citep{Akiyama_2019, gao2023image}
+and high-quality MRI images require long scanning times, causing patient discomfort and motion artifacts~\citep{mri_paper}. 
+
+
+Recently, \citet{carlini_extracting_2021, somepalli2022diffusion, jagielski_measuring_2022} showed that diffusion models can memorize examples from their training set. Further, an adversary can extract dataset samples given only query access to the model, leading to privacy, security and copyright concerns. 
+For many applications, we may want to learn the distribution but not individual training images e.g. we might want to learn the distribution of X-ray scans but not memorize images of specific patient scans from the dataset. Hence, we may want to introduce corruption as a design choice. We show that it is possible to train diffusions that learn a distribution of clean data by only observing highly corrupted samples. 
+
+\textbf{Prior work in supervised learning from corrupted data.} The traditional approach to solving such problems involves training a restoration model using supervised learning to predict the clean image based on the measurements~\citep{pathak2016context, richardson2020encoding, Yu_2019, Liu_2019}. The seminal Noise2Noise~\citep{noise2noise} work introduced a practical algorithm for learning how to denoise in the absence of any non-noisy images. This framework and its generalizations~\citep{batson2019noise2self, krull2019noise2void, tachella2022unsupervised} have found applications in electron microscopy~\citep{electron_microscopy}, tomographic image reconstruction~\citep{wang2020deep}, fluorescence image reconstruction~\citep{zhang2019poisson}, blind inverse problems~\citep{guo2019toward, batson2019noise2self}, monocular depth estimation and proteomics~\citep{bauerlein2021towards}. Another related line of work uses Stein's Unbiased Risk Estimate (SURE) to optimize an unbiased estimator of the denoising objective without access to non-noisy data~\citep{SURE}.
+We stress that the aforementioned research works study the problem of \textit{restoration}, whereas are interested in the problem of \textit{sampling} from the clean distribution. Restoration algorithms based on supervised learning are only effective when the corruption level is relatively low~\citep{delbracio2023inversion}.
+However, it might be either not possible or not desirable to reconstruct individual samples. 
+Instead, the desired goal may be to learn to \textit{generate} fresh and completely unseen samples from the distribution of the uncorrupted data but \textit{without reconstructing individual training samples}. 
+% Our generative models can generate completely fresh and unseen samples from the underlying clean distribution. 
+
+Indeed, for certain corruption processes, it is theoretically possible to perfectly learn a distribution only from highly corrupted samples (such as just random one-dimensional projections), even though individual sample denoising is usually impossible in such settings.
+Specifically, AmbientGAN~\citep{bora2018ambientgan} showed that general $d$ dimensional distributions can be learned from \textit{scalar} observations, by observing only projections on one-dimensional random  Gaussian vectors, in the infinite training data  limit. The theory requires an infinitely powerful discriminator and hence does not apply to diffusion models.
+
+
+
+
+
+\begin{figure}
+    \centering
+    \begin{minipage}{0.2\textwidth}
+        \includegraphics[width=\textwidth]{figs/example_corruptions/celeba_corrupted.png}
+        \caption*{Random inpainting}
+    \end{minipage}
+    \begin{minipage}{0.2\textwidth}
+        \includegraphics[width=\textwidth]{figs/example_corruptions/celeba_hat_corrupted.png}
+        \caption*{Further corruption}
+    \end{minipage}
+    \hspace{4ex}
+    \begin{minipage}{0.2\textwidth}
+        \includegraphics[width=\textwidth]{figs/example_corruptions/celeba_corrupted_box.png}
+        \caption*{Block inpainting}
+    \end{minipage}
+    \begin{minipage}{0.2\textwidth}
+        \includegraphics[width=\textwidth]{figs/example_corruptions/celeba_hat_corrupted_box.png}
+        \caption*{Further corruption}
+    \end{minipage}
+    \caption{Illustration of our method: Given training data with deleted pixels, we corrupt further by erasing more (illustrated with green color). We feed the learner the further corrupted images and we evaluate it on the originally observed pixels. We can do this during training since the green pixel values are known to us. The score network learner has no way of knowing whether a pixel was missing from the beginning or whether it was corrupted by us. Hence, the score network learns to predict the clean image everywhere. Our method is analogous to grading a random subset of the questions in a test, but the students not knowing which questions will be graded. }
+    \label{fig:method_illustration}
+\end{figure}
+
+\textbf{Our contributions.} We present the first diffusion-based framework to learn an unknown distribution ${\cal D}$ when the training set only contains highly-corrupted examples drawn from ${\cal D}$. Specifically, we consider the problem of learning to sample from the target distribution $p_0(\vx_0)$ given corrupted samples $A\vx_0$ where $A \sim p(A)$ is a random corruption matrix (with known realizations and prior distribution) and $\vx_0 \sim p_0(\vx_0)$.
+Our main idea is to introduce {\em additional measurement distortion} during the diffusion process and require the model to predict the original corrupted image from the further corrupted image. \noindent
+\begin{itemize}
+    % \begin{itemize}
+        \item We provide an algorithm that provably learns $\E[\vx_0 | \tilde{A}(\vx_0 + \sigma_t \veta), \tilde{A}]$, for all noise levels $t$ and for $\tilde{A} \sim p(\tilde{A}\mid A)$ being a further corrupted version of $A$. The result holds for a general family of corruption processes $A \sim p(A)$. For various corruption processes, we show that the further degradation introduced by $\tilde{A}$ can be very small.
+    % \end{itemize}
+    % \item Experimental contributions:
+        % \begin{itemize}
+        \item We use our algorithm to train diffusion models on standard benchmarks (CelebA, CIFAR-10 and AFHQ) with training data at different levels of corruption.
+        \item Given the learned conditional expectations we provide an approximate sampler for the target distribution $p_0(\vx_0)$.
+        \item We show that for up to $90\%$ missing pixels, we can learn reasonably well the distribution of uncorrupted images.
+        We outperform the previous state-of-the-art AmbientGAN~\citep{bora2018ambientgan} and natural baselines. 
+        \item We show that our models perform on par or even outperform  state-of-the-art diffusion models for solving certain inverse problems even without ever seeing a clean image during training. Our models do so with a single prediction step while our baselines require hundreds of diffusion steps.
+        \item We use our algorithm to finetune foundational pretrained diffusion models. Our finetuning 
+        can be done in a few hours on a single GPU and we can use it to learn distributions with a few corrupted samples.
+        \item We show that models trained on sufficiently corrupted data do not memorize their training set.  We measure the tradeoff between the amount of corruption (that controls the degree of memorization), the amount of training data and the quality of the learned generator. 
+        \item We open-source our code and models: \href{https://github.com/giannisdaras/ambient-diffusion}{https://github.com/giannisdaras/ambient-diffusion}.
+        % For reasonably sized training datasets they can perform almost as well as diffusions trained on clean data.
+        % \end{itemize}
+\end{itemize}
+\section{Background}\label{sec:background}
+Training a diffusion model involves two steps. First, we design a corruption process that transforms the data distribution gradually into a distribution that we can sample from~\citep{ncsnv3, daras2023soft}. Typically, this corruption process is described by an Ito SDE of the form:
+$\d\vx = \vf(\vx, t)\mathrm{d}t +  g(t)\d\vw$,
+where $\vw$ is the standard Wiener process. Such corruption processes are \textit{reversible} and the reverse process is also described by an Ito SDE~\citep{anderson}:
+$\mathrm{d}\vx = \left(\vf(\vx, t) -g^2(t)\nabla_{\vx}\log p_t(\vx) \right)\mathrm{d}t + g(t)\mathrm{d}\vw$.
+The designer of the diffusion model is usually free to choose the drift function $\vf(\bm{\cdot}, \cdot)$ and the diffusion function $g(\cdot)$. Typical choices are setting $\vf(\vx, t) = \bm{0}, g(t) = \sqrt{\frac{\d \sigma^2_t}{\d t}}$ (Variance Exploding SDE) or setting $\vf(x, t) = -\beta(t)\vx, g(t) = \sqrt{\beta(t)}$ (Variance Preserving SDE). Both of these choices lead to a Gaussian terminal distribution and are equivalent to a linear transformation in the input. 
+The goal of diffusion model training is to learn the function $\nabla_{\vx} \log p_t(\vx)$, which is known as the score function. To simplify the presentation of the paper, we will focus on the Variance Exploding SDE that leads to conditional distributions $\vx_t = \vx_0 + \sigma_t\veta$.
+
+\citet {vincent2011connection} showed that we can learn the score function at level $t$ by optimizing for the score-matching objective:
+\begin{gather}
+    J(\theta) = \frac{1}{2}\E_{(\vx_0, \vx_t)}\left|\left| \vh_{\theta}(\vx_t, t) - \vx_0\right|\right|^2.
+\end{gather}
+Specifically, the score function can be written in terms of the minimizer of this objective as:
+\begin{gather}
+    \nabla_{\vx_t}\log p_t(\vx_t) = \frac{\vh_{\theta^*}(\vx_t, t) - \vx_t}{\sigma_t}.
+    \label{eq:tweedie-old}
+\end{gather}
+This result reveals a fundamental connection between the score-function and the best restoration model of $\vx_0$ given $\vx_t$, known as Tweedie's Formula~\citep{efron2011tweedie}. Specifically, the optimal $\vh_{\theta^*}(\vx_t, t)$ is given by $\E[\vx_0 | \vx_t]$, which means that \begin{gather}
+    \nabla_{\vx_t}\log p_t(\vx_t) = \frac{\overbrace{\E[\vx_0 | \vx_t]}^{\text{best restoration}} - \ \vx_t}{\sigma_t}.
+    \label{eq:tweedie}
+\end{gather}
+
+Inspired by this restoration interpretation of diffusion models, the Soft/Cold Diffusion works~\citep{daras2023soft, bansal2022cold} generalized diffusion models to look at non-Markovian corruption processes: $\vx_t = C_t\vx_0 + \sigma_t \veta$. Specifically, Soft Diffusion proposes the Soft Score Matching objective:
+\begin{gather}\label{eq:soft-score}
+    J_{\mathrm{soft}}(\theta) = \frac{1}{2}\E_{(\vx_0, \vx_t)}\left|\left| C_t\left(\vh_{\theta}(\vx_t, t) - \vx_0\right)\right|\right|^2,
+\end{gather}
+and shows that it is sufficient to recover the score function via a generalized Tweedie's Formula: \begin{gather}
+    \nabla_{\vx_t}\log p_t(\vx_t) = \frac{C_t\E[\vx_0 | \vx_t] - \vx_t}{\sigma_t}.
+\end{gather}
+For these generalized models, the matrix $C_t$ is a design choice (similar to how we could choose the functions $\vf, g$). Most importantly, for $t=0$, the matrix $C_t$ becomes the identity matrix and the noise $\sigma_t$ becomes zero, i.e. we observe samples from the true distribution.
+
+
+
+
+
+
+
+\section{Method}\label{sec:method}
+As explained in the introduction, in many cases we do not observe uncorrupted images $\vx_0$, either by design (to avoid memorization and leaking of sensitive data) or because it is impossible to obtain clean data. Here we study the case where a learner only has access to linear measurements of the clean data, i.e. $\vy_0 = A\vx_0$, and the corruption matrices $A:\mathbb R^{m\times n}$. We note that we are interested in non-invertible corruption matrices. We ask two questions:
+\begin{enumerate}
+    \item Is it possible to learn $\E[\vx_0 | A(\vx_0 + \sigma_t\veta), A]$ for all noise levels $t$, given only access to corrupted samples $(\vy_0=A\vx_0, A)$?
+    \item If so, is it possible to use this restoration model $\E[\vx_0 | A(\vx_0 + \sigma_t\veta), A]$ to recover $\E[\vx_0 | \vx_t]$ for any noise level $t$, and thus sample from the true distribution through the score function as given by Tweedie's formula (Eq.~\ref{eq:tweedie})?
+\end{enumerate}
+We investigate these questions in the rest of the paper.
+For the first, the answer is affirmative but only after introducing additional corruptions, as we explain below.  For the second, at every time step $t$, we approximate $\E[\vx_0|\vx_t]$ directly using $\E[\vx_0|A\vx_t, A]$ (for a chosen $A$) and substitute it into Eq.~\ref{eq:tweedie}. Empirically, we observe that the resulting approximate sampler yields good results.
+
+\subsection{Training}\label{subsec:training}
+For the sake of clarity, we first consider the case of random inpainting. If the image $\vx_0$ is viewed as a vector, we can think of the matrix $A$ as a diagonal matrix with ones in the entries that correspond to the preserved pixels and zeros in the erased pixels. We assume that $p(A)$ samples a matrix where each entry in the diagonal is sampled i.i.d. with a probability $1-p$ to be $1$ and $p$ to be zero. %
+
+We would like to train a function $\vh_\theta$ which receives a corruption matrix $A$ and a noisy version of a corrupted image, $\vy_t = A\underbrace{(\vx_0 + \sigma_t \veta)}_{\vx_t}$ where $\veta \sim \mathcal{N}(0,I)$, and produces an estimate for the conditional expectation.
+The simplest idea would be to simply ignore the missing pixels and optimize for:
+\begin{gather}\label{eq:naive-objective}
+    J^{\mathrm{corr}}_{\mathrm{naive}}(\theta) =  \frac{1}{2}\E_{(\vx_0, \vx_t, A)}\left|\left| A\left(\vh_{\theta}(A, A\vx_t, t) - \vx_0\right)\right|\right|^2,
+\end{gather}
+Despite the similarities with Soft Score Matching (Eq~\ref{eq:soft-score}), this objective will not learn the conditional expectation. The reason is that the learner is never penalized for performing arbitrarily poorly in the missing pixels. Formally, any function $\vh_{\theta'}$ satisfying $A \vh_{\theta'}(A, \vy_t, t) = A \E[\vx_0 | A\vx_t, A]$ is a minimizer. %
+
+Instead, we propose 
+to \emph{further corrupt} the samples before feeding them to the model, and ask the model to predict the original corrupted sample from the further corrupted image.
+
+Concretely, we randomly corrupt $A$ to obtain $\tilde{A} = BA$ for some matrix $B$ that is selected randomly given $A$. 
+In our example of missing pixels, $\tilde{A}$ is obtained from $A$ by randomly erasing an additional fraction $\delta$ of the pixels that survive after the corruption $A$. Here, $B$ will be diagonal where each element is $1$ with probability $1-\delta$ and $0$ w.p. $\delta$. We will penalize the model on recovering all the pixels that are visible in the sample $A\vx_0$: this includes both the pixels that survive in $\tilde{A}\vx_0$ and those that are erased by $\tilde{A}$. 
+The formal training objective is given by minimizing the following loss:
+\begin{equation}\label{eq:opt}
+    J^{\mathrm{corr}}(\theta) =  \frac{1}{2}\E_{(\vx_0, \vx_t, A, \tilde{A})}\left|\left| A\left(\vh_{\theta}(\tilde{A}, \tilde{A}\vx_t, t) - \vx_0\right)\right|\right|^2,
+\end{equation}
+
+The key idea behind our algorithm is as follows: the learner does not know if a missing pixel is missing because we never had it (and hence do not know the ground truth) or because it was deliberately erased as part of the further corruption (in which case we do know the ground truth). Thus, the best learner cannot be inaccurate in the unobserved pixels because with non-zero probability it might be evaluated on some of them. Notice that the trained model behaves as a denoiser in the observed pixels and as an inpainter in the missing pixels. We also want to emphasize that the probability $\delta$ of further corruption can be arbitrarily small as long as it stays positive.
+
+The idea of further corruption can be generalized from the case of random inpainting to a much broader family of corruption processes. For example, if $A$ is a random Gaussian matrix with $m$ rows, we can form $\tilde{A}$ by deleting one row from $A$ at random. If $A$ is a block inpainting matrix (i.e. a random block of fixed size is missing from all of the training images), we can create $\tilde{A}$ by corrupting further with one more non-overlapping missing block. Examples of our further corruption are shown in Figure \ref{fig:method_illustration}. In our Theory Section, we prove conditions under which it is possible to recover $\E[\vx_0 | \tilde{A}\vx_t, \tilde{A}]$ using our algorithm and samples $(\vy_0=A\vx_0, A)$. Our goal is to satisfy this condition while adding minimal further corruption, i.e. while keeping $\tilde{A}$ close to $A$.
+
+
+
+
+
+
+
+
+
+\subsection{Sampling}
+
+\textbf{Fixed mask sampling.} To sample from $p_0(\vx_0)$ using the standard diffusion formulation, we need access to $\nabla_{\vx_t} \log p_t(\vx_t)$, which is equivalent to having access to $\E[\vx_0|\vx_t]$ (see Eq. \ref{eq:tweedie}). Instead, our model is trained to predict $\E[\vx_0 | \tilde{A}\vx_t, \tilde{A}]$ for all matrices $A$ in the support of $p(A)$.
+
+We note that for random inpainting, the identity matrix is technically in the support of $p(A)$. However, if the corruption probability $p$ is at least a constant, the probability of seeing the identity matrix is exponentially small in the dimension of $\vx_t$. Hence, we should not expect our model to give good estimates of $\E[\vx_0 | \tilde{A}\vx_t, \tilde{A}]$ for corruption matrices $A$ that belong to the tails of the distribution $p(A)$. %
+
+
+The simplest idea is to sample a mask $\tilde{A} \sim p(\tilde{A})$ and approximate $\E[\vx_0|\vx_t]$ with $\E[\vx_0| \tilde{A}\vx_t, \tilde{A}]$. Under this approximation, the discretized sampling rule becomes:
+
+\begin{gather}
+    \vx_{t - \Delta t} =
+    \underbrace{\frac{\sigma_{t - \Delta t}}{\sigma_t}}_{\gamma_t}\vx_t + \underbrace{\frac{\sigma_t - \sigma_{t - \Delta t}}{\sigma_t}}_{1 - \gamma_t}\underbrace{\E[\vx_0 | \tilde{A}\vx_t, \tilde{A}]}_{\hat x_0}.
+    \label{eq:fixed_mask_update_rule}
+\end{gather}
+
+This idea works surprisingly well. Unless mentioned otherwise, we use it for all the experiments in the main paper and we show that we can generate samples that are reasonably close to the true distribution (as shown by metrics such as FID and Inception) even with $90\%$ of the pixels missing.
+
+
+
+\textbf{Sampling with Reconstruction Guidance.} 
+In the Fixed Mask Sampler, at any time $t$, the prediction is a convex combination of the current value and the predicted denoised image. As $t\to 0$, $\gamma_t \to 0$. Hence, for the masked pixels, the fixed mask sampler outputs the conditional expectation of their value given the observed pixels. This leads to averaging effects as the corruption gets higher. To correct this problem, we add one more term in the update: the Reconstruction Guidance term.
+The issue with the previous sampler is that the model never sees certain pixels. We would like to evaluate the model using different masks. However, the model outputs for the denoised image might be very different when evaluated with different masks. To account for this problem, we add an additional term that enforces updates that lead to consistency on the reconstructed image. The update of the sampler with Reconstruction Guidance becomes:
+
+
+\begin{gather}
+    \vx_{t- \Delta t} = \gamma_t\vx_t + (1-\gamma_t)\E[\vx_0 | \tilde{A}\vx_t, \tilde{A}] - w_t\nabla_{\vx_t}\E_{A'} || \E[\vx_0 | \tilde{A}\vx_t, \tilde{A}] - \E[\vx_0|\tilde{A}'\vx_t, \tilde{A}']||^2.
+\end{gather}
+
+This sampler is inspired by the Reconstruction Guidance term used in Imagen~\citep{ho2022imagen} to enforce consistency and correct for the sampling drift caused by imperfect score matching~\citep{daras2023consistent}. We see modest improvements over the Fixed Mask Sampler for certain corruption ranges. We ablate this sampler in the Appendix, Section \ref{sec:sampling_ablation}.
+
+In the Appendix, Section \ref{sec:reduction}, we also prove that in theory, whenever it is possible to reconstruct $p_0(\vx_0)$ from corrupted samples, it is also possible to reconstruct it using access to $\E[\vx_0|A\vx_t, A]$. However, as stated in the Limitations section, we were not able to find any practical algorithm to do so. 
+
+
+
+\section{Theory}
+\label{sec:theory}
+
+
+As elaborated in Section~\ref{sec:method}, one of our key goals is to learn the best restoration model for the measurements at all noise levels, i.e., the function $
+    \vh(A, \vy_t, t) = \E[\vx_0 | \vy_t, A].$
+We now show that under a certain assumption on the distribution of $A$ and $\tilde{A}$, the true population minimizer of Eq.~\ref{eq:opt} is indeed essentially of the form above. This assumption formalizes the notion that even conditional on $\tilde{A}$, $A$ has considerable variability, and the latter ensures that the best way to predict $A\vx_0$ as a function of $\tilde{A}\vx_t$ and $\tilde{A}$ is to optimally predict $\vx_0$ itself. All proofs are deferred to the Appendix.
+
+\begin{theorem}\label{thm:minimizer}
+    Assume a joint distribution of corruption matrices $A$ and further corruption $\tilde{A}$. If for all $\tilde{A}$ in the support it holds that $\E_{A|\tilde{A}}[A^T A]$ is full-rank, then the unique minimizer of the objective in \eqref{eq:opt} is given by
+    \begin{equation}\label{eq:ahat-minimizer}
+        \vh_{\theta^*}(\tilde A, \vy_t, t ) = \mathbb{E}[ \vx_0 \mid \tilde{A}\vx_t, \tilde{A} ]
+    \end{equation}
+\end{theorem}
+
+Two simple examples that fit into this framework (see Corollaries \ref{cor:inpainting} and \ref{cor:gaussian} in the Appendix) are: 
+\begin{itemize}
+    \item Inpainting: $A \in \R^{n \times n}$ is a diagonal matrix where each entry $A_{ii} \sim \ber(1-p)$ for some $p > 0$ (independently for each $i$), and the additional noise is generated by drawing $\tilde{A}|A$ such that $\tilde{A}_{ii} = A_{ii} \cdot \ber(1-\delta)$ for some small $\delta > 0$ (again independently for each $i$).\footnote{$\ber(q)$ indicates a Bernoulli random variable with a probability of $q$ to equal $1$ and $1-q$ for $0$.} 
+    \item Gaussian measurements: $A \in \R^{m \times n}$ consists of $m$ rows drawn independently from $\gN(0, I_n)$, and $\tilde{A} \in \R^{m \times n}$ is constructed conditional on $A$ by zeroing out its last row.
+\end{itemize}
+
+Notice that the minimizer in Eq~\ref{eq:ahat-minimizer} is not entirely of the form we originally desired, which was $\vh(A, \vy_t, t) = \mathbb{E}[ \vx_0 \mid A\vx_t, A]$. In place of $A$, we now have $\tilde{A}$, which is a further degraded matrix. Indeed, one trivial way to satisfy the condition in Theorem~\ref{thm:minimizer} is by forming $\tilde{A}$ completely independently of $A$, e.g.\ by always setting $\tilde{A} = 0$. However, in this case, the function we learn is not very useful. For this reason, we would like to add as little further noise as possible and ensure that $\tilde{A}$ is close to $A$. In natural noise models such as the inpainting noise model, by letting the additional corruption probability $\delta$ approach $0$, we can indeed ensure that $\tilde{A}$ follows a distribution very close to that of $A$. %
+
+
+\section{Experimental Evaluation}
+\subsection{Training from scratch on corrupted data}
+Our first experiment is to train diffusion models from scratch using corrupted training data at different levels of corruption. The corruption model we use for these experiments is random inpainting: we form our dataset by deleting each pixel with probability $p$. To create the matrix $\tilde{A}$, we further delete each row of $A$ with probability $\delta$ -- this removes an additional $\delta$-fraction of the surviving pixels. Unless mentioned otherwise, we use $\delta=0.1$. 
+% We ablate the choice of $\delta$ in the Appendix. 
+We train models on CIFAR-10, AFHQ, and CelebA-HQ. All our models are trained with corruption level $p \in \{0.0, 0.2, 0.4, 0.6, 0.8, 0.9\}$. We use the EDM~\citep{karras2022elucidating} codebase to train our models. We replace convolutions with Gated Convolutions~\citep{gated_conv} which are known to perform better for inpainting-type problems. To use the mask $\tilde A$ as an additional input to the model, we simply concatenate it with the image $\vx$. The full training details can be found in the Appendix, Section \ref{sec:training_details}.
+
+\begin{table}[!htp]
+\centering
+\begin{tabular}{@{}cc|ccccc@{}}
+\toprule
+\textbf{Dataset} & \textbf{Corruption Probability} & \textbf{Method} & \textbf{LPIPS} & \textbf{PSNR} & \textbf{NFE} \\ \midrule
+CelebA-HQ 
+& \multirow{5}{*}{0.6} & Ours & $\bm{0.037}$ & $\bm{31.51}$ & 1\\ \cline{3-6}
+&  & DPS & 0.053 & 28.21 & 100 \\ \cline{3-6}
+&  & \multirow{3}{*}{DDRM} & 0.139 & 25.76 & 35\\
+&  &  & 0.088 & 27.38 & 99\\
+&  &  & 0.069 & 28.16 & 199\\
+\hline
+& \multirow{5}{*}{0.8} & Ours & $\bm{0.084}$ & $\bm{26.80}$ & 1\\ \cline{3-6}
+&  & DPS & 0.107 & 24.16 & 100 \\ \cline{3-6}
+&  & \multirow{3}{*}{DDRM} & 0.316 & 20.37 & 35\\
+&  &  & 0.188 & 22.96 & 99\\
+&  &  & 0.153 & 23.82 & 199\\
+\hline
+& \multirow{5}{*}{0.9} & Ours & $\bm{0.152}$ & $\bm{23.34}$ & 1\\ \cline{3-6}
+&  & DPS & 0.168 & 20.89 & 100 \\ \cline{3-6}
+&  & \multirow{3}{*}{DDRM} & 0.461 & 15.87 & 35\\
+&  &  & 0.332 & 18.74 & 99\\
+&  &  & 0.242 & 20.14 & 199\\
+\hline \midrule
+AFHQ 
+& \multirow{5}{*}{0.4} & Ours & 0.030 & 33.27 & 1\\ \cline{3-6}
+&  & DPS & $\bm{0.020}$ & $\bm{34.06}$ & 100\\ \cline{3-6}
+&  & \multirow{3}{*}{DDRM} & 0.122 & 25.18 & 35 \\
+&  &  & 0.091 & 26.42 & 99 \\
+&  &  & 0.088 & 26.52 & 199 \\
+\hline
+& \multirow{5}{*}{0.6} & Ours & 0.062 & 29.46 & 1\\ \cline{3-6}
+&  & DPS & $\bm{0.051}$ & $\bm{30.03}$ & 100\\ \cline{3-6}
+&  & \multirow{3}{*}{DDRM} & 0.246 & 20.76 & 35\\ 
+&  &  & 0.166 & 22.79 & 99\\ 
+&  &  & 0.160 & 22.93 & 199\\ 
+\hline 
+& \multirow{5}{*}{0.8} & Ours & 0.124 & $\bm{25.37}$ & 1\\ \cline{3-6}
+&  & DPS & $\bm{0.107}$ & 25.30 & 100\\  \cline{3-6}
+&  & \multirow{3}{*}{DDRM} & 0.525 & 14.56 & 35\\
+&  &  & 0.295 & 18.08 & 99\\
+&  &  & 0.258 & 18.86 & 199\\
+\end{tabular}
+\caption{Comparison of our model (trained on corrupted data) with state-of-the-art diffusion models on CelebA (DDIM~\citep{ddim} model) and AFHQ (EDM~\citep{karras2022elucidating} model) for solving the random inpainting inverse problem. Our model performs on par with state-of-the-art diffusion inverse problem solvers, even though it has never seen uncorrupted training data. Further, this is achieved with a single score function evaluation. To solve this problem with a standard pre-trained diffusion model we need to use a reconstruction algorithm (such as DPS~\citep{dps} or DDRM~\citep{ddrm}) that typically requires hundreds of steps.}
+\label{table:restoration}
+\end{table}
+
+
+We first evaluate the restoration performance of our model for the task it was trained on (random inpainting and noise). We compare with state-of-the-art diffusion models that were trained on clean data. Specifically, for AFHQ we compare with the state-of-the-art EDM model~\citep{karras2022elucidating} and for CelebA we compare with DDIM~\citep{ddim}. These models were not trained to denoise, but we can use the prior learned in the denoiser as in \citep{pnp, kadkhodaie2020solving} to solve any inverse problem. We experiment with the state-of-the-art reconstruction algorithms: DDRM~\citep{ddrm} and DPS~\cite{dps}. 
+
+We summarize the results in Table \ref{table:restoration}. Our model performs similarly to other diffusion models, even though it has never been trained on clean data. Further, it does so by requiring only one step, while all the baseline diffusion models require hundreds of steps to solve the same task with inferior or comparable performance.  The performance of DDRM improves with more function evaluations at the cost of more computation. For DPS, we did not observe significant improvement by increasing the number of steps to more than $100$. We include results with noisy inpainted measurements and comparisons with a supervised method in the Appendix, Section \ref{sec:additional_experiments}, Tables \ref{table:restoration-measurement-noise}, \ref{table:comp_supervised_methods}.
+We want to emphasize that all the baselines we compare against have an advantage: they are trained on \textit{uncorrupted} data. Instead, our models were only trained on corrupted data. This experiment indicates that: i) our training algorithm for learning the conditional expectation worked and ii) that the choice of corruption that diffusion models are trained to reverse matters for solving inverse problems.
+
+
+
+\begin{figure}[!t]
+    \begin{minipage}{0.5\textwidth}
+    \includegraphics[width=\textwidth]   {figs/inception_cifar10.pdf}
+    \caption{\small Performance on CIFAR-10 as a function of the corruption level. We compare our method with a diffusion model trained without our further corruption trick and AmbientGAN~\citep{bora2018ambientgan}. Ambient Diffusion outperforms both baselines for all ranges of corruption levels.}
+    \label{fig:cifar10_inception}
+    \end{minipage}
+    \hspace{2ex}
+    \begin{minipage}{0.45\textwidth}
+    \scriptsize
+    \begin{tabular}{@{}ccccc@{}}
+    \toprule
+    \textbf{Dataset} & \textbf{Corruption Probability} & \textbf{FID} & \textbf{Inception Score} 
+    \\ \midrule
+    \multirow{5}{*}{CelebA-HQ} & 0.0 & 3.26 & \multirow{5}{*}{N/A} &  \\  %
+    & 0.2 &  4.18 &  &\\
+    & 0.6 &  6.08 &
+    \\
+    & 0.8 &  11.19 &
+    \\
+    & 0.9 &  25.53 &
+    \\
+    \midrule[1pt]
+    \multirow{7}{*}{AFHQ} & 0.0 & 2.41 & \multirow{7}{*}{N/A} \\
+    & 0.2 &  4.47 &   \\ %
+    & 0.4 &  6.96	&  
+    \\
+    & 0.6 &  10.11 &
+    \\
+    & 0.8 &  16.78 &
+    \\
+    & 0.9 &  41.00  & \\ %
+    \midrule[1pt]
+    \multirow{5}{*}{CIFAR-10} & 0.0 & 1.85 & 9.94 
+    \\
+    & 0.2 & 11.70 & 7.97 
+    \\
+    & 0.4 &  18.85 & 7.45 
+    \\
+    & 0.6 & 28.88 & 6.88 
+    \\
+    & 0.8 & 46.27 & 6.14  
+    \\
+    \end{tabular}
+    \caption{\small Inception/FID results on random inpainting for models trained with our algorithm on CelebA-HQ, AFHQ and CIFAR-10.}
+    \label{table:fids_table}
+    \end{minipage}
+\end{figure}
+
+
+Next, we evaluate the performance of our diffusion models as generative models. To the best of our knowledge, the only generative baseline with quantitative results for training on corrupted data is AmbientGAN~\citep{bora2018ambientgan} which is trained on CIFAR-10. We further compare with a diffusion model trained without our further corruption algorithm. We plot the results in Figure \ref{fig:cifar10_inception}. The diffusion model trained without our further corruption algorithm performs well for low corruption levels but collapses entirely for high corruption. Instead, our model trained with further corruption maintains reasonable corruption scores even for high corruption levels, outperforming the previous state-of-the-art AmbientGAN for all ranges of corruption levels.
+
+For CelebA-HQ and AFHQ we could not find any generative baselines trained on corrupted data to compare against. Nevertheless, we report FID and Inception Scores and summarize our results in Table \ref{table:fids_table} to encourage further research in this area. As shown in the Table, for CelebA-HQ and AFHQ, we manage to maintain a decent FID score even with $90\%$ of the pixels deleted. For CIFAR-10, the performance degrades faster, potentially because of the lower resolution of the training images.
+
+\subsection{Finetuning foundation models on corrupted data}
+\newcommand{\rulesep}{\unskip\ \vrule\ } %
+\begin{figure}[ht]
+    \centering 
+    \includegraphics[width=0.3\textwidth]{figs/datasets/mri_dataset_corrupted.png}
+    \rulesep
+    \includegraphics[width=0.3\textwidth]{figs/brains_generated.jpg}
+    \caption{\small \textbf{Left panel:} We finetune Deepfloyd's IF diffusion model to make it a generative model for MRI images of brains with tumors. We use a small dataset~\cite{brain-tumor-dataset} of only $155$ images that was corrupted by removing large blocks as shown.   
+\textbf{ Right panel:}  Generated samples from our finetuned model. As shown, the model learns the statistics of full brain tumor MRI images. The training set was resized to $64\times 64$ but the generated images are at $256 \times 256$. The higher resolution is obtained by simply leveraging the power of the cascaded IF model.}
+    \label{fig-mri}
+\end{figure}
+We can apply our technique to finetune a foundational diffusion model. For all our experiments, we use Deepfloyd's IF model~\citep{if_repo}, which is one of the most powerful open-source diffusion generative models available. We choose this model over Stable Diffusion~\citep{ldm} because it works in the pixel space (and hence our algorithm directly applies).
+
+\paragraph{Memorization.} We show that we can finetune a foundational model on a limited dataset without memorizing the training examples. This experiment is motivated by the recent works of \citet{carlini_extracting_2021, somepalli2022diffusion, jagielski_measuring_2022} that show that diffusion generative models memorize training samples and they do it significantly more than previous generative models, such as GANs, especially when the training dataset is small. Specifically, \citet{somepalli2022diffusion} train diffusion models on subsets of size $\{300, 3000, 30000\}$ of CelebA and they show that models trained on $300$ or $3000$ memorize and blatantly copy images from their training set.
+
+We replicate this training experiment by finetuning the IF model on a subset of CelebA with $3000$ training examples. Results are shown in Figure \ref{fig1}. Standard finetuning of Deepfloyd's IF on $3000$ images memorizes samples and produces almost exact copies of the training set. Instead, if we corrupt the images by deleting $80\%$ of the pixels prior to training and finetune, the memorization decreases sharply and there are distinct differences between the generated images and their nearest neighbors from the dataset. This is in spite of finetuning until convergence.
+
+\begin{figure}[!htp]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figs/hist.pdf}
+    \caption{Distribution of similarity values to the nearest neighbor in the dataset for a finetuned IF model on a 3000 samples CelebA subset. Please note that similarity values above $0.95$ roughly correspond to the same person and similarities below $0.75$ typically correspond to random faces. Therefore the baseline finetuning process (red) often generates images that are near copies of the training set. On the contrary, our fine-tuning with corrupted samples (blue) shows a clear shift to the left. Visually we never observed a near-identical image generated from our process, see also Figure \ref{fig1} for qualitative results. }
+    \label{fig:dino}
+\end{figure}
+
+To quantify the memorization, we follow the methodology of \citet{somepalli2022diffusion}. Specifically, we generate 10000 images from each model and we use DINO~\citep{dino}-v2~\citep{oquab2023dinov2} to compute top-$1$ similarity to the training images. Results are shown in Figure \ref{fig:dino}. Similarity values above $0.95$ roughly correspond to the same person while similarities below $0.75$ typically correspond to random faces. The standard finetuning (Red) often generates images that are near-identical with the training set. Instead, fine-tuning with corrupted samples (blue) shows a clear shift to the left. Visually we never observed a near-copy generated from our process -- see also Figure \ref{fig1}.
+
+We repeat this experiment for models trained on the full CelebA dataset and at different levels of corruption. We include the results in Figure \ref{fig:dino_more} of the Appendix. As shown, the more we increase the corruption level the more the distribution of similarities shifts to the left, indicating less memorization. However, this comes at the cost of decreased performance, as reported in Table \ref{table:fids_table}.
+
+
+\textbf{New domains and different corruption.}
+We show that we can also finetune a pre-trained foundation model on a \textit{new domain} given a limited-sized dataset in a few hours in a single GPU. Figure~\ref{fig-mri} shows generated samples from a finetuned model on a dataset containing $155$ examples of brain tumor MRI images~\citep{brain-tumor-dataset}.
+As shown, the model learns the statistics of full brain tumor MRI images while only trained on brain-tumor images that have a random box obfuscating $25\%$ of the image. 
+The training set was resized to $64\times 64$ but the generated images are at $256 \times 256$ by simply leveraging the power of the cascaded Deepfloyd IF.
+
+
+
+\textbf{Limitations.}
+Our work has several limitations. First, there is a tradeoff between generator quality and corruption levels. For higher corruption, it is less likely that our generator memorizes parts of training examples, but at a cost of degrading quality. Precisely characterizing this trade-off is an open research problem. Further, in this work, we only experimented with very simple approximation algorithms to estimate $\E[\vx_0|\vx_t]$ using our trained models. Additionally, we cannot make any strict privacy claim about the protection of any training sample without making assumptions about the data distribution.
+We show in the Appendix that it is possible to recover $\E[\vx_0|\vx_t]$ exactly using our restoration oracle, but we do not have an algorithm to do so. Finally, our method cannot handle measurements that also have noise. Future work could potentially address this limitation by exploiting SURE regularization as in \citep{aali2023solving}.
+
+\paragraph{Acknowledgements.}
+The authors would like to thank Tom Goldstein for insightful discussions that benefited this work.
+This research has been supported by NSF Grants CCF 1763702,
+AF 1901292, CNS 2148141, Tripods CCF 1934932, NSF AI Institute for Foundations of Machine Learning (IFML) 2019844, the Texas Advanced Computing Center (TACC) and research gifts by Western Digital, WNCG IAP, UT Austin Machine Learning Lab (MLL), Cisco and the Archie Straiton Endowed Faculty Fellowship. Giannis Daras has been supported by the Onassis Fellowship (Scholarship ID: F ZS 012-1/2022-2023), the Bodossaki Fellowship and the Leventis Fellowship. 
+
+
+
+
+\printbibliography
+\newpage
+\appendix
+
+
+\section{Proofs}
+
+\begin{proof}[Proof of Theorem~\ref{thm:minimizer}]
+    Let $\vh_{\theta^*}$ be a minimizer of \eqref{eq:opt}, and for brevity let \[ \vf(\tilde{A} \vx_t, \tilde{A}) = \vh_{\theta^*}( \tilde{A}\vx_t, \tilde{A} ) - \mathbb{E}[ \vx_0 \mid \tilde{A}\vx_t, \tilde{A}] \] be the difference between $\vh_{\theta^*}$ and the claimed optimal solution. We will now argue that $\vf$ must be identically zero.
+    
+    First, by adding and subtracting $A\mathbb{E}[ \vx_0 \mid \tilde{A}\vx_t, \tilde{A}]$, we can expand the objective value achieved at $\theta = \theta^*$ in \eqref{eq:opt} as follows: \begin{align*}
+        J^{\mathrm{corr}}(\theta^*) &= \E_{\vx_0, \vx_t, A, \tilde{A}} \sbr{ \norm{ (A\vx_0 - A\mathbb{E}[ \vx_0 \mid \tilde{A}\vx_t, \tilde{A}]) - A\vf(\tilde{A} \vx_t, \tilde{A})) }^2 } \\
+        &= \E_{\vx_0, \vx_t, A, \tilde{A}} \sbr{ \norm{ A\vx_0 - A\mathbb{E}[ \vx_0 \mid \tilde{A}\vx_t, \tilde{A}]}^2 } + \E_{\vx_0, \vx_t, A, \tilde{A}} \sbr{ \norm{ A\vf(\tilde{A} \vx_t, \tilde{A}) }^2 } \\ &\quad - 2 \E_{\vx_0, \vx_t, A, \tilde{A}} \sbr{ (A\vx_0 - A\mathbb{E}[ \vx_0 \mid \tilde{A}\vx_t, \tilde{A}])^T A\vf(\tilde{A} \vx_t, \tilde{A}) }.
+    \end{align*} Here the first term is the irreducible error, while the third term vanishes by the tower law of expectations: \begin{align*}
+        &\E_{\vx_0, \vx_t, A, \tilde{A}} \sbr{ (A\vx_0 - A\mathbb{E}[ \vx_0 \mid \tilde{A}\vx_t, \tilde{A}])^T A\vf(\tilde{A} \vx_t, \tilde{A}) } \\
+        & = \E_{\vx_0, A, \tilde{A}, \tilde{A}\vx_t} \sbr{ (\vx_0 - \mathbb{E}[ \vx_0 \mid \tilde{A}\vx_t, \tilde{A}])^T A^T A\vf(\tilde{A} \vx_t, \tilde{A}) } \\
+        & = \E_{A, \tilde{A}, \tilde{A}\vx_t} \sbr{ \E_{\vx_0|A, \tilde{A}, \tilde{A}\vx_t} \sbr{ \vx_0 - \mathbb{E}[ \vx_0 \mid \tilde{A}\vx_t, \tilde{A}]}^T A^TA\vf(\tilde{A} \vx_t, \tilde{A}) } \\
+        & = \E_{A, \tilde{A}, \tilde{A}\vx_t} \sbr{ ( \mathbb{E}[ \vx_0 \mid \tilde{A}\vx_t, \tilde{A}] - \mathbb{E}[ \vx_0 \mid \tilde{A}\vx_t, \tilde{A}])^T A^TA\vf(\tilde{A} \vx_t, \tilde{A}) } \\
+        & = 0.
+    \end{align*}
+    
+    
+    Thus the only part of $J^{\mathrm{corr}}(\theta^*)$ that actually depends on the parameter value $\theta^*$ is the second term. We now show that the second term can be made to vanish and that this occurs precisely when $\vf$ is identically 0: \begin{align*}
+        &\E_{\vx_0, \vx_t, A, \tilde{A}} \sbr{ \norm{ A\vf(\tilde{A} \vx_t, \tilde{A}) }^2 } \\
+        &= \E_{\vx_0, \vx_t, A, \tilde{A}} \sbr{ \vf(\tilde{A} \vx_t, \tilde{A})^T A^T A \vf(\tilde{A} \vx_t, \tilde{A}) } \\
+        &= \E_{\vx_0, \vx_t, \tilde{A}} \sbr{ \vf(\tilde{A} \vx_t, \tilde{A})^T \E_{A | \vx_0, \vx_t, \tilde{A}} \sbr{A^T A} \vf(\tilde{A} \vx_t, \tilde{A}) } \\
+        &= \E_{\vx_0, \vx_t, \tilde{A}} \sbr{ \vf(\tilde{A} \vx_t, \tilde{A})^T \E_{A | \tilde{A}} \sbr{A^T A} \vf(\tilde{A} \vx_t, \tilde{A}) }.
+    \end{align*} For every $\tilde{A}$ and $\vx_0, \vx_t$, by assumption we have that $\E_{A | \tilde{A}} \sbr{A^T A}$ is full-rank, and so the inner quadratic form is minimized when $\vf(\tilde{A} \vx_t, \tilde{A}) = 0$. Further, the term as a whole vanishes exactly when this holds for every $\tilde{A}$ and $\vx_0, \vx_t$ in the support, which means $\vf$ must be identically zero.
+\end{proof}
+
+\begin{corollary}[Inpainting noise model]\label{cor:inpainting}
+    Consider the following inpainting noise model: $A \in \R^{n \times n}$ is a diagonal matrix where each entry $A_{ii} \sim \ber(1-p)$ for some $p > 0$ (independently for each $i$), and the additional noise is generated by drawing $\tilde{A}|A$ such that $\tilde{A}_{ii} = A_{ii} \ber(1-\delta)$ for some small $\delta > 0$ (again independently for each $i$). Then the unique minimizer of the objective in \eqref{eq:opt} is \begin{align*}
+        \vh_{\theta^*}( \tilde{A}\vx_t, \tilde{A} ) = \mathbb{E}[ \vx_0 \mid \tilde{A}\vx_t, \tilde{A} ].
+    \end{align*}
+\end{corollary}
+\begin{proof}%
+    By Theorem~\ref{thm:minimizer}, what we must show is that for any $\tilde{A}$ in the support, $E_{A|\tilde{A}}[A^T A]$ is full-rank. Fix any particular realization of $\tilde{A}$, which will be a diagonal matrix with only $0$s and $1$s. For indices $i$ where $\tilde{A}_{ii} = 1$,  we know that for any $A$ drawn conditional on $\tilde{A}$, $A_{ii} = 1$ as well, i.e.\ \[ \Pr( A_{ii} = 1 \mid \tilde{A}_{ii} = 1 ) = 1. \] And for indices $i$ where $\tilde{A}_{ii} = 0$, by Bayes' rule we have \[ \Pr( A_{ii} = 1 \mid \tilde{A}_{ii} = 0 ) = \frac{\Pr( A_{ii} = 1 , \tilde{A}_{ii} = 0 )}{ \Pr( A_{ii} = 0 , \tilde{A}_{ii} = 0 ) + \Pr( A_{ii} = 1 , \tilde{A}_{ii} = 0 ) } \\ = \frac{(1-p) \delta }{ (1-p) \delta + p } =: q. \] Thus we see that $E_{A|\tilde{A}}[A^T A] = E_{A|\tilde{A}}[A]$ is a diagonal matrix whose entries are $1$ wherever $\tilde{A}_{ii} = 1$ and $q$ wherever $\tilde{A}_{ii} = 0$. This is clearly of full rank since $q > 0$.
+\end{proof}
+
+\begin{corollary}[Gaussian measurements noise model]\label{cor:gaussian}
+    Consider the following noise model where we only observe $m$ independent Gaussian measurements of the ground truth, and then one of the measurements is further omitted: $A \in \R^{m \times n}$ consists of $m$ rows drawn independently from $\gN(0, I_n)$, and $\tilde{A} \in \R^{m \times n}$ is constructed conditional on $A$ by zeroing out its last row. Then the unique minimizer of the objective in \eqref{eq:opt} is \begin{align*}
+        \vh_{\theta^*}( \tilde{A}\vx_t, \tilde{A} ) = \mathbb{E}[ \vx_0 \mid \tilde{A}\vx_t, \tilde{A} ].
+    \end{align*}
+\end{corollary}
+\begin{proof}%
+    Again by Theorem~\ref{thm:minimizer}, we must show that for any $\tilde{A}$ in the support, $E_{A|\tilde{A}}[A^T A]$ is full-rank. Fix any realization of $\tilde{A}$, which will have the following form: \begin{align*} \tilde{A} &= \begin{bmatrix} \horzbar & \va_1^T & \horzbar \\ & \vdots & \\ \horzbar & \va_{m-1}^T & \horzbar \\ \horzbar & \bm{0}^T & \horzbar \end{bmatrix}. \intertext{Then it is clear that conditional on $\tilde{A}$, $A$ has the following distribution:} A \mid \tilde{A} &= \begin{bmatrix} \horzbar & \va_1^T & \horzbar \\ & \vdots & \\ \horzbar & \va_{m-1}^T & \horzbar \\ \horzbar & \vb_m^T & \horzbar \end{bmatrix} \quad \text{where} \quad \vb_m \sim \gN(0, I_n). \end{align*} Here $\vb_m$ is drawn entirely independently from $\gN(0, I_n)$. Elementary manipulations now reveal that $\E_{A | \tilde{A}}[A^T A] = \E_{\vb_m \sim \gN(0, I_n)} [\tilde{A}^T \tilde{A} + \vb_m \vb_m^T] = \tilde{A}^T \tilde{A} + I_n$, which is clearly full rank (indeed, it is PSD with strictly positive eigenvalues).
+\end{proof}
+
+\subsection{Reduction}
+\label{sec:reduction}
+In this section we argue that if there is an algorithm that recovers the target distribution $p_0(\vx_0)$ from i.i.d. samples $(A\vx_0, A)$ where $A \sim p(A)$ and $\vx_0 \sim p_0(\vx_0)$, then, there is an algorithm that recovers $p_0(\vx_0)$ without sample access, but instead, using access to an oracle that given $t, \vx$ and $A$ in the support of $p(A)$, returns $\E[\vx_0 \mid A\vx_t]$. 
+
+Indeed, for any $A$, \citet{chen2022sampling} show that it is possible to recover the distribution of $A\vx_0$ given access to $\E[A\vx_0 \mid A\vx_t]$ for any $t$ and $\vx$ under some minimal assumptions on the data distribution $p_0(\vx_0)$, see \cite[Assumptions 1-3]{chen2022sampling}. 
+Using our oracle and using this theorem, we can recover the distribution of $A\vx_0$ for all $A$ in the support. By sampling from these distributions, one can as well obtain samples of $A\vx_0$ for $A \sim p(A)$ and $\vx_0 \sim p_0(\vx_0)$. Hence, if these samples are sufficient to recover $p_0(\vx_0)$, then, having an oracle to these conditional expectations is sufficient as well.
+
+This intuition can be formalized as follows. Fix a distribution $p_A(A)$ over corruption matrices. For a distribution $p_0(\vx_0)$, denote by $\crp(p_A, p_0)$ the distribution over pairs $(A,A\vx_0)$ where $A\sim p_A(A)$ and $\vx_0 \sim p_0(\vx_0)$. 
+We say that \emph{it is possible to reconstruct $p_0(\vx_0)$ from random corruptions $A \sim p_A(A)$} if the following holds: for any two distributions, $p_0(\vx_0)$ and $p_0'(\vx_0')$ that satisfy Assumptions 1-3 of \citet{chen2022sampling}, if $\crp(p_A,p_0) = \crp(p_A,p_0')$, then $p_0 = p_0'$.
+Similarly, we say that \emph{it is possible to reconstruct $p_0(x_0)$ from conditional expectations given $A \sim p(A)$} if the following holds: for any distribution $p_0(\vx_0)$ and $p_0'(\vx_0')$ that satisfy Assumptions 1-3 of \citet{chen2022sampling}, if for all $x$, $t$ and $A$ in the support of $p_A$, 
+
+\begin{equation}\label{eq:rec-cond}
+\E_{(\vx_0,\vx_t) \sim p_{0,t}(\vx_0,\vx_t)}[\vx_0 \mid A\vx_t = \vx]
+= \E_{(\vx'_0,\vx'_t) \sim p'_{0,t}(\vx_0',\vx_t')}[\vx_0' \mid A\vx_t' = x]
+\end{equation}
+
+
+then $p_0 = p_0'$. Here, $p_{0,t}(\vx_0,\vx_t)$ is obtained by sampling $\vx_0 \sim p_0$ and $\vx_t = \vx_0 + \sigma_t \veta$ where $\veta \sim \mathcal{N}(0,I)$. Similarly, $p'_{0,t}(\vx_0',\vx_t')$ is obtained by the same process where $\vx_0'$ is instead sampled from $p_0'$.
+We state the following lemma:
+\begin{lemma}
+    Fix a distribution $p_A(A)$. If it is possible to reconstruct $p_0(\vx_0)$ from random corruptions $\vy_0 = A\vx_0$, $A \sim p_A(A)$, then it is possible to reconstruct $p_0(\vx_0)$ given access to an oracle that computes the conditional expectations $\E[\vx_0 | A\vx_t, A]$, for $A \sim p_A(A)$ and $\vx_t = \vx_0 + \sigma_t \veta$.
+    \label{lemma:reduction}
+\end{lemma}
+\begin{proof}
+    Assume that it is possible to reconstruct $p_0(\vx_0)$ from random corruptions $A \sim p_A(A)$ and we will prove that it is possible to reconstruct $p_0(\vx_0)$ from conditional expectations given $A \sim p_A(A)$. To do so, let $p_0(\vx_0)$ and $p_0'(\vx_0')$ be two distributions that satisfy Assumptions 1-3 of \citet{chen2022sampling}. Assume that \eqref{eq:rec-cond} holds. We will prove that $p_0 = p_0'$. Fix some $A$ in the support of $p_A$. By \citet{chen2022sampling}, there is an algorithm that samples from the distribution of $A\vx_0$, $\vx_0 \sim p_0(\vx_0)$, that only has access to $\E[A\vx_0 \mid A\vx_t, A]$ and similarly, there is an algorithm that samples from the distribution of $A\vx_0'$ that only has access to $\E[A\vx_0' \mid A\vx_t', A]$. Since these two conditional expectations are assumed to be the same, then the distribution of $A\vx_0$ equals the distribution of $A\vx_0'$. Consequently, $\crp(p_A,p_0) = \crp(p_A,p_0')$. By the assumption that it is possible to reconstruct $p_0(\vx_0)$ from random corruptions $A \sim p_A(A)$, this implies that $p_0 = p_0'$. This completes the proof.
+\end{proof}
+
+
+\section{Broader Impact and Risks}
+
+Generative models in general hold the potential to have far-reaching impacts on society in a variety of forms, coupled with several associated risks \cite{menon2020pulse,karras2019style,karras2020analyzing,karras2021alias}. Among other potential applications, they can be utilized to create deceptive images and perpetuate societal biases. To the best of our knowledge, our paper does not amplify any of these existing risks. Regarding the included MRI results, we want to clarify that we make no claim that such results are diagnostically useful. This experiment serves only as a toy demonstration that it can be potentially feasible to learn the distribution of MRI scans with corrupted samples. Significant further research must be done in collaboration with radiologists before our algorithm gets tested in clinical trials. Finally, we want to underline again that even though our approach seems to mitigate the memorization issue in generative models, we cannot guarantee the privacy of any training sample unless we make assumptions about the data distribution. Hence, we strongly discourage using this algorithm in applications where privacy is important before this research topic is investigated further.
+
+
+
+\section{Training Details}
+\label{sec:training_details}
+We open-source our code and models to facilitate further research in this area: \href{https://github.com/giannisdaras/ambient-diffusion}{https://github.com/giannisdaras/ambient-diffusion}.
+
+\paragraph{Models trained from scratch.}
+
+We trained models from scratch at different corruption levels on CelebA-HQ, AFHQ and CIFAR-10. The resolution of the first two datasets was set to $64\times64$ and for CIFAR-10 we trained on $32\times 32$. 
+
+We started from EDM's~\citep{karras2022elucidating} official implementation and made some necessary changes. 
+Architecturally, the only change we made was to replace the convolutional layers with Gated Convolutions~\citep{gated_conv} that are known to perform well for inpainting problems. We observed that this change stabilized the training significantly, especially in the high-corruptions regime. As in EDM, we use the architecture from the DDPM++~\citep{ddpm++} paper.
+
+To avoid additional design complexity, we tried to keep our hyperparameters as close as possible to the EDM paper. We observed
+that for high corruption levels, it was useful to add gradient clipping, otherwise, the training would often diverge. For all our experiments, we use gradient clipping with max-norm set to $1.0$. We underline that unfortunately, even with gradient clipping, the training at high corruption levels ($p\geq 0.8$), still diverges sometimes. Whenever this happened, we restarted the training from an earlier checkpoint. We list the rest of the hyperparameters we used in Table \ref{tab:hyperparams}. 
+
+\begin{table}[h]
+\centering
+\caption{Training Hyperparameters}
+\label{tab:hyperparams}
+\scriptsize{
+\begin{tabular}{l|l|l|l|l|l|l|l|l|l}
+\toprule
+\textbf{Dataset} & \textbf{Iters} & \textbf{Batch} & \textbf{LR} & \textbf{SDE} & $\bm{p}$ & $\bm{\delta}$ & \textbf{Aug. Prob.} & \textbf{Ch. Multipliers} & \textbf{Dropout} \\
+\midrule
+CIFAR-10 & \multirow{4}{*}{$200000$} & 512 & 1e-3 & \multirow{4}{*}{VP} & $\{0.2, 0.4, 0.6, 0.8\}$ & \multirow{3}{*}{$0.1$} & $0.12$ & (1, 1, 1, 1) & $0.13$ \\ \cline{1-1} \cline{3-4} \cline{6-10} 
+AFHQ &  & \multirow{3}{*}{256} & \multirow{3}{*}{2e-4} & & $\{0.2, 0.4, 0.6, 0.8, 0.9\}$ & & \multirow{3}{*}{0.15} & \multirow{3}{*}{(1, 2, 2, 2)} & 0.25\\ \cline{1-1} 
+\cline{6-7} \cline{10-10}
+\multirow{2}{*}{CelebA-HQ } & & & & & $\{0.2, 0.6, 0.8\}$ & & & & \multirow{2}{*}{$0.1$} \\
+& & & & & $0.9$ & $0.3$ & & & \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+Training diffusion models from scratch is quite computationally intensive. We trained all our models for $200000$ iterations. Our CIFAR-10 models required $\approx 2$ days of training each on $6$ A100 GPUs. Our AFHQ and CelebA-HQ models required $\approx 6$ days of training each on $6$ A100 GPUs. These numbers roughly match the performance reported in the EDM paper, indicating that the extra corruption we need to do on matrix $A$ does not increase training time.
+
+Due to the increased computational complexity of training these models, we could not extensively optimize the hyperparameters, e.g. the $\delta$ probability in our extra corruption. For higher corruption, e.g. for $p=0.9$, we noticed that we had to increase $\delta$ in order for the model to learn to perform well on the unobserved pixels.
+
+
+\paragraph{Finetuning Deepfloyd's IF.} We access Deepfloyd's IF~\cite{if_repo} model through the \texttt{diffusers} library. The model is a Cascaded Diffusion Model~\citep{ho2022cascaded}. The first part of the pipeline is a text-conditional diffusion model that outputs images at resolution $64\times 64$. Next in the pipeline, there are two diffusion models that are conditioned both in the input text and the low-resolution output of the previous stage. The first upscaling module increases the resolution from $64\times64$ to $256\times 256$ and the final one from $256\times256$ to $1024\times1024$.
+
+To reduce the computational requirements of the finetuning, we only finetune the first text-conditional diffusion model that works with $64\times 64$ resolution images. Once the finetuning is completed, we use again the whole model to generate high-resolution images. 
+
+For the finetuning, we set the training batch size to $32$ and the learning rate to $3\mathrm{e}-6$. We train for a maximum of $15000$ steps and we keep the checkpoint that gives the lowest error on the pixels that we further corrupted. To further reduce the computational requirements, we use an 8-bit Adam Optimizer and we train with half-precision. 
+
+For our CelebA finetuning experiments, we set $\delta=0.1$ and $p=0.8$. We experiment with the full training set, a subset of size $3000$ (see Figure \ref{fig1}) and a subset of $300$. For the model trained with only $300$ heavily corrupted samples, we did not observe memorization but the samples were of very low quality. Intuitively, our algorithm provides a way to control the trade-off between memorization and fidelity. Fully exploring this trade-off is a very promising direction for future work. For our MRI experiments, we use two non-overlapping blocks that each obfuscate $25\%$ of the image and we evaluate the model in one of them.
+
+All of our fine-tuning experiments can be completed in a few hours. Training for $15000$ iterations takes $\approx 10$ hours on an A100 GPU, but we usually get the best checkpoints earlier in the training.
+
+
+
+
+
+
+
+\section{Evaluation Details}
+
+\paragraph{FID evaluation.}
+Our FID~\citep{fid} score is computed with respect to the training set, as is standard practice, e.g. see \citep{ddpm, karras2022elucidating, ncsnv3}. For each of our models trained from scratch, we generate $50000$ images using the seeds $0-49999$. Once we generate our images, we use the code provided in the official implementation of the EDM~\citep{karras2022elucidating} paper for the FID computation.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\section{Additional Experiments}
+\label{sec:additional_experiments}
+\subsection{Restoration performance with noisy measurements}
+
+In Table \ref{table:restoration} of the main paper, we compare the restoration performance of our models and vanilla diffusion models (trained with uncorrupted images). We compare the restoration performance in the task of random inpainting because it is straightforward to use our models to solve this inverse problem. It is potentially feasible to use our trained generative models to solve any (linear or non-linear) inverse problem but we leave this direction for future work.
+
+In this section, we further compare our models (trained with randomly inpainted images) in the task of inpainting with noisy measurements. Concretely, we want to predict $\vx_0$, given measurements $\vy_t = A(\vx_0 + \sigma_{\vy_t}\veta), \ \veta \sim \mathcal N(0, I)$. As in the rest of the paper, we assume that the mask matrix $A$ is known. We can solve this problem with one model prediction using our trained models since according to Eq. \ref{eq:ahat-minimizer}, we are learning: $\vh_{\theta}(\vy_t, A, t) = \E[\vx_0| A\vx_t=\vy_t, A]$. 
+
+
+We use the EDM~\citep{karras2022elucidating} state-of-the-art model trained on AFHQ as our baseline (as we did in the main paper). To use this pre-trained model to solve the noisy random inpainting inverse problem, we need a reconstruction algorithm. We experiment again with DPS and DDRM which can both handle inverse problems with noise in the measurements. We present our results in Table \ref{table:restoration-measurement-noise}. As shown, our models significantly outperform the EDM models that use the DDRM reconstruction algorithm and perform on par with the EDM models that use the DPS reconstruction algorithm.
+
+
+\begin{table}[!htp]
+\centering
+\small{
+\begin{tabular}{@{}cccccccc@{}}
+\toprule
+\textbf{Dataset} & \textbf{Corruption Probability} & \textbf{Measurement Noise ($\sigma_{\vy_0}$)} & \textbf{Method} & \textbf{LPIPS} & \textbf{PSNR} & \textbf{NFE} \\ 
+\midrule
+AFHQ 
+& \multirow{5}{*}{0.4} & \multirow{5}{*}{0.05} & Ours & 0.0861 & 29.46 & 1\\ 
+&  & & DPS & \textbf{0.0846} & \textbf{29.83} & 100\\
+&  & & \multirow{3}{*}{DDRM} & 0.2061 & 24.47 & 35 \\
+&  &  & & 0.1739 & 25.38 & 99 \\
+&  &  & & 0.1677 & 25.58 & 199 \\
+\hline
+& \multirow{5}{*}{0.6} & \multirow{5}{*}{0.05} & Ours & 0.1031 & 27.40 & 1\\ 
+&  & & DPS & \textbf{0.0949} & \textbf{27.92} & 100\\ 
+&  & & \multirow{3}{*}{DDRM} & 0.4066 & 18.73 & 35\\ 
+&  &  & & 0.3626 & 19.49 & 99\\ 
+&  &  & & 0.3506 & 19.70 & 199\\ 
+\hline 
+& \multirow{5}{*}{0.8} & \multirow{5}{*}{0.05} & Ours & 0.1792 & \textbf{23.21} & 1\\ 
+&  & & DPS & \textbf{0.1778} & 23.01 & 100\\  
+&  & & \multirow{3}{*}{DDRM} & 0.5879  & 13.65 & 35 \\
+&  &  & & 0.5802 & 13.99  & 99\\
+&  &  & & 0.5753 & 14.09 & 199\\
+\end{tabular}}
+\caption{\small Comparison of our model (trained on corrupted data) with state-of-the-art diffusion models on CelebA (DDIM~\citep{ddim} model) and AFHQ (EDM~\citep{karras2022elucidating} model) for solving the random inpainting inverse problem with \textbf{noise}.}
+\label{table:restoration-measurement-noise}
+\end{table}
+
+
+\subsection{Comparison with Supervised Methods}
+\label{sec:supervised_comp}
+For completeness, we include a comparison with Masked AutoEncoders~\citep{mae}, a state-of-the-art supervised method for solving the random inpainting problem. The official repository of this paper does not include models trained on AFHQ. We compare with the available models that are trained on the iNaturalist dataset which is the most semantically close dataset we could find. We emphasize that this model was trained with access to uncorrupted images. Results are shown in \ref{table:comp_supervised_methods}. As shown, our method and DPS outperform this supervised baseline. We underline that this experiment is included for completeness and does not exclude the possibility that there are more performant supervised alternatives for random inpainting.
+
+\begin{table}[htp]
+\centering
+\begin{tabular}{@{}ccccccc@{}}
+\toprule
+\textbf{Corruption Probability} & \textbf{Method} & \textbf{LPIPS} & \textbf{PSNR} & \textbf{NFE} \\ \midrule
+\multirow{3}{*}{0.4} & Ours & 0.0304 & 33.27 & 1\\ 
+& DPS & $\bm{0.0203}$ & $\bm{34.06}$ & 100\\
+& MAE & $0.0752$ & $28.88$ & 1\\
+\hline
+\multirow{3}{*}{0.6} & Ours & 0.0628 & 29.46 & 1\\ 
+& DPS & $\bm{0.0518}$ & $\bm{30.03}$ & 100\\ 
+& MAE & $0.0995$ & $25.89$ & 1\\
+\hline 
+\multirow{3}{*}{0.8} & Ours & 0.1245 & $\bm{25.37}$ & 1\\ 
+& DPS & $\bm{0.1078}$ & 25.30 & 100\\ 
+& MAE & $0.1794$ & $22.01$ & 1 \\
+\bottomrule
+\end{tabular}
+\vspace{1em}
+\caption{Comparison with the MAE~\citep{mae}, a state-of-the-art supervised method for solving the restoration task of random inpainting.}
+\label{table:comp_supervised_methods}
+\end{table}
+
+
+
+
+
+
+
+
+\subsection{Sampler Ablation}
+\label{sec:sampling_ablation}
+By Lemma \ref{lemma:reduction}, if it is possible to learn $p_0(\vx_0)$ using corrupted samples then it is also possible
+to use our learned model to sample from $p_0(\vx_0)$. Even though such an algorithm exists, we do not know which one it is. 
+
+In the paper, we proposed to simple ideas for sampling, the Fixed Mask Sampler and the Reconstruction Guidance Sampler. The Fixed Mask Sampler fixes a mask throughout the sampling process. Hence, sampling with this algorithm is equivalent to first sampling some pixels from the marginals of $p_0(\vx_0)$ and then completing the rest of the pixels with the best reconstruction (the conditional expectation) in the last step. This simple sampler performs remarkably well and we use it throughout the main paper.
+
+
+To demonstrate that we can further improve the sampling performance, we proposed the Reconstruction Guidance sampler that takes into account all the pixels by forcing predictions of the model with different masks to be consistent. In Table \ref{tab:sampling_comparison} we ablate the performance of this alternative sampler. For the reconstruction guidance sampler, we select each time four masks at random and we add an extra update term to the Fixed Mask Sampler that ensures that the predictions of the Fixed Mask Sampler are not very different compared to the predictions with the other four masks (that have different context regarding the current iterate $\vx_t$). We set the guidance parameter $w_t$ to the value $5e-4$. As shown, this sampler improves the performance, especially for the low corruption probabilities where the extra masks give significant information about the current state to the predictions given only one fixed mask. However, the benefits of this sampler are vanishing for higher corruption. Given that the two samples perform on par and that the Reconstruction Guidance Sampler is much more computationally intensive (we need one extra prediction per step for each extra mask), we choose to use the Fixed Mask Sampler for all the experiments in the paper.
+
+\begin{table}[!htp]
+    \centering
+    \begin{tabular}{@{}ccccc@{}}
+    \toprule
+    \textbf{Sampler Type} & \textbf{Corruption Probability} & \textbf{FID} & \textbf{Inception Score} 
+    \\ \midrule
+    \multirow{4}{*}{Fixed Mask} & 0.2 & 11.70 & 7.97 
+    \\
+    & 0.4 &  18.85 & 7.45 
+    \\
+    & 0.6 & $\bm{28.88}$ & 6.88 
+    \\
+    & 0.8 & $\bm{46.27}$ & $\bm{6.14}$  
+    \\ \midrule[1pt]
+    \multirow{4}{*}{Reconstruction Guidance} & 0.2 & $\bm{11.59}$ & $\bm{8.01}$
+    \\
+    & 0.4 & $\bm{18.52}$ & $\bm{7.51}$
+    \\
+    & 0.6 & $28.90$ & $\bm{6.91}$
+    \\
+    & 0.8 & $46.31$ & $6.13$ \\ \bottomrule
+    \end{tabular}
+    \vspace{1em}
+    \caption{Comparison between the Fixed Mask sampler and the Reconstruction Guidance Sampler.}
+    \label{tab:sampling_comparison}
+\end{table}        
+
+
+
+
+
+\subsection{Additional Figures}
+
+Figure \ref{fig:reconstructions} shows reconstructions of AFHQ corrupted images with the EDM AFHQ model trained on clean data (columns 3, 4) and our model trained on corrupted data (column 5). The restoration task is random inpainting at probability $p=0.8$. The last two rows also have measurement noise with $\sigma_{\vy_{0}}=0.05$.
+
+
+\begin{figure}[!htp]
+    \centering
+    \begin{minipage}{0.18\textwidth}
+        \caption*{Input}
+        \includegraphics[width=\textwidth]{figs/restorations/1/masked_image.png}
+    \end{minipage}
+    \begin{minipage}{0.18\textwidth}
+        \caption*{Ground Truth}
+        \includegraphics[width=\textwidth]{figs/restorations/1/original.png}  
+    \end{minipage}
+    \begin{minipage}{0.18\textwidth}
+        \caption*{DDRM~\citep{ddrm}}
+        \includegraphics[width=\textwidth]{figs/restorations/1/ddrm.png}  
+    \end{minipage}
+    \begin{minipage}{0.18\textwidth}
+        \caption*{DPS~\citep{dps}}
+        \includegraphics[width=\textwidth]{figs/restorations/1/dps.png}  
+    \end{minipage}
+    \begin{minipage}{0.18\textwidth}
+        \caption*{Ours}
+        \includegraphics[width=\textwidth]{figs/restorations/1/ours.png}  
+    \end{minipage} \\
+    \begin{minipage}{0.18\textwidth}
+        \includegraphics[width=\textwidth]{figs/restorations/2/masked_image.png}
+    \end{minipage}
+    \begin{minipage}{0.18\textwidth}
+        \includegraphics[width=\textwidth]{figs/restorations/2/original.png}  
+    \end{minipage}
+    \begin{minipage}{0.18\textwidth}
+        \includegraphics[width=\textwidth]{figs/restorations/2/ddrm.png}  
+    \end{minipage}
+    \begin{minipage}{0.18\textwidth}
+        \includegraphics[width=\textwidth]{figs/restorations/2/dps.png}  
+    \end{minipage}
+    \begin{minipage}{0.18\textwidth}
+        \includegraphics[width=\textwidth]{figs/restorations/2/ours.png}  
+    \end{minipage} \\
+    \begin{minipage}{0.18\textwidth}
+        \includegraphics[width=\textwidth]{figs/restorations/3/masked_image.png}
+    \end{minipage}
+    \begin{minipage}{0.18\textwidth}
+        \includegraphics[width=\textwidth]{figs/restorations/3/original.png}  
+    \end{minipage}
+    \begin{minipage}{0.18\textwidth}
+        \includegraphics[width=\textwidth]{figs/restorations/3/ddrm.png}  
+    \end{minipage}
+    \begin{minipage}{0.18\textwidth}
+        \includegraphics[width=\textwidth]{figs/restorations/3/dps.png}  
+    \end{minipage}
+    \begin{minipage}{0.18\textwidth}
+        \includegraphics[width=\textwidth]{figs/restorations/3/ours.png}  
+    \end{minipage} \\
+    \begin{minipage}{0.18\textwidth}
+        \includegraphics[width=\textwidth]{figs/restorations/4/masked.png}
+    \end{minipage}
+    \begin{minipage}{0.18\textwidth}
+        \includegraphics[width=\textwidth]{figs/restorations/4/original.png}  
+    \end{minipage}
+    \begin{minipage}{0.18\textwidth}
+        \includegraphics[width=\textwidth]{figs/restorations/4/ddrm.png}  
+    \end{minipage}
+    \begin{minipage}{0.18\textwidth}
+        \includegraphics[width=\textwidth]{figs/restorations/4/dps.png}  
+    \end{minipage}
+    \begin{minipage}{0.18\textwidth}
+        \includegraphics[width=\textwidth]{figs/restorations/4/ours.png}  
+    \end{minipage}
+    \caption{Reconstructions of AFHQ corrupted images with the EDM AFHQ model trained on clean data (columns 3, 4) and our model trained on corrupted data (column 5). The restoration task is random inpainting at probability $p=0.6$. The last two rows also have measurement noise with $\sigma_{\vy_{0}}=0.05$.}
+    \label{fig:reconstructions}
+\end{figure}
+
+
+In Figure \ref{fig:dino_more}, we repeat the experiment of Figure \ref{fig:dino} of the main paper but for models trained on the full CelebA dataset and at different levels of corruption. As shown, increasing the corruption level leads to a clear shift of the distribution to the left, indicating less memorization. This comes at the cost of decreased performance, as reported in Table \ref{table:fids_table}.
+
+
+\begin{figure}[!htp]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figs/hist_full_dataset.png}
+    \caption{Distribution of similarity values to the nearest neighbor in the dataset for finetuned IF models on the full CelebA dataset at different levels of corruption. Please note that similarity values above $0.95$ roughly correspond to the same person, while similarities below $0.75$ correspond to almost random faces. As shown, increasing the corruption level leads to a clear shift of the distribution to the left, indicating less memorization.
+    % Therefore the baseline finetuning process (red) often generates images that are near copies of the training set. On the contrary, our fine-tuning with corrupted samples (blue) shows a clear shift to the left. Visually we never observed a near-identical image generated from our process, see also Figure \ref{fig1} for qualitative results. 
+    }
+    \label{fig:dino_more}
+\end{figure}
+
+
+
+
+In the remaining pages, we include uncurated unconditional generations of our models trained at different corruption levels $p$. Results are shown in Figures \ref{fig:celeba_generations},\ref{fig:afhq_generations},\ref{fig:cifar_generations}.
+
+
+\begin{figure}[!htp]
+    \centering
+    \begin{minipage}{0.4\textwidth}
+        \caption*{CelebA dataset, $p=0.6, \delta=0.1$}
+        \includegraphics[width=\textwidth]{figs/datasets/celeba_hat_corrupted_06.png}
+    \end{minipage}
+    \begin{minipage}{0.4\textwidth}
+        \caption*{Uncurated samples from our model}
+        \includegraphics[width=\textwidth]{figs/outputs/scratch_generations/celeba_06.png}
+    \end{minipage} \\ \vspace{1em}
+    \begin{minipage}{0.4\textwidth}
+        \caption*{CelebA dataset, $p=0.8, \delta=0.1$}
+        \includegraphics[width=\textwidth]{figs/datasets/celeba_hat_corrupted_08.png}
+    \end{minipage}
+    \begin{minipage}{0.4\textwidth}
+        \caption*{Uncurated samples from our model}
+        \includegraphics[width=\textwidth]{figs/outputs/scratch_generations/celeba_08.png}
+    \end{minipage} \\ \vspace{1em}
+    \begin{minipage}{0.4\textwidth}
+        \caption*{CelebA dataset, $p=0.9, \delta=0.3$}
+        \includegraphics[width=\textwidth]{figs/datasets/celeba_hat_corrupted_09.png}
+    \end{minipage}
+    \begin{minipage}{0.4\textwidth}
+        \caption*{Uncurated samples from our model}
+        \includegraphics[width=\textwidth]{figs/outputs/scratch_generations/celeba_09.png}
+    \end{minipage}
+    \caption{Left column: CelebA-HQ training dataset with random inpainting at different levels of corruption $p$ (the survival probability is $(1-p)\cdot (1-\delta)$). Right column: Unconditional generations from our models trained with the corresponding parameters. As shown, the generations become slightly worse as we increase the level of corruption, but we can reasonably well learn the distribution even with $93\%$ pixels missing (on average) from each training image.}
+    \label{fig:celeba_generations}
+\end{figure}
+
+
+
+\begin{figure}[!htp]
+    \centering
+    \begin{minipage}{0.4\textwidth}
+        \caption*{AFHQ dataset, $p=0.4, \delta=0.1$}
+        \includegraphics[width=\textwidth]{figs/datasets/afhq_hat_corrupted_04.png}
+    \end{minipage}
+    \begin{minipage}{0.4\textwidth}
+        \caption*{Uncurated samples from our model}
+        \includegraphics[width=\textwidth]{figs/outputs/scratch_generations/afhq_04.png}
+    \end{minipage} \\ \vspace{1em}
+    \begin{minipage}{0.4\textwidth}
+        \caption*{AFHQ dataset, $p=0.6, \delta=0.1$}
+        \includegraphics[width=\textwidth]{figs/datasets/afhq_hat_corrupted_06.png}
+    \end{minipage}
+    \begin{minipage}{0.4\textwidth}
+        \caption*{Uncurated samples from our model}
+        \includegraphics[width=\textwidth]{figs/outputs/scratch_generations/afhq_06.png}
+    \end{minipage} \\ \vspace{1em}
+    \begin{minipage}{0.4\textwidth}
+        \caption*{AFHQ dataset, $p=0.8, \delta=0.1$}
+        \includegraphics[width=\textwidth]{figs/datasets/afhq_hat_corrupted_08.png}
+    \end{minipage}
+    \begin{minipage}{0.4\textwidth}
+        \caption*{Uncurated samples from our model}
+        \includegraphics[width=\textwidth]{figs/outputs/scratch_generations/afhq_08.png}
+    \end{minipage}
+\end{figure}
+
+\begin{figure}[t!]
+    \centering
+    \begin{minipage}{0.4\textwidth}
+        \caption*{AFHQ dataset, $p=0.9, \delta=0.1$}
+        \includegraphics[width=\textwidth]{figs/datasets/afhq_hat_corrupted_09.png}
+    \end{minipage}
+    \begin{minipage}{0.4\textwidth}
+        \caption*{Uncurated samples from our model}
+        \includegraphics[width=\textwidth]{figs/outputs/scratch_generations/afhq_09.png}
+    \end{minipage}
+    \caption{Left column: AFHQ training dataset with random inpainting at different levels of corruption $p$ (the survival probability is $(1-p)\cdot (1-\delta)$). Right column: Unconditional generations from our models trained with the corresponding parameters. As shown, the generations become slightly worse as we increase the level of corruption, but we can reasonably well learn the distribution even with $91\%$ pixels missing (on average) from each training image.}
+    \label{fig:afhq_generations}
+\end{figure}
+
+
+\begin{figure}[!htp]
+    \centering
+    \begin{minipage}{0.28\textwidth}
+        \caption*{CIFAR-10 training dataset, $p=0.2, \delta=0.1$}
+        \includegraphics[width=\textwidth]{figs/datasets/cifar_hat_corrupted_02.png}
+    \end{minipage}
+    \begin{minipage}{0.28\textwidth}
+        \caption*{Uncurated samples from our model}
+        \includegraphics[width=\textwidth]{figs/outputs/scratch_generations/cifar_02.png}
+    \end{minipage} \\ \vspace{1em}
+    \begin{minipage}{0.28\textwidth}
+        \caption*{CIFAR-10 training dataset, $p=0.4, \delta=0.1$}
+        \includegraphics[width=\textwidth]{figs/datasets/cifar_hat_corrupted_04.png}
+    \end{minipage}
+    \begin{minipage}{0.28\textwidth}
+        \caption*{Uncurated samples from our model}
+        \includegraphics[width=\textwidth]{figs/outputs/scratch_generations/cifar_04.png}
+    \end{minipage} \\ \vspace{1em}
+    \begin{minipage}{0.28\textwidth}
+        \caption*{CIFAR-10 training dataset, $p=0.6, \delta=0.1$}
+        \includegraphics[width=\textwidth]{figs/datasets/cifar_hat_corrupted_06.png}
+    \end{minipage}
+    \begin{minipage}{0.28\textwidth}
+        \caption*{Uncurated samples from our model}
+        \includegraphics[width=\textwidth]{figs/outputs/scratch_generations/cifar_06.png}
+    \end{minipage} \\ \vspace{1em}
+    \begin{minipage}{0.28\textwidth}
+        \caption*{CIFAR-10 training dataset, $p=0.8, \delta=0.1$}
+        \includegraphics[width=\textwidth]{figs/datasets/cifar_hat_corrupted_08.png}
+    \end{minipage}
+    \begin{minipage}{0.28\textwidth}
+        \caption*{Uncurated samples from our model}
+        \includegraphics[width=\textwidth]{figs/outputs/scratch_generations/cifar_08.png}
+    \end{minipage}
+    \caption{Left column: CIFAR-10 training dataset with random inpainting at different levels of corruption $p$ (the survival probability is $(1-p)\cdot (1-\delta)$). Right column: Unconditional generations from our models trained with the corresponding parameters. As shown, the generations become slightly worse as we increase the level of corruption, but we can reasonably well learn the distribution even with high corruption.}
+    \label{fig:cifar_generations}
+\end{figure}
+
+
+
+
+
+
+
+
+
+
+\end{document}

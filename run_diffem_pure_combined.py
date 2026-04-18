@@ -4,6 +4,7 @@ Combined Pure DiffEM Training Script for Irregular Time Series
 Implements the DiffEM paper's conditional diffusion model approach:
   - E-step: sample X ~ q_theta(x|y) using a conditional diffusion model
   - M-step: train d_theta(x_t, t | y) on (clean, freshly-corrupted) pairs
+  - Phase 3: train unconditional model on cleaned data (same setup as run_regular.py)
 
 Supported corruption types (--corruption_type):
   - missing:                random masking of time steps
@@ -19,6 +20,8 @@ Key features:
   4. FreshCorruptionDataset — generates a new random corruption every
      __getitem__ call for maximal diversity during M-step training.
   5. Configurable E-step sampling steps for better posterior samples.
+  6. Phase 3 trains the unconditional model with the same architecture,
+     hyperparameters, and loop structure as run_regular.py.
 """
 
 import torch
@@ -32,7 +35,6 @@ import logging
 from tqdm import tqdm
 
 from metrics import evaluate_model_irregular
-from metrics.memorization import compute_memorization_metric
 from utils.loggers import WandbLogger, PrintLogger, CompositeLogger
 from utils.utils import (
     restore_state, create_model_name_and_dir,
@@ -43,6 +45,7 @@ from utils.utils_data import (
     save_reconstructions, load_reconstructions,
 )
 from utils.utils_args import parse_args_irregular
+from utils.train_unconditional import train_unconditional_regular
 from models.our import TS2img_Karras, TS2img_Karras_Cond
 from models.sampler import DiffusionProcess, ConditionalDiffusionProcess
 
@@ -68,22 +71,6 @@ def _log_stats(tag, arr, step, logger):
     _log(logger, f'{tag}/std',  float(np.nanstd(arr)),  step)
     _log(logger, f'{tag}/min',  float(np.nanmin(arr)),  step)
     _log(logger, f'{tag}/max',  float(np.nanmax(arr)),  step)
-
-
-def _upload_and_cleanup(logger, plot_path, em_iter):
-    if logger is None:
-        return
-    uploaded = False
-    try:
-        logger.log_file('test/memorization/histogram', plot_path, em_iter)
-        uploaded = True
-    except Exception as exc:
-        print(f"  [warn] Plot upload failed: {exc}")
-    if uploaded:
-        try:
-            os.remove(plot_path)
-        except OSError:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -574,120 +561,6 @@ def m_step(args, cond_model, reconstructions, em_iter, device, logger=None):
 
 
 # ---------------------------------------------------------------------------
-# Unconditional model evaluation  (fresh optimizer + EMA reset)
-# ---------------------------------------------------------------------------
-
-def train_and_evaluate_unconditional(args, uncond_model, reconstructions,
-                                     test_loader, em_iter, device,
-                                     logger=None):
-    """Train unconditional model on current reconstructions and evaluate.
-
-    Fresh optimizer + EMA reset each call so the unconditional model trains
-    cleanly on the latest reconstructions.
-    """
-    uncond_epochs = getattr(args, 'uncond_epochs_per_iter', None)
-    if uncond_epochs is None:
-        uncond_epochs = getattr(args, 'm_step_epochs', DEFAULT_M_STEP_EPOCHS)
-
-    print(f"\n--- Uncond Train+Eval (EM iter {em_iter}), "
-          f"{uncond_epochs} epochs ---")
-
-    uncond_opt = torch.optim.AdamW(
-        uncond_model.parameters(),
-        lr=args.learning_rate,
-        weight_decay=args.weight_decay,
-    )
-    uncond_model.reset_ema()
-
-    recon_loader = Data.DataLoader(
-        Data.TensorDataset(torch.tensor(reconstructions, dtype=torch.float32)),
-        batch_size=args.batch_size, shuffle=True,
-        num_workers=args.num_workers,
-    )
-
-    # --- Training ---
-    uncond_model.train()
-    uncond_loss_history = []
-
-    patience = getattr(args, 'early_stop_patience', 20)
-    min_delta = getattr(args, 'early_stop_min_delta', 1e-4)
-    best_loss = float('inf')
-    no_improve_count = 0
-
-    for epoch in range(uncond_epochs):
-        epoch_loss, nb = 0.0, 0
-        for (x_clean,) in recon_loader:
-            x_clean = x_clean.to(device)
-            x_img   = uncond_model.ts_to_img(x_clean)
-            loss, _ = uncond_model.loss_fn_irregular(x_img)
-
-            uncond_opt.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(uncond_model.parameters(), 1.0)
-            uncond_opt.step()
-            uncond_model.on_train_batch_end()
-
-            epoch_loss += loss.item()
-            nb += 1
-            torch.cuda.empty_cache()
-
-        avg = epoch_loss / max(nb, 1)
-        uncond_loss_history.append(avg)
-        if (epoch + 1) % 20 == 0 or epoch == 0:
-            print(f"    uncond epoch {epoch+1}/{uncond_epochs}  loss={avg:.5f}")
-        _log(logger, 'train/uncond_loss', avg, em_iter * uncond_epochs + epoch)
-
-        if avg < best_loss - min_delta:
-            best_loss = avg
-            no_improve_count = 0
-        else:
-            no_improve_count += 1
-        if no_improve_count >= patience and epoch >= 30:
-            print(f"    Early stopping at epoch {epoch+1}/{uncond_epochs} "
-                  f"(no improvement for {patience} epochs, best={best_loss:.5f})")
-            break
-
-    # --- Evaluation (unconditional sampling, same protocol as run_irregular.py) ---
-    uncond_model.eval()
-    gen_sig, real_sig = [], []
-
-    with torch.no_grad():
-        with uncond_model.ema_scope():
-            process = DiffusionProcess(
-                args, uncond_model.net,
-                (args.input_channels, args.img_resolution,
-                 args.img_resolution),
-            )
-            for data in tqdm(test_loader, desc="Uncond eval"):
-                x_img = process.sampling(sampling_number=data[0].shape[0])
-                x_ts  = uncond_model.img_to_ts(x_img)
-                gen_sig.append(x_ts.cpu().numpy())
-                real_sig.append(data[0].cpu().numpy())
-
-    gen_sig  = np.vstack(gen_sig)
-    real_sig = np.vstack(real_sig)
-
-    scores = evaluate_model_irregular(real_sig, gen_sig, args)
-    print(f"  Unconditional metrics (EM iter {em_iter}):")
-    for k, v in scores.items():
-        print(f"    {k}: {v:.4f}")
-        _log(logger, f'test/{k}', v, em_iter)
-
-    mem_path = f"mem_hist_em{em_iter}.png"
-    mem_stats = compute_memorization_metric(
-        real_data=real_sig, generated_data=gen_sig,
-        device=device, plot_path=mem_path,
-    )
-    for k, v in mem_stats.items():
-        val_str = f"{v:.4f}" if isinstance(v, float) else str(v)
-        print(f"    mem/{k}: {val_str}")
-        _log(logger, f'test/memorization/{k}', v, em_iter)
-    _upload_and_cleanup(logger, mem_path, em_iter)
-
-    return scores
-
-
-# ---------------------------------------------------------------------------
 # Main training loop
 # ---------------------------------------------------------------------------
 
@@ -843,20 +716,12 @@ def main(args):
             em_iter=-1, device=device, logger=logger,
         )
 
-        # ---- Unconditional model (evaluation only) ----
-        uncond_model = TS2img_Karras(
-            args=args, device=device).to(device)
-        print("Unconditional evaluation model created.")
-
         # ================================================================
-        # Phase 2 — EM loop
+        # Phase 2 — EM loop (conditional model E/M steps)
         # ================================================================
         print(f"\n{'='*60}\n"
               f"Pure DiffEM [{corruption_type}] — "
               f"{args.em_iters} EM iterations\n{'='*60}")
-
-        best_metrics = None
-        best_em_iter = -1
 
         for em_iter in range(args.em_iters):
             print(f"\n{'='*60}\n"
@@ -873,32 +738,23 @@ def main(args):
                 em_iter, device, logger=logger,
             )
 
-            if ((em_iter + 1) % args.em_eval_interval == 0
-                    or em_iter == args.em_iters - 1):
-                metrics = train_and_evaluate_unconditional(
-                    args, uncond_model, reconstructions,
-                    test_loader, em_iter, device, logger,
-                )
-                disc = metrics.get('disc_mean', float('inf'))
-                _log(logger, 'test/disc_mean_track', disc, em_iter)
-
-                if (best_metrics is None
-                        or disc < best_metrics.get('disc_mean', float('inf'))):
-                    best_metrics = metrics
-                    best_em_iter = em_iter
-                    print(f"  *** New best disc_mean={disc:.4f} "
-                          f"at EM iter {em_iter} ***")
-
             _log(logger, 'em/iteration', em_iter, em_iter)
+
+        # ================================================================
+        # Phase 3 — Train unconditional model (same as run_regular.py)
+        # ================================================================
+        final_metrics = train_unconditional_regular(
+            args, reconstructions, test_loader, device, logger,
+        )
 
         # ================================================================
         # Done
         # ================================================================
         print(f"\n{'='*60}\n"
               f"Pure DiffEM (combined) — Complete\n{'='*60}")
-        if best_metrics:
-            print(f"Best metrics at EM iter {best_em_iter}:")
-            for k, v in best_metrics.items():
+        if final_metrics:
+            print("Final unconditional model metrics:")
+            for k, v in final_metrics.items():
                 print(f"  {k}: {v:.4f}")
 
         logging.info("Training complete.")

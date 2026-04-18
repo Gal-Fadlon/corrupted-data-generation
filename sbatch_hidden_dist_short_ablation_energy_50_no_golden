@@ -1,0 +1,73 @@
+#!/bin/bash
+
+################################################################################################
+### Short ablation batch for hidden-distribution recovery (energy, 50% missing).
+### Submit with: sbatch --array=0-7 sbatch_hidden_dist_short_ablation_energy_50_no_golden
+################################################################################################
+
+#SBATCH --partition main
+#SBATCH --qos normal
+##SBATCH --gpus=rtx_3090:1
+#SBATCH --time 2-00:00:00
+#SBATCH --job-name hd_short_ablate
+#SBATCH --output hd_short_ablate-%A_%a.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_ARRAY_TASK_ID:\t" $SLURM_ARRAY_TASK_ID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+module load anaconda
+source activate idan2_env
+
+cd ~/diffem || exit 1
+
+COMMON_FLAGS="--config ./configs/seq_len_24/energy.yaml --missing_rate 0.5 --wandb true --em_iters 4 --m_step_epochs 20 --em_eval_interval 1"
+
+case "${SLURM_ARRAY_TASK_ID}" in
+  0)
+    python run_diffem_mmps_kalman_freqgate_decomp_proj_ambient.py ${COMMON_FLAGS} \
+      --seed 0 --further_corrupt_delta 0.05 --no-ambient_concat_further_mask \
+      --tags "kalman_freqgate_decomp_proj_ambient" "energy" "50_missing_rate" "hidden_dist" "short_ablation" "parity" "ambient" "delta_005" "seed0" "no_golden"
+    ;;
+  1)
+    python run_diffem_mmps_kalman_freqgate_decomp_proj_ambient.py ${COMMON_FLAGS} \
+      --seed 1 --further_corrupt_delta 0.05 --no-ambient_concat_further_mask \
+      --tags "kalman_freqgate_decomp_proj_ambient" "energy" "50_missing_rate" "hidden_dist" "short_ablation" "parity" "ambient" "delta_005" "seed1" "no_golden"
+    ;;
+  2)
+    python run_diffem_mmps_kalman_freqgate_decomp_proj_ambient.py ${COMMON_FLAGS} \
+      --seed 0 --further_corrupt_delta 0.02 --ambient_concat_further_mask \
+      --tags "kalman_freqgate_decomp_proj_ambient" "energy" "50_missing_rate" "hidden_dist" "short_ablation" "ambient" "delta_002" "mask_concat_on" "seed0" "no_golden"
+    ;;
+  3)
+    python run_diffem_mmps_kalman_freqgate_decomp_proj_ambient.py ${COMMON_FLAGS} \
+      --seed 0 --further_corrupt_delta 0.05 --ambient_concat_further_mask \
+      --tags "kalman_freqgate_decomp_proj_ambient" "energy" "50_missing_rate" "hidden_dist" "short_ablation" "ambient" "delta_005" "mask_concat_on" "seed0" "no_golden"
+    ;;
+  4)
+    python run_diffem_mmps_kalman_freqgate_decomp_proj_ambient_anneal.py ${COMMON_FLAGS} \
+      --seed 0 --ambient_delta_start 0.05 --ambient_delta_end 0.02 --ambient_concat_further_mask \
+      --tags "kalman_freqgate_decomp_proj_ambient_anneal" "energy" "50_missing_rate" "hidden_dist" "short_ablation" "ambient_anneal" "d005_002" "mask_concat_on" "seed0" "no_golden"
+    ;;
+  5)
+    python run_diffem_mmps_kalman_freqgate_decomp_proj_aaware.py ${COMMON_FLAGS} \
+      --seed 0 --lambda_obs_start 0.5 --lambda_obs_end 0.2 --no-ambient_concat_further_mask \
+      --tags "kalman_freqgate_decomp_proj_aaware" "energy" "50_missing_rate" "hidden_dist" "short_ablation" "aaware" "lambda_05_02" "parity" "seed0" "no_golden"
+    ;;
+  6)
+    python run_diffem_mmps_kalman_freqgate_decomp_proj_aaware.py ${COMMON_FLAGS} \
+      --seed 0 --lambda_obs_start 0.5 --lambda_obs_end 0.2 --ambient_concat_further_mask \
+      --tags "kalman_freqgate_decomp_proj_aaware" "energy" "50_missing_rate" "hidden_dist" "short_ablation" "aaware" "lambda_05_02" "mask_concat_on" "seed0" "no_golden"
+    ;;
+  7)
+    python run_diffem_mmps_kalman_freqgate_decomp_proj_aaware.py ${COMMON_FLAGS} \
+      --seed 1 --lambda_obs_start 0.5 --lambda_obs_end 0.2 --no-ambient_concat_further_mask \
+      --tags "kalman_freqgate_decomp_proj_aaware" "energy" "50_missing_rate" "hidden_dist" "short_ablation" "aaware" "lambda_05_02" "parity" "seed1" "no_golden"
+    ;;
+  *)
+    echo "Unsupported SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID}"
+    exit 2
+    ;;
+esac

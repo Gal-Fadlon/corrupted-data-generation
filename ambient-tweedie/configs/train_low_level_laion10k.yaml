@@ -1,0 +1,49 @@
+expr_id: train_low_level_laion10k
+# general params
+pretrained_model_name_or_path: stabilityai/stable-diffusion-xl-base-1.0
+pretrained_vae_model_name_or_path: madebyollin/sdxl-vae-fp16-fix
+caption_column: text   
+resolution: 1024 
+random_flip: True   
+checkpointing_steps: 500   
+
+
+# optimization params
+learning_rate: 1e-04 
+lr_scheduler: constant 
+lr_warmup_steps: 0   
+mixed_precision: fp16
+validation_prompt: "A dog sitting on a bench" 
+seed: 42   
+
+# Dataset params
+train_data_dir: "$LAION_RAW_DATA/laion-10k/"
+captions_loc: "$CAPTIONS_LOC"
+train_batch_size: 2
+num_train_epochs: 4000
+gradient_accumulation_steps: 1
+
+# logging
+min_validation_steps: 500
+skip_first_epoch: True
+report_to: wandb
+output_dir: "$BASE_PATH/laion_low_level/"  
+
+# ambient params
+noisy_ambient: True
+timestep_nature: 100
+x0_pred: True
+
+# consistency params
+consistency_kick_in: 30000  # after how many steps should consistency kick in
+consistency_coeff: 0.015
+num_consistency_steps: 2
+max_steps_diff: 50
+run_consistency_everywhere: True
+
+# FID params
+track_fid: False
+
+# resume training
+resume_from_checkpoint: latest
+

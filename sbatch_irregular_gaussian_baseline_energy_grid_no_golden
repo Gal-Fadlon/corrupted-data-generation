@@ -1,0 +1,34 @@
+#!/bin/bash
+
+################################################################################################
+### Irregular Gaussian baseline (noise grid). main/normal + generic 1 GPU — no_golden template.
+### Use when rtx6000 hits MaxGRESPerAccount / QOS limits.
+################################################################################################
+
+#SBATCH --partition main
+#SBATCH --qos normal
+##SBATCH --gpus=rtx_3090:1
+##SBATCH --gpus=rtx_4090:1
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name irreg_gnoise_ng
+#SBATCH --output irreg_gnoise_ng-%J.out
+#SBATCH --gpus=1
+#SBATCH --mem=32G
+#SBATCH --cpus-per-task=6
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+echo "$(date)"
+echo -e "SLURM_JOBID:\t\t${SLURM_JOBID}"
+echo -e "SLURM_JOB_NODELIST:\t${SLURM_JOB_NODELIST}"
+
+module load anaconda
+source activate /home/arbivid/.conda/envs/idan2_env
+
+python run_irregular_gaussian_baseline.py \
+  --config ./configs/seq_len_24/energy.yaml \
+  --run_noise_grid \
+  --wandb true \
+  --tags "irregular_gaussian_baseline" "energy" "noise_grid" "seq_len_24" "vs_diffem" "no_golden" "main_gpus1"

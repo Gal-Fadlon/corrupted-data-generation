@@ -1,0 +1,2387 @@
+\documentclass{article}
+\usepackage[final]{neurips_2025}
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+\usepackage{graphicx}
+\usepackage{overpic}
+\usepackage{lipsum}
+\usepackage{multirow} 
+\newcommand{\theHalgorithm}{\arabic{algorithm}}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{amsthm}
+\usepackage[capitalize,noabbrev]{cleveref}
+\usepackage{colortbl}
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{assumption}[theorem]{Assumption}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+\usepackage[textsize=tiny]{todonotes}
+\usepackage{wrapfig} 
+
+\usepackage[table]{xcolor}
+\usepackage{subcaption}
+
+
+\title{A Diffusion Model for Regular Time Series Generation from Irregular Data with Completion and Masking}
+
+\author{%
+Gal Fadlon\thanks{Equal Contribution} \hspace{0.3em}
+Idan Arbiv\footnotemark[1] \hspace{0.3em}
+Nimrod Berman \hspace{0.3em}
+Omri Azencot \\
+Department of Computer Science \\
+Ben-Gurion University of The Negev \\
+% \texttt{azencot@cs.bgu.ac.il} \\
+\tt\small{{\{galfad, arbivid, bermann\}@post.bgu.ac.il}} \\
+\tt\small{{azencot@bgu.ac.il}} \\
+}
+
+\begin{document}
+
+
+\maketitle
+
+
+\begin{abstract}
+  Generating realistic time series data is critical for applications in healthcare, finance, and science. However, irregular sampling and missing values present significant challenges. While prior methods address these irregularities, they often yield suboptimal results and incur high computational costs. Recent advances in regular time series generation, such as the diffusion-based ImagenTime model, demonstrate strong, fast, and scalable generative capabilities by transforming time series into image representations, making them a promising solution. However, extending ImagenTime to irregular sequences using simple masking introduces ``unnatural'' neighborhoods, where missing values replaced by zeros disrupt the learning process. To overcome this, we propose a novel two-step framework: first, a Time Series Transformer completes irregular sequences, creating natural neighborhoods; second, a vision-based diffusion model with masking minimizes dependence on the completed values. This approach leverages the strengths of both completion and masking, enabling robust and efficient generation of realistic time series. Our method achieves state-of-the-art performance, achieving a relative improvement in discriminative score by $70\%$ and in computational cost by $85\%$. Code is at \url{https://github.com/azencot-group/ImagenI2R}.
+\end{abstract}
+
+\vspace{-5mm}
+\section{Introduction}
+\label{sec:intro}
+\vspace{-2mm}
+
+% time series, generative modeling of time series, challenge of irreulgarly-sampled information, 
+Time series data is essential in fields such as healthcare, finance, and science, supporting critical tasks like forecasting trends, detecting anomalies, and analyzing patterns~\cite{han2019review, ismail2019deep, lim2021time}. Beyond direct analysis, generating synthetic time series has become increasingly valuable for creating realistic proxies of private data, testing systems under new scenarios, exploring ``what-if'' questions, and balancing datasets for training machine learning models~\cite{brophy2023generative, nochumsohn2025data}. The ability to generate realistic sequences enables deeper insights and robust applications across diverse domains.
+
+In practice, however, time series is often \emph{irregular}, with unevenly spaced measurements and missing values. These irregularities arise from limitations in data collection processes, such as sensor failures, inconsistent sampling, or interruptions in monitoring systems~\cite{kidger2020neural, ren2024learning}. This irregularity poses a unique challenge for generating regular time series---where intervals are consistent, and the data follows the same distribution as if it were regularly observed~\cite{jeon2022gt}. The main goal of this paper is to generate regular sequences by training on irregularly-sampled time series using deep neural networks. 
+
+
+% existing approaches, their shortcomings
+The synthesis of regular time series from irregular ones is a fundamental challenge, yet existing approaches remain scarce, with notable examples being GT-GAN and KoVAE~\cite{jeon2022gt, naiman2024generative}. Unfortunately, these methods suffer from several limitations. First, they rely on generative adversarial networks (GANs) and variational autoencoders (VAEs), which have recently been surpassed in performance by diffusion-based tools \cite{coletta2023constrained, yuan2024diffusion, naiman2024utilizing}. Second, both GT-GAN and KoVAE utilize a computationally-demanding preprocessing step based on neural controlled differential equations (NCDEs)~\cite{kidger2020neural}, rendering these methods impractical for long time series. For instance, KoVAE requires $\approx 6.5 \times$ more training time in comparison to our approach (See Fig.~\ref{fig:disc_time_graph}). Third, these methods inherently assume that the data, completed by NCDE, accurately reflects the true underlying distribution, which can introduce catastrophical errors when this assumption fails. In particular, their performance lags far behind that of models trained on regular time series, with state-of-the-art results on irregular discriminative benchmarks being, on average, $540\%$ worse than those on regular benchmarks.
+
+
+% our approach
+To address these shortcomings, we base our approach on a recent diffusion model for time series, \emph{ImagenTime}~\cite{naiman2024utilizing}. This method maps time series data to images, enabling the use of powerful vision-based diffusion neural architectures. Leveraging a vision-based diffusion generator offers a significant advantage: regular time series can be generated from irregular ones using a straightforward masking mechanism. Specifically, missing values in the series are seamlessly ignored during the denoising process in training, akin to techniques used in image inpainting tasks~\cite{lugmayr2022repaint, corneanu2024latentpaint}.
+
+However, while this straightforward masking approach is simple and achieves strong results (see Tab.~\ref{tab:ablation}), we identify a significant limitation. Missing values in the time series are mapped to zeros in the image, resulting in ``unnatural'' neighborhoods that mix valid and invalid information. This can pose challenges for diffusion backbones, such as U-Nets with convolutional blocks, where the convolution kernels are not inherently masked and may inadvertently propagate errors from these artificial neighborhoods. To address this issue, we propose a two-step generation process. In the first step, we complete the irregular series using our adaptation of an efficient Time Series Transformer (TST) approach~\cite{zerveas2021transformer}, significantly reducing computational overhead and enabling the generation of long time series. In the second step, we apply the straightforward masking approach described earlier. Crucially, this combination of completion and masking allows the model to learn from ``natural'' image neighborhoods while mitigating the reliance on fully accurate completed information through the use of masked loss minimization. Overall, our approach, built on a vision diffusion backbone, enables effective modeling of long time series while making minimal assumptions about pre-completed data, resulting in significantly efficient and improved generation performance. 
+
+
+%  evaluation
+We conduct a comprehensive evaluation of our approach on standard irregular time series benchmarks, benchmarking it against state-of-the-art methods. Our model consistently demonstrates superior generative performance, effectively bridging the gap between regular and irregular settings. Furthermore, we extend the evaluation to medium-, long- and ultra-long-length sequence generation, assessing performance across $12$ datasets and $12$ tasks. The results highlight the robustness and efficiency of our method, achieving consistent improvements over existing approaches. Our key contributions are summarized as follows:
+\vspace{-1mm}
+\begin{enumerate}
+    \item We introduce a novel generative model for irregularly-sampled time series, leveraging vision-based diffusion approaches to efficiently and effectively handle sequences ranging from short to long lengths.
+    \item In contrast to existing methods that assume completed information is drawn from the data distribution, we treat it as a weak conditioning signal and directly optimize on the observed signal using a masking strategy.
+    \item Our approach achieves state-of-the-art performance across multiple generative tasks, delivering an average improvement of $70\%$ in discriminative benchmarks while reducing computational requirements by $85\%$ relative to competing methods.
+\end{enumerate}
+
+\vspace{-3mm}
+\section{Related Work}
+\label{sec:related}
+\vspace{-2mm}
+
+% diffusion models
+\paragraph{Diffusion models}\hspace{-3.5mm}~\cite{sohl2015deep} have recently demonstrated groundbreaking generative capabilities, surpassing VAEs and GANs~\cite{kingma2014auto,goodfellow2014generative} primarily on image generation~\cite{ho2020denoising, dhariwal2021diffusion, rombach2022high}. The immense success of diffusion-based approaches has spurred a wave of recent advancements, encompassing both theoretical developments~\cite{song2021score, lipman2023flow} and practical applications~\cite{lugmayr2022repaint, ho2022video, kreuk2023audiogen, berman2025reviving, berman2025one, berman2025towards}.
+\vspace{-2mm}
+
+% generative modeling of time series
+\paragraph{Generative modeling of time series}\hspace{-3mm} is an emerging field, with pioneering approaches predominantly relying on GANs~\cite{yoon2019time, liao2020conditional, li2022tts} and VAEs~\cite{desai2021timevae, naiman2024generative}. Recently, inspired by the success of diffusion models, there has been a growing trend to adapt these techniques to various time series tasks~\cite{tashiro2021csdi, rasul2021autoregressive}, including generative modeling~\cite{coletta2023constrained, yuan2024diffusion, gonen2025time}. Notably, the ImagenTime approach~\cite{naiman2024utilizing} has achieved state-of-the-art performance on regular generative tasks for sequences of varying lengths, from short to very long, by transforming time series into images and leveraging vision-based diffusion backbones. Our work builds on ImagenTime, extending it to address the challenging setting of generating regular time series information from irregularly-sampled data.
+\vspace{-2mm}
+
+% irregular time series
+\paragraph{Irregular time series}\hspace{-3mm} modeling has been a longstanding task. Modern machine learning methods have made significant strides by framing the problem through the lens of differential equations~\cite{rubanova2019latent, kidger2020neural}. Subsequent efforts have explored alternative architectures, including recurrent neural networks~\cite{schirmer2022modeling} and transformers~\cite{zerveas2021transformer, chen2023contiformer}. However, learning from irregular sequences has received comparatively less attention, with notable contributions such as GT-GAN and KoVAE \cite{jeon2022gt, naiman2024generative}, both relying on NCDE~\cite{kidger2020neural}. Despite their promise, NCDE-based methods are costly during preprocessing and training, limiting the applicability of GT-GAN and KoVAE in handling long time series. Further, replacing NCDE by efficient components such as TST~\cite{zerveas2021transformer}, yields suboptimal results (see Tab.~\ref{tab:ablation}).
+\vspace{-2mm}
+
+\begin{figure*}[t!]
+    \centering
+    \begin{overpic}[width=\textwidth]{figs/unnatural_neigh_opt}
+        \put(.75, 14) {\color{blue}A}
+        \put(17.5, 14) {\color{blue}B}
+        \put(34, 14) {\color{blue}C}
+        \put(50.75, 14) {\color{white}D}
+        \put(66.5, 14) {\color{white}E}
+        \put(82.25, 14) {\color{white}F}
+
+        \put(51.5, -2) {score $ = 0.71$} \put(67, -2) {score $ = 0.67$} \put(82, -2) {score $ = \textbf{0.32}$}
+        
+    \end{overpic}
+    \vspace{-3mm}
+    \caption{A data point (A) is mapped to an image with zeros and the coordinates in the center (B). Denoising the entire image yields inferior kernels (D) in comparison to masking (E). Constructing natural neighborhoods (C), yields consistent kernels and better scores (F).}
+    \label{fig:unnatural_neigh}
+    \vspace{-4mm}
+\end{figure*}
+
+\vspace{-2mm}
+\section{Background}
+\label{sec:background}
+\vspace{-2mm}
+
+% problem statement
+\paragraph{Problem statement.} We learn the underlying distribution of time series data from irregularly sampled observations and generating regular time series from it. Specifically, given a set of irregularly sampled sequences, our goal is to learn a model that approximates the true data distribution \( p_{\text{data}}(x_{1:T}) \) and enables sampling of complete time series \( x_{1:T} \) from the learned distribution \( p_\theta(x_{1:T}) \). Formally, we consider a dataset of irregularly sampled time series, represented as \( \{ x_{t_1:t_n}^j \}_{j=1}^N \), where each sequence consists of observations at non-uniform time steps \( t_1:t_n = [t_1, t_2, \dots, t_n] \) with \( t_1 \geq 1 \) and \( t_n \leq T \). The challenge is to leverage these incomplete sequences to model the full distribution and generate realistic, regularly sampled time series that align with the true data distribution.
+
+\vspace{-2mm}
+% ImagenTime
+\paragraph{ImagenTime}\hspace{-3mm} employs the delay embedding transformation to map time series data into images, enabling their processing with powerful vision-based diffusion models~\cite{naiman2024utilizing}. Given an input multivariate regular time series $x_{1:T} \in \mathbb{R}^{d \times T}$ with $d$ features and length $T$, the delay embedding constructs an image $x_\text{img} \in \mathbb{R}^{d \times w \times h}$ by placing $x$'s values over the columns of $x_\text{img}$ per channel, where $w, h$ are user-defined parameters. During training, noise is added to the image $x_\text{img}$ at different timesteps, forming $x_\text{img}(t)$. The diffusion model, parameterized by $s_\theta$, learns to denoise these images by approximating the score function $s_\theta(x_\text{img}, t)$. Inference begins with a noise sample $x_\text{img}(T) \sim \mathcal{N}(0, I)$. This sample is iteratively denoised using the learned score function to produce a cleaned image $x_\text{img}(0)$. The inverse delay embedding transform is then applied to $x_\text{img}(0)$, reconstructing the original time series $\tilde{x}_{1:T}$. Importantly, the inverse transformation of delay embedding is inherently non-unique, as the time series values are repeated within the image representation, suggesting various designs can be considered as we discuss in Sec.~\ref{sec:method}. Finally, a crucial advantage of ImagenTime is its effectivity in handling long series, e.g., a time series of length $65k$ is transformed to an image of size $256\times 256$.
+\vspace{-2mm}
+
+% TST
+\paragraph{TST}\hspace{-3mm} leverages the self-attention mechanism of Transformers to model temporal dependencies and long-range interactions in time-series data effectively. Unlike traditional sequence models such as RNNs or LSTMs, TST processes the entire sequence simultaneously, enabling parallelism and mitigating the vanishing gradient problem. The architecture includes input projection to a higher-dimensional feature space, positional encodings to capture temporal order, and a stack of Transformer encoder layers with flexible normalization and activation options. TST is particularly suitable for imputation tasks, as it can handle irregularly-sampled data and missing values through explicit masking and preprocessing. Additionally, its self-attention mechanism inherently supports long sequences, making it robust for capturing global context and dependencies in extended time-series data. By eliminating the need for computationally expensive preprocessing techniques, such as calculating coefficients for cubic splines or other interpolation methods, TST achieves significant speed advantages while providing a scalable, efficient, and accurate solution for tasks like forecasting, classification, anomaly detection, and imputation.
+
+
+\begin{figure*}
+    \centering
+    \begin{overpic}[width=\linewidth]{figs/arch_opt}
+        \put(-1,23.5) {\rotatebox{90}{AE train}} \put(-1,13) {\rotatebox{90}{Train}} \put(-1,0) {\rotatebox{90}{Inference}}
+
+        \put(2, 32) {\small irregular signal} \put(24, 32) {\small TST encoder} \put(43, 32) {\small GRU decoder} \put(64.5, 32) {\small regular signal}
+
+        \put(17, 20) {\small autoencoder} \put(50.5, 20) {\small image} \put(62, 20) {\small noisy img.} \put(78, 20) {\small U-Net} \put(91.5, 20) {\small denoised}
+
+        \put(3, 8.85) {\small noise}
+
+        \put(45, 17) {$\mathcal{T}$} \put(47, 6) {$\mathcal{T}^{-1}$}
+    \end{overpic}
+    \vspace{-3mm}
+    \caption{In the first step (top), we train a TST-based autoencoder, which we use during the second step (middle), where a vision diffusion model is trained with masking over non-active pixels. Inference (bottom) is done similarly to ImagenTime.}
+    \label{fig:arch}
+    \vspace{-5mm}
+\end{figure*}
+
+\section{Method}
+\label{sec:method}
+\vspace{-2mm}
+
+% basic masking mechanism (akin to inpainting)
+While ImagenTime does not address the challenge of irregularly-sampled time series, a simple extension can enable it to generate regularly-sampled time series by training on irregular data. The key idea involves employing a \emph{mask} during the loss computation. This mask ensures that only ``active'' pixels--those corresponding to observed time series values--are considered in the loss calculation, while ``non-active'' pixels, representing missing information, are effectively ignored. This approach enables effective learning from incomplete data while preserving the integrity of the observed information, offering two key advantages: (i) the mask is architecture-agnostic, making it compatible with any diffusion backbone, and (ii) the inference procedure of ImagenTime remains entirely unchanged.
+
+\vspace{-3mm}
+\subsection{Unnatural image neighborhoods}
+\label{subsec:neigh}
+\vspace{-2mm}
+Unfortunately, the straightforward approach has a fundamental limitation: although non-active pixels are ignored during loss computation, they are still processed by the network. In practice, missing values are replaced with zeros, resulting in ``unnatural'' pixel neighborhoods. Specifically, while zeros may occasionally occur in non-zero segments of a time series, their repeated presence is highly unlikely, leading to inconsistencies. In other words, masking is not applied at the architecture level, potentially hindering the effective learning of neural components.
+
+To demonstrate this phenomenon, we consider the following toy experiment. We generate $1000$ two-dimensional points, drawn from a multivariate Gaussian distribution with four centers (Fig.~\ref{fig:unnatural_neigh}A). Given this distribution, we create an irregular dataset of $3 \times 4$ images, $\mathcal{S}_{\mathrm{irregular}}$, by taking a data point, setting all pixels to zero except those at the center, corresponding to the $x$ and $y$ coordinates of the original point (Fig.~\ref{fig:unnatural_neigh}B). Then, we train two diffusion models to: (i) predict the score across the entire image, and (ii) predict only the two central pixels via masking. 
+
+We evaluate the models by comparing their score estimation loss only on the two central pixels, regardless of the training strategy. Our results indicate that masking does \emph{not} improve score estimation, yielding scores of $0.71$ vs. $0.67$ for Setups (i) and (ii), respectively. In addition, we also inspect the convolution kernels by averaging across channels the $L_1$ norm of each spatial position (Fig.~\ref{fig:unnatural_neigh}D,E). As can be seen, the kernel in Setup (i) heavily attends to zero-valued pixels instead of focusing on the essential central pixels, suggesting that ``unnatural'' neighbors may be detrimental. In contrast, the masked kernel from Setup (ii) largely ignores non-relevant zeros and prioritizes the middle pixels.
+
+
+
+\vspace{-3mm}
+\subsection{Our approach}
+\vspace{-2mm}
+
+One possible solution to alleviate the phenomenon of unnatural neighborhoods is to implement masking at the kernel level, but this would require modifications tailored to each neural architecture, thereby restricting the approach's flexibility and its straightforward applicability across different models. For instance, while our work employs a convolutional U-Net, recent transformer-based architectures have emerged as highly effective diffusion backbones~\cite{peebles2023scalable}. Accommodating such diversity in architectures would require a more generalized solution.
+
+
+% Our approach: completion of missing values (TST) and masking non-active pixels
+To construct more natural pixel neighborhoods while remaining architecture-agnostic, we take inspiration from the two-stage pipelines of GT-GAN and KoVAE~\cite{jeon2022gt,naiman2024generative}. Our method likewise uses a two-step training scheme. First, we complete missing values in irregularly sampled time series using TST~\cite{zerveas2021transformer} to obtain a regularly sampled sequence. Second, we transform the completed series into an image and apply denoising as in ImagenTime, with one key change: during the loss computation we \emph{mask} the pixels that originated from completion (see App.~\ref{app:loss_function}), following the straightforward masking strategy discussed earlier. In the toy experiment of Sec.~\ref{subsec:neigh}, the completed neighborhood (Fig.~\ref{fig:unnatural_neigh}C) enables learning of consistent kernels (Fig.~\ref{fig:unnatural_neigh}F) and improves score estimation to $0.32$.
+
+We also replicated the synthetic experiment on a real-world \textbf{Stocks} dataset, using a larger convolutional kernel and comparing the two ways to complete irregular neighborhoods: (i) zero filling and (ii) natural-neighbor filling. The Stocks results mirrored the synthetic study, reinforcing our hypothesis that ``unnatural'' neighbors (e.g., zeros) are detrimental. Evaluated by score-estimation loss on active pixels, simple masking delivered only a marginal gain ($0.81 \to 0.79$). Visual inspection likewise matched the synthetic patterns. In contrast, our proposed approach, which avoids zero padding and learning from semantically valid neighborhoods, significantly improved performance, reducing the loss to \textbf{0.29} and yielding more consistent kernel behavior. See App.\ref{sec:unnatural_cont} for visuals.
+
+This combination of \emph{completion + masking} addresses the two primary challenges of irregular sequences. Completion creates natural neighborhoods so convolutional kernels learn from values closer to the true data distribution; masking prevents over-reliance on imputed values by excluding them from the loss, striking a balance between leveraging and mitigating incomplete information. Figure~\ref{fig:arch} illustrates our pipeline: autoencoder pretraining (top), main training (middle), and inference (bottom). $\mathcal{T}$ and $\mathcal{T}^{-1}$ denote the delay-embedding transform and its inverse; the fire and snowflake icons indicate trainable and frozen modules, respectively.
+
+
+Importantly, we identify limitations with $\mathcal{T}^{-1}$ that was proposed in~\cite{naiman2024utilizing}. Specifically, in their approach, only the first pixel corresponding to each time series value is used for reconstruction. Specifically, if $x_i$ is mapped to multiple image indices, the original method selects the first corresponding pixel in the image for reconstruction. We modify this inverse transformation by aggregating information from all corresponding image indices and computing the average of the associated pixels for each \( x_i \). For a given \( x_{1:L} \in \mathbb{R}^L \), both methods ensure that \( f^{-1}(f(x)) = x \). See Sec.~\ref{subsec:ablation} for an ablation study of these two methods.
+
+
+
+\vspace{-3mm}
+\section{Results}
+\label{sec:results}
+\vspace{-2mm}
+
+\subsection{Quality vs. Complexity}
+\label{sec:complexity}
+\vspace{-2mm}
+\begin{wrapfigure}{r}{0.5\textwidth}
+    \centering
+    \vspace{-5mm} % Adjust as needed for vertical alignment
+    \includegraphics[width=0.95\linewidth]{figs/disc_time_graph.pdf}
+    \vspace{-3mm}
+    \caption{Discriminative score vs. training time for our approach and KoVAE across different lengths ($24, 96, \text{and } 768$). Lower discriminative scores and shorter training times are better.}
+    \label{fig:disc_time_graph}
+    \vspace{-4mm}
+\end{wrapfigure}
+We first compare the discriminative score and training time of our method against KoVAE across different sequence lengths ($24, 96, 768$). Both models were evaluated under identical conditions, utilizing the same GPU and batch size to ensure a fair comparison. Training time was measured until each model converged to its best result. The discriminative score and training time were averaged over all missing rates and datasets for each sequence length and each method separately. As illustrated in Fig.~\ref{fig:disc_time_graph} and Tab.~\ref{tab:mean_time}, our approach achieves an average speedup of approximately \textbf{6.5$\times$} and an average improvement of about \textbf{3.4$\times$} in the discriminative score compared to KoVAE. The results demonstrate that our method not only trains significantly faster but also generates data that more closely resembles the real distribution compared to KoVAE. Full results can be seen in App.~\ref{sec:complexity_analyis_cont}
+
+\begin{table*}[!b]
+    \vspace{-4mm}
+    \centering
+    \caption{Train time (hours) for lengths (24, 96, 768), averaged over missing rates (30\%, 50\%, 70\%).}
+    \label{tab:mean_time}
+    \resizebox{\linewidth}{!}{
+    \begin{tabular}{ll|cccccccccc}
+        \toprule
+         & \textbf{Model}
+         & \textbf{ETTh1} & \textbf{ETTh2} & \textbf{ETTm1} & \textbf{ETTm2} 
+         & \textbf{Weather} & \textbf{Electricity} & \textbf{Energy} 
+         & \textbf{Sine} & \textbf{Stock} & \textbf{Mujoco}  \\
+        \midrule
+    
+    
+        %------------------------------------
+        % Training Time
+        \multirow{3}{*}{\rotatebox{90}{\textbf{24}}} & GT-GAN & 7.44 & 3.68 & 5.14 & 3.60 & 5.04 & 6.45 & 5.25 & 4.09 & 3.15 & 2.17 \\
+        & KoVAE & 6.49 & 10.79 & 10.14 & 6.55 & 5.840 & 16.57 & 9.31 & 5.59 & 2.04 & 1.15 \\
+        & Ours & \cellcolor{blue!10}\textbf{1.28} & \cellcolor{blue!10}\textbf{2.76} & \cellcolor{blue!10}\textbf{0.96} & \cellcolor{blue!10}\textbf{1.43} & \cellcolor{blue!10}\textbf{3.66} & \cellcolor{blue!10}\textbf{2.44} & \cellcolor{blue!10}\textbf{1.00} & \cellcolor{blue!10}\textbf{0.48} & \cellcolor{blue!10}\textbf{0.21} &
+        \cellcolor{blue!10}\textbf{0.60} \\
+        \midrule
+
+        %------------------------------------
+        % Training Time
+        \multirow{2}{*}{\rotatebox{90}{\textbf{96}}} & KoVAE & 19.70 & 10.82 & 14.61 & 26.51 & 22.06 & - & 13.68 & 10.76 & 6.45 & - \\
+        & Ours & \cellcolor{blue!10}\textbf{1.52} & \cellcolor{blue!10}\textbf{1.90} & \cellcolor{blue!10}\textbf{1.24} & \cellcolor{blue!10}\textbf{1.85} & \cellcolor{blue!10}\textbf{1.87} & - & \cellcolor{blue!10}\textbf{1.72} & \cellcolor{blue!10}\textbf{1.46} & \cellcolor{blue!10}\textbf{0.76} & - \\
+        \midrule
+
+        %------------------------------------
+        % Training Time
+        \multirow{2}{*}{\rotatebox{90}{\textbf{768}}} & KoVAE & 31.53 & 37.66 & 67.97 & 72.58 & 52.93 & - & 21.04 & 14.64 & 16.27 & - \\
+        & Ours & \cellcolor{blue!10}\textbf{5.38} & \cellcolor{blue!10}\textbf{2.61} & \cellcolor{blue!10}\textbf{12.20} & \cellcolor{blue!10}\textbf{7.49} & \cellcolor{blue!10}\textbf{9.47} & - & \cellcolor{blue!10}\textbf{4.96} & \cellcolor{blue!10}\textbf{8.24} & \cellcolor{blue!10}\textbf{2.74} & -\\
+        \bottomrule
+    \end{tabular}
+    }
+\end{table*}
+
+
+
+\vspace{-2mm}
+\subsection{Quantitative Evaluation}
+\label{sec:quant_eval}
+\vspace{-2mm}
+
+\begin{table*}[!t]
+    \centering
+    \caption{Averaged results over 30\%, 50\%, 70\% missing rates for length 24. Lower values are better.}
+    \label{tab:results_short}
+    \resizebox{.85\textwidth}{!}{
+    \begin{tabular}{ll|ccccccccc}
+        \toprule
+         & \textbf{Model}
+         & \textbf{ETTh1} & \textbf{ETTh2} & \textbf{ETTm1} & \textbf{ETTm2} 
+         & \textbf{Weather} & \textbf{Electricity} & \textbf{Energy} 
+         & \textbf{Sine} & \textbf{Stock} \\
+        \midrule
+    
+        %------------------------------------
+        % Discriminative Score
+        \multirow{4}{*}{\rotatebox{90}{\textbf{Disc.}}}
+        & TimeGAN-$\Delta t$  
+          & 0.499 & 0.499 & 0.499 & 0.499 & 0.497 & 0.499 & 0.474 & 0.497 & 0.479 \\
+        & GT-GAN   
+          & 0.471 & 0.369 & 0.412 & 0.366 & 0.481 & 0.427 & 0.325 & 0.338 & 0.249 \\
+        & KoVAE   
+          & 0.197 & 0.081 & 0.050 & 0.067 & 0.332 & 0.498 & 0.323 & 0.043 & 0.118 \\
+        & Ours    
+          & \cellcolor{blue!10}\textbf{0.037} & \cellcolor{blue!10}\textbf{0.009} & \cellcolor{blue!10}\textbf{0.012} & \cellcolor{blue!10}\textbf{0.011} & \cellcolor{blue!10}\textbf{0.057} & \cellcolor{blue!10}\textbf{0.384} & \cellcolor{blue!10}\textbf{0.080} & \cellcolor{blue!10}\textbf{0.010} & \cellcolor{blue!10}\textbf{0.008} \\
+        \midrule
+    
+        %------------------------------------
+        % Predictive Score
+        \multirow{4}{*}{\rotatebox{90}{\textbf{Pred.}}}
+        & TimeGAN-$\Delta t$ 
+          & 0.267 & 0.336 & 0.235 & 0.314 & 0.394 & 0.262 & 0.457 & 0.334 & 0.072 \\
+        & GT-GAN  
+          & 0.186 & 0.092 & 0.125 & 0.094 & 0.145 & 0.148 & 0.069 & 0.096 & 0.020 \\
+        & KoVAE  
+          & 0.057 & 0.054 & 0.045 & 0.050 & 0.057 & \cellcolor{blue!10}\textbf{0.047} & 0.050 & 0.074 & 0.017 \\
+        & Ours   
+          & \cellcolor{blue!10}\textbf{0.053} & \cellcolor{blue!10}\textbf{0.046} & \cellcolor{blue!10}\textbf{0.044} & \cellcolor{blue!10}\textbf{0.044} & \cellcolor{blue!10}\textbf{0.022} & 0.049 & \cellcolor{blue!10}\textbf{0.047} & \cellcolor{blue!10}\textbf{0.069} & \cellcolor{blue!10}\textbf{0.012} \\
+        \midrule
+        
+        %------------------------------------
+        % FID
+        \multirow{4}{*}{\rotatebox{90}{\textbf{FID}}}
+        & TimeGAN-$\Delta t$
+          & 3.140 & 3.199 & 3.419 & 3.218 & 2.378 & 23.39 & 6.507 & 2.780 & 2.668 \\
+        & GT-GAN
+          & 2.212 & 8.635 & 14.29 & 6.385 & 2.758 & 9.993 & 1.531 & 1.698 & 2.181 \\
+        & KoVAE
+          & 1.518 & 0.248 & 0.180 & 0.280 & 3.699 & 6.163 & 0.629 & 0.037 & 0.369 \\
+        & Ours
+          & \cellcolor{blue!10}\textbf{0.124} & \cellcolor{blue!10}\textbf{0.035} & \cellcolor{blue!10}\textbf{0.047} & \cellcolor{blue!10}\textbf{0.024} & \cellcolor{blue!10}\textbf{0.170} & \cellcolor{blue!10}\textbf{3.580} & \cellcolor{blue!10}\textbf{0.132} & \cellcolor{blue!10}\textbf{0.015} & \cellcolor{blue!10}\textbf{0.036} \\
+        \midrule
+    
+        %------------------------------------
+        % Correlation Score
+        \multirow{4}{*}{\rotatebox{90}{\textbf{Corr.}}}
+        & TimeGAN-$\Delta t$
+          & 3.743 & 1.051 & 2.350 & 0.579 & 1.200 & 13.24 & 3.765 & 2.424 & 1.399 \\
+        & GT-GAN
+          & 7.148 & 0.916 & 2.467 & 0.356 & 0.791 & 14.92 & 3.889 & 3.282 & 0.261 \\
+        & KoVAE
+          & 0.183 & 0.177 & 0.130 & 0.262 & 2.899 & 4.283 & 2.630 & 0.041 & 0.064 \\
+        & Ours
+          & \cellcolor{blue!10}\textbf{0.084} & \cellcolor{blue!10}\textbf{0.054} & \cellcolor{blue!10}\textbf{0.065} & \cellcolor{blue!10}\textbf{0.039} & \cellcolor{blue!10}\textbf{0.396} & \cellcolor{blue!10}\textbf{2.031} & \cellcolor{blue!10}\textbf{0.922} & \cellcolor{blue!10}\textbf{0.015} & \cellcolor{blue!10}\textbf{0.019} \\
+        \bottomrule
+    \end{tabular}
+    }
+    \vspace{-4mm}
+\end{table*}
+
+
+
+\begin{table*}[!t]
+    \centering
+    \caption{Averaged results over 30\%, 50\%, 70\% missing rates for length 96 (top) and 768 (bottom).}
+    \label{tab:results_long}
+    \resizebox{.8\textwidth}{!}{
+    \begin{tabular}{lll|cccccccc}
+        \toprule
+        & & \textbf{Model} 
+        & \textbf{ETTh1} & \textbf{ETTh2} & \textbf{ETTm1} & \textbf{ETTm2} 
+        & \textbf{Weather} & \textbf{Energy} & \textbf{Sine} & \textbf{Stock} \\
+        \midrule
+    
+        %==================================================
+        \multirow{8}{*}{\rotatebox{90}{\textbf{Length $= 96$}}}
+        & \multirow{2}{*}{\rotatebox{90}{\textbf{Disc.}}}
+          & KoVAE & 0.284 & 0.103 & 0.276 & 0.089 & 0.341 & 0.356 & 0.239 & 0.099 \\
+        & & Ours & \cellcolor{blue!10}\textbf{0.070} & \cellcolor{blue!10}\textbf{0.053} & \cellcolor{blue!10}\textbf{0.040} & \cellcolor{blue!10}\textbf{0.030} & \cellcolor{blue!10}\textbf{0.152} & \cellcolor{blue!10}\textbf{0.185} & \cellcolor{blue!10}\textbf{0.003} & \cellcolor{blue!10}\textbf{0.017} \\
+        \cmidrule(lr){2-11}
+    
+        %--------------------------------------------------
+        & \multirow{2}{*}{\rotatebox{90}{\textbf{Pred.}}}
+          & KoVAE & 0.062 & 0.057 & 0.054 & 0.050 & 0.046 & 0.080 & 0.165 & 0.020 \\
+        & & Ours & \cellcolor{blue!10}\textbf{0.053} & \cellcolor{blue!10}\textbf{0.049} & \cellcolor{blue!10}\textbf{0.045} & \cellcolor{blue!10}\textbf{0.044} & \cellcolor{blue!10}\textbf{0.025} & \cellcolor{blue!10}\textbf{0.049} & \cellcolor{blue!10}\textbf{0.155} & \cellcolor{blue!10}\textbf{0.011} \\
+        \cmidrule(lr){2-11}
+    
+        %--------------------------------------------------
+        & \multirow{2}{*}{\rotatebox{90}{\textbf{FID}}}
+          & KoVAE & 5.842 & 1.111 & 4.070 & 0.996 & 3.681 & 4.694 & 4.381 & 0.868 \\
+        & & Ours & \cellcolor{blue!10}\textbf{0.357} & \cellcolor{blue!10}\textbf{0.508} & \cellcolor{blue!10}\textbf{0.171} & \cellcolor{blue!10}\textbf{0.142} & \cellcolor{blue!10}\textbf{0.394} & \cellcolor{blue!10}\textbf{0.309} & \cellcolor{blue!10}\textbf{0.017} & \cellcolor{blue!10}\textbf{0.109} \\
+        \cmidrule(lr){2-11}
+    
+        %--------------------------------------------------
+        & \multirow{2}{*}{\rotatebox{90}{\textbf{Corr.}}}
+          & KoVAE & 0.224 & 0.362 & 0.175 & 0.435 & 2.609 & 4.810 & 0.222 & 0.089 \\
+        & & Ours & \cellcolor{blue!10}\textbf{0.114} & \cellcolor{blue!10}\textbf{0.151} & \cellcolor{blue!10}\textbf{0.092} & \cellcolor{blue!10}\textbf{0.094} & \cellcolor{blue!10}\textbf{0.890} & \cellcolor{blue!10}\textbf{1.161} & \cellcolor{blue!10}\textbf{0.016} & \cellcolor{blue!10}\textbf{0.014} \\
+        \midrule
+
+        %==================================================
+        \multirow{8}{*}{\rotatebox{90}{\textbf{Length $= 768$}}}
+        & \multirow{2}{*}{\rotatebox{90}{\textbf{Disc.}}}
+          & KoVAE & 0.238 & 0.201 & 0.236 & 0.196 & 0.428 & 0.384 & 0.350 & 0.284 \\
+        & & Ours & \cellcolor{blue!10}\textbf{0.088} & \cellcolor{blue!10}\textbf{0.045}
+            & \cellcolor{blue!10}\textbf{0.058} & \cellcolor{blue!10}\textbf{0.052}
+            & \cellcolor{blue!10}\textbf{0.102} & \cellcolor{blue!10}\textbf{0.213}
+            & \cellcolor{blue!10}\textbf{0.006} & \cellcolor{blue!10}\textbf{0.022} \\
+        \cmidrule(lr){2-11}
+    
+        %--------------------------------------------------
+        & \multirow{2}{*}{\rotatebox{90}{\textbf{Pred.}}}
+          & KoVAE & 0.072 & 0.069 & 0.060 & 0.076 & 0.070 & 0.087 & 0.226 & 0.031 \\
+        & & Ours & \cellcolor{blue!10}\textbf{0.053} & \cellcolor{blue!10}\textbf{0.056}
+            & \cellcolor{blue!10}\textbf{0.047} & \cellcolor{blue!10}\textbf{0.050}
+            & \cellcolor{blue!10}\textbf{0.027} & \cellcolor{blue!10}\textbf{0.042}
+            & \cellcolor{blue!10}\textbf{0.204} & \cellcolor{blue!10}\textbf{0.013} \\
+        \cmidrule(lr){2-11}
+        
+        %--------------------------------------------------
+        & \multirow{2}{*}{\rotatebox{90}{\textbf{FID}}}
+          & KoVAE & 13.92 & 8.304 & 13.50 & 8.279 & 17.49 & 24.51 & 38.60 & 7.273 \\
+        & & Ours & \cellcolor{blue!10}\textbf{0.882} & \cellcolor{blue!10}\textbf{0.439}
+            & \cellcolor{blue!10}\textbf{0.391} & \cellcolor{blue!10}\textbf{0.264}
+            & \cellcolor{blue!10}\textbf{0.318} & \cellcolor{blue!10}\textbf{0.796}
+            & \cellcolor{blue!10}\textbf{0.237} & \cellcolor{blue!10}\textbf{0.160} \\
+        \cmidrule(lr){2-11}
+    
+        %--------------------------------------------------
+        & \multirow{2}{*}{\rotatebox{90}{\textbf{Corr.}}}
+          & KoVAE & 0.333 & 0.606 & 0.404 & 0.738 & 3.252 & 8.752 & 0.379 & 0.046 \\
+        & & Ours & \cellcolor{blue!10}\textbf{0.103} & \cellcolor{blue!10}\textbf{0.106}
+            & \cellcolor{blue!10}\textbf{0.122} & \cellcolor{blue!10}\textbf{0.128}
+            & \cellcolor{blue!10}\textbf{0.458} & \cellcolor{blue!10}\textbf{1.040}
+            & \cellcolor{blue!10}\textbf{0.006} & \cellcolor{blue!10}\textbf{0.026} \\
+        \bottomrule
+    \end{tabular}
+    \vspace{-4mm}
+    }
+\end{table*}
+
+
+Our quantitative evaluations assess missing rate setups of 30\%, 50\%, and 70\%. For example, in the 30\% missing rate case, we randomly omit 30\% of the data in each training sample. Additionally, we extend the standard benchmark, which typically considers a sequence length of 24, to include longer sequences of 96, 768, and 10,920, providing a more comprehensive evaluation across varying temporal scales. We utilize a diverse set of datasets, extending beyond common benchmarks such as Sine, Stock, Energy, and MuJoCo to include additional real-world datasets: ETTh1, ETTh2, ETTm1, ETTm2, Weather, Electricity, KDD-Cup, and Traffic. We compare against the popular TimeGAN approach~\cite{yoon2019time}, adapted to handle irregular data by incorporating the time difference between samples as input. In addition, we also consider the recent GT-GAN~\cite{jeon2022gt} and KoVAE~\cite{naiman2024generative}.
+
+
+We evaluate the performance of our model using the \emph{discriminative} and \emph{predictive} tasks suggested by~\cite{yoon2019time}. In the discriminative task, we measure the similarity between real and synthetic samples by training a classifier to distinguish between the two, reporting $|0.5 - \text{acc}|$, where $\text{acc}$ is the accuracy of the classifier. For the predictive task, we adopt the ``train on synthetic, test on real'' protocol, where a predictor is trained on synthetic data and tested on real data. The performance is evaluated using the Mean Absolute Error (MAE). We also consider irregular time series metrics: the \emph{Context-FID score}~\cite{jeha2022psa}, which quantifies the similarity in distribution between synthetic and real data, and the \emph{correlation score}~\cite{liao2020conditional}, which evaluates the feature-level relationship between the two datasets. The Context-FID score is computed by encoding both synthetic and real sequences using TS2Vec~\cite{yue2022ts2vec} and calculating the FID score on the representations. The correlation score measures the covariance of features between real and synthetic data, with a focus on assessing their alignment. Full details are provided in App.~\ref{app:metrics}. For all metrics, lower scores are better.
+
+
+
+Tab.~\ref{tab:results_short} details the benchmark results for a sequence length of 24. The values represent averages over the $30\%, 50\%$ and $70\%$ missing rates, where the full results are provided in Tab.~\ref{tab:irregular_24}. In general, our approach presents dramatic improvements across all metrics with respect to the second-best approach (typically KoVAE). Following~\cite{naiman2024generative}, we define the relative improvement error as $e_\text{rel} = (e_2-e_1)/e_2$, where $e_2$ is the second-best error and $e_1$ is ours. In this metric, averaged across all datasets, our method improves by $\textbf{74.2\%, 15.0\%, 78.5\%, 62.1\%}$ in the discriminative, predictive, context-FID, and correlation scores, respectively. We also compared our approach to KoVAE in the medium (96) and long (768) lengths on all datasets excluding MuJoCo and electricity. The results appear in Tab.~\ref{tab:results_long},
+
+\begin{wraptable}{r}{0.37\columnwidth} % Table on the right, 37% of column width
+    \vspace{-3mm}
+    \centering
+    \caption{Discriminative results of ultra-long (10{,}920) sequences on KDD-Cup for different missing rates.}
+    \label{tab:results_ulong}
+    \resizebox{\linewidth}{!}{ % Use \linewidth within wraptable
+    \begin{tabular}{c|ccc}
+        \toprule
+        \textbf{Method} & \textbf{30\%} & \textbf{50\%} & \textbf{70\%} \\
+        \midrule
+        KoVAE & 0.375 & 0.410 & 0.499 \\
+        Ours & \cellcolor{blue!10}\textbf{0.155} & \cellcolor{blue!10}\textbf{0.288} & \cellcolor{blue!10}\textbf{0.392} \\
+        \bottomrule
+    \end{tabular}
+    }
+    \vspace{-2mm}
+\end{wraptable}
+showing the superiority of our method and its advantages to longer horizons, where we achieved mean relative improvement of $\textbf{72.6\%, 29.7\%, 92.1\%, 73.25\%}$ in the discriminative, predictive, context-FID, and correlation scores. See the full results in Tabs.~\ref{tab:irregular_96}, \ref{tab:irregular_768}. Finally, for ultra-long sequences (10{,}920) on the KDD-Cup dataset, our model showed improvements of $\textbf{36.6\%}$ in the discriminative score (see Tab.~\ref{tab:results_ulong}), showing its ability to generate realistic synthetic data even at extreme sequence lengths.
+
+\vspace{-2mm}
+\subsection{Qualitative Evaluation}
+\vspace{-2mm}
+We evaluate the similarity between the generated sequences and the real data using qualitative metrics. Specifically, we employ two visualization techniques~\cite{yoon2019time}: (i) projecting the real and synthetic data into a two-dimensional space using t-SNE \citep{van2008visualizing}, and (ii) performing kernel density estimation to visualize the corresponding probability density functions (PDFs). Fig.~\ref{fig:70_tsne_density} illustrates these results for the 70\% missing rate setting over various datasets and sequence lengths: Energy (24), Weather (96), and Stocks (768). The top row shows the two-dimensional point clouds of real (blue), KoVAE (green), and our data obtained via t-SNE, while the bottom row displays their respective PDFs. Overall, our approach demonstrates strong alignment in both visualizations. In the t-SNE plots (top row), a high degree of overlap between real and synthetic samples is observed. Similarly, in the PDF plots (bottom row), the trends and behaviors of the distributions are closely aligned. For additional results, including the regular and irregular 30\% and 50\% settings, please refer to App.~\ref{sec:qual_eval_full}.
+
+\begin{figure*}[t]
+    \vspace{-3mm}
+    \centering
+    \begin{overpic}[width=1\textwidth]{figs/70_tsne_density.pdf}
+        \put(1, 38){A} \put(34.5, 38){B} \put(67.5, 38){C}
+        \put(1, 18){D} \put(34.5, 18){E} \put(67.5, 18){F}
+    \end{overpic}
+    \vspace{-1mm}
+    \caption{2D t-SNE embeddings (top) and probability density functions (bottom) for real data vs. synthetic data from our method and KoVAE, under a 70\% missing rate. From left to right: Energy (length 24), Weather (length 96), and Stock (length 768) datasets.}
+    \label{fig:70_tsne_density}
+    \vspace{-4mm}
+\end{figure*}
+\label{sec:qual_eval}
+
+
+\begin{table}[!b]
+    \centering
+    \caption{Discriminative and predictive scores for $50\%$ missing rate on Weather, ETTh1, Stock, and Energy datasets with injected noise levels ($0.1, 0.15,  \text{and } 0.2$).}
+    \label{tab:gaussian_noise}
+    \resizebox{.75\textwidth}{!}{
+    \begin{tabular}{ll|cc|cc|cc|cc}
+        \toprule
+        & & \multicolumn{2}{c|}{Weather} & \multicolumn{2}{c|}{ETTh1}  & \multicolumn{2}{c|}{Stock} & \multicolumn{2}{c}{Energy} \\
+        N/R & Model & Disc. & Pred. & Disc. & Pred. & Disc. & Pred. & Disc. & Pred. \\
+        \midrule
+    
+        \multirow{2}{*}{0.1} & KoVAE & 0.426 & 0.056 & 0.225 & 0.073 & 0.235 & 0.016 & 0.434 & 0.067 \\
+        & Ours  & \cellcolor{blue!10}\textbf{0.061} & \cellcolor{blue!10}\textbf{0.052} & \cellcolor{blue!10}\textbf{0.024} & \cellcolor{blue!10}\textbf{0.034} & \cellcolor{blue!10}\textbf{0.007} & \cellcolor{blue!10}\textbf{0.012} & \cellcolor{blue!10}\textbf{0.065} & \cellcolor{blue!10}\textbf{0.047} \\
+        \midrule
+    
+        \multirow{2}{*}{0.15} & KoVAE & 0.488 & 0.092 & \cellcolor{blue!10}\textbf{0.377} & 0.077 & 0.341 & 0.092 & 0.493 & 0.093 \\
+        & Ours  & \cellcolor{blue!10}\textbf{0.416} & \cellcolor{blue!10}\textbf{0.029} & 0.407 & \cellcolor{blue!10}\textbf{0.059} & \cellcolor{blue!10}\textbf{0.282} & \cellcolor{blue!10}\textbf{0.023} & \cellcolor{blue!10}\textbf{0.467} & \cellcolor{blue!10}\textbf{0.053} \\
+        \midrule
+    
+        \multirow{2}{*}{0.2} & KoVAE & 0.491 & 0.096 & \cellcolor{blue!10}\textbf{0.440} & 0.084 & 0.352 & 0.121 & 0.496 & 0.123 \\
+        & Ours  & \cellcolor{blue!10}\textbf{0.485} & \cellcolor{blue!10}\textbf{0.035} & 0.456 & \cellcolor{blue!10}\textbf{0.062} & \cellcolor{blue!10}\textbf{0.340} & \cellcolor{blue!10}\textbf{0.027} & \cellcolor{blue!10}\textbf{0.457} & \cellcolor{blue!10}\textbf{0.057}  \\
+        \bottomrule
+    \end{tabular}
+    \vspace{-4mm}
+    }
+\end{table}
+
+
+
+\vspace{-2mm}
+\subsection{Irregularly-sampled data under noise}
+\vspace{-2mm}
+Our work primarily addresses irregularly sampled time series data. However, in real-world scenarios, such data often includes noise due to sensor limitations and inaccuracies. To further enhance our quantitative evaluation framework, we tackle the generative challenges of learning from irregular time series in noisy environments. Specifically, we propose a novel setup to evaluate the model's capability to recover the true underlying distribution from data corrupted by both irregular sampling and Gaussian noise. In this setup, we simulate a 50\% missing rate and inject additive Gaussian noise sampled from a normal distribution $\mathcal{N}(0, \sigma)$, where $\sigma$ corresponds to the specified noise level (e.g., $0.1, 0.15, \text{and } 0.2$). Importantly, this noise is added independently of the original data distribution or scale. The evaluation is conducted on sequences of length 24 across four datasets: Weather, Etth1, Stocks. and Energy.  Following the discriminative and predictive evaluation protocols for $50\%$ missing rate described earlier, we compare our approach against the most recent state-of-the-art method, KoVAE. Tab.~\ref{tab:gaussian_noise} presents the results. For each noise rate (N/R), we report the discriminative (Disc.) and predictive (Pred.) scores, where lower values indicate better performance. Our method consistently outperforms KoVAE, achieving significant improvements. Specifically, we observe an average relative improvement of \textbf{26.8\%} in the discriminative score and \textbf{50.3\%} in the predictive score across all datasets and noise levels.
+
+
+\begin{table}[t]
+    \centering
+    \caption{Discriminative and predictive scores for 40\% random vs. 40\% continuous missingness on the Weather and Energy datasets with sequence lengths of 24 and 96. Lower is better.}
+    \label{tab:continuous_vs_random}
+    \resizebox{0.85\textwidth}{!}{
+    \begin{tabular}{ll|cc|cc}
+        \toprule
+        & & \multicolumn{2}{c|}{Weather} & \multicolumn{2}{c}{Energy} \\
+        & Metric & Random & Continuous & Random & Continuous \\
+        \midrule
+        \multirow{2}{*}{Length = 24} 
+        & Discriminative $\downarrow$ & 0.057 & \cellcolor{blue!10}\textbf{0.053} & \cellcolor{blue!10}\textbf{0.081} & 0.082 \\
+        & Predictive $\downarrow$     & \cellcolor{blue!10}\textbf{0.021} & 0.025 & 0.047 & \cellcolor{blue!10}\textbf{0.043} \\
+        \midrule
+        \multirow{2}{*}{Length = 96} 
+        & Discriminative $\downarrow$ & \cellcolor{blue!10}\textbf{0.154} & 0.165 & \cellcolor{blue!10}\textbf{0.185} & 0.191 \\
+        & Predictive $\downarrow$     & 0.025 & \cellcolor{blue!10}\textbf{0.023} & \cellcolor{blue!10}\textbf{0.048} & 0.050 \\
+        \bottomrule
+    \end{tabular}
+    }
+\end{table}
+
+\vspace{-2mm}
+\subsection{Robustness to missingness patterns}
+\vspace{-2mm}
+While many time series exhibit randomly missing values, in practice, missing values can also occur in contiguous blocks due to sensor outages or communication delays. To study this effect, we compare model performance under two types of 40\% missingness: (i) randomly dropped values, and (ii) continuous missing blocks. This experiment is conducted on the Weather and Energy datasets using sequence lengths of 24 and 96. Discriminative and predictive scores are reported in Tab.~\ref{tab:continuous_vs_random}. The results show that our method maintains strong performance under both missingness types, with some cases slightly favoring random missingness and others slightly favoring block-missingness. Overall, these findings confirm that our approach is robust across a range of missingness patterns, effectively handling both sporadic and structured data gaps.
+
+
+\vspace{-2mm}
+\subsection{Ablation Studies}
+\label{subsec:ablation}
+\vspace{-2mm}
+
+To better understand the contributions of each component in our proposed architecture, we conducted a series of ablation studies. We explore each of the components in our approach separately, and, additionally, we modify recent approaches to include our completion strategy. Specifically, we consider the following models: (i) KoVAE + TST, where the NCDE module in KoVAE is replaced by TST, as in our approach. (ii) TimeAutoDiff~\cite{suh2024timeautodiff} + TST (iii): TransFusion \cite{sikder2023transfusion}
+ + TST; The latter two baselines are diffusion-based models designed for regular time series but not specifically for irregular time series data. Therefore, we used the TST module to impute the missing values. (iv) Mask Only, where the TST autoencoder is removed, and we only apply the masking mechanism. In this setup, missing values are imputed using unnatural neighbors by filling them with zeros. (v) Ours Without Masking, where we leverage TST to complete missing values, and training is performed without masking. (vi) Our approach.
+
+
+
+We quantitatively evaluated each model under the same experimental conditions and show the results in Tab.~\ref{tab:ablation}. To provide an extensive analysis, our tests include several missing rates ($30\%, 50\%, \text{and } 70\%$) using two datasets, Energy and Stock. Further, we measured the performance across different sequence lengths ($24, 96, \text{and } 768$). Our findings show that the combination of TST-based completion and masking yields superior performance compared to all other setups. Specifically, the Mask Only and Ours (Without Masking) setups showed significant limitations in capturing the true data distribution, while the replacement of NCDE with TST (KoVAE + TST) fell short in comparison to our proposed architecture. In particular, our results reveal that replacing the NCDE imputation component in KoVAE with the TST imputation mechanism is not the primary factor driving the significant improvements achieved by our method. Moreover, even when employing a powerful time series diffusion-based model like TransFusion combined with TST-based
+imputation, performance significantly degrades, struggling to capture the true distribution of the regular data. Overall, these results highlight the critical role of masking during the diffusion process and the importance of leveraging completion as a guide rather than a direct substitute for the true distribution. 
+
+
+\begin{table}[t]
+\renewcommand{\arraystretch}{1}
+    \centering
+    \caption{Discriminative scores of the ablation study with 30\%, 50\%, and 70\% drop-rate on Energy and Stock datasets for sequence lengths of $24, 96, \text{and } 768$.}
+    \label{tab:ablation}
+    \resizebox{.75\textwidth}{!}{
+    \begin{tabular}{ll|cc|cc|cc}
+        \toprule
+        & & \multicolumn{2}{c|}{\textbf{30\%}} & \multicolumn{2}{c|}{\textbf{50\%}} & \multicolumn{2}{c}{\textbf{70\%}} \\
+        & \textbf{Model} & Energy & Stock & Energy & Stock &  Energy & Stock \\ 
+        \midrule
+    
+        % Discriminative Score Section
+        \multirow{5}{*}{\rotatebox{90}{Len.\textbf{ = 24}}} 
+        & KoVAE + TST & 0.399 & 0.109 & 0.407 & 0.064 & 0.408 & 0.037 \\
+        & TimeAutoDiff + TST & 0.293 & 0.100 & 0.329 & 0.101 & 0.468 & 0.375 \\
+        & TransFusion + TST & 0.201 & 0.050 & 0.279 & 0.058 & 0.423 & 0.065 \\
+        & Ours (Mask Only) & 0.157 & 0.087 & 0.269 & 0.168 & 0.372 & 0.237 \\
+        & Ours (Without Mask) & 0.158 & 0.025 & 0.307 & 0.045 & 0.444 & 0.013 \\
+        & Ours & \cellcolor{blue!10}\textbf{0.048} & \cellcolor{blue!10}\textbf{0.007} & \cellcolor{blue!10}\textbf{0.065} & \cellcolor{blue!10}\textbf{0.007} & \cellcolor{blue!10}\textbf{0.128} & \cellcolor{blue!10}\textbf{0.007} \\
+        \midrule
+    
+        % Discriminative Score Section
+        \multirow{5}{*}{\rotatebox{90}{Len.\textbf{ = 96}}}  
+        & KoVAE + TST & 0.240 & 0.185 & 0.254 & 0.221 & 0.417 & 0.193 \\
+        & TimeAutoDiff + TST & 0.299 & 0.105 & 0.336 & 0.104 & 0.461 & 0.398 \\
+        & TransFusion + TST & 0.305 & 0.083 & 0.335 & 0.098 & 0.442 & 0.116 \\
+        & Ours (Mask Only) & 0.490 & 0.174 & 0.422 & 0.263 & 0.480 & 0.388 \\
+        & Ours (Without Mask) & 0.402 & 0.033 & 0.476 & 0.072 & 0.491 & 0.082 \\      
+        & Ours & \cellcolor{blue!10}\textbf{0.130} & \cellcolor{blue!10}\textbf{0.011} & \cellcolor{blue!10}\textbf{0.153} & \cellcolor{blue!10}\textbf{0.018} & \cellcolor{blue!10}\textbf{0.272} & \cellcolor{blue!10}\textbf{0.021} \\
+        \midrule
+    
+        % Discriminative Score Section
+        \multirow{5}{*}{\rotatebox{90}{Len.\textbf{ = 768}}}  
+        & KoVAE + TST   & 0.380 & 0.225 & 0.418 & 0.243 & 0.385 & 0.186  \\
+        & TimeAutoDiff + TST & 0.299 & 0.104 & 0.334 & 0.101 & 0.466 & 0.487 \\
+        & TransFusion + TST & 0.367 & 0.113 & 0.395 & 0.121 & 0.451 & 0.131 \\
+        & Ours (Mask Only) & 0.437 & 0.249 & 0.349 & 0.450 & 0.435 & 0.491  \\
+        & Ours (Without Mask) & 0.364 & 0.027 & 0.353 & 0.102 & 0.325 & 0.102  \\
+        & Ours & \cellcolor{blue!10}\textbf{0.170} & \cellcolor{blue!10}\textbf{0.025} & \cellcolor{blue!10}\textbf{0.244} & \cellcolor{blue!10}\textbf{0.033} & \cellcolor{blue!10}\textbf{0.251} & \cellcolor{blue!10}\textbf{0.013} \\
+        \bottomrule
+    \end{tabular}
+    }
+    \vspace{-6mm}
+\end{table}
+
+
+We also ablate the impact of different image transformations on model performance, evaluating four methods: vanilla folding (reshapes a sequence into a fixed-size matrix with zero-padding), Gramian Angular Field, basic delay embedding, and our proposed inverse delay embedding (see App.~\ref{app:ts2img}). Results in Tab.~\ref{tab:image_transformations} and Tab.~\ref{tab:ablation_de} show that geometric approaches—vanilla folding and our enhanced DE—better suit our method due to their structural clarity, where each pixel maps directly to a time point, facilitating mask usage and improving both discriminative and predictive performance. In contrast, GAF does not scale well to long sequences due to large image size. Our inverse transform also outperforms the original inverse of ImagenTime~\cite{naiman2024utilizing}.
+
+We additionally conducted an extensive ablation study comparing a variety of completion strategies. These included simple methods such as, Gaussian noise (GN), zero-filling, linear interpolation (LI), and polynomial interpolation (PI); probabilistic techniques like stochastic imputation (SI) (sampling from a Gaussian distribution fitted to the non-NaN values in each slice); and more advanced learning-based approaches, including NCDE, CSDI~\cite{tashiro2021csdi}, and our proposed Time Series Transformer (TST) completion. Our results in Tab.~\ref{tab:ablation_50_combined} show that when the neighbors are not natural—such as in the case of zero completion or Gaussian noise completion—the model struggles more to generate data that closely follows the true distribution. In contrast, when using more natural completions (e.g., polynomial, stochastic imputation, NCDE, CSDI, TST), the model consistently obtains very good results. This confirms that generating natural neighborhoods indeed enhances the generative quality without making the model completely reliant on the imputation quality.
+
+\begin{table}[t]
+    \centering
+    \scriptsize
+    \caption{Comparative performance on Energy and Stock datasets for sequence length $24$.}
+    \begin{subtable}[t]{0.57\linewidth}
+        \centering
+        \caption{Ablation study on image transformation methods.}
+        \label{tab:image_transformations}
+        \resizebox{\linewidth}{!}{
+        \begin{tabular}{ll|cc|cc|cc}
+            \toprule
+            & & \multicolumn{2}{c|}{\textbf{30\%}} & \multicolumn{2}{c|}{\textbf{50\%}} & \multicolumn{2}{c}{\textbf{70\%}} \\
+            & \textbf{Model} & Energy & Stock & Energy & Stock & Energy & Stock \\
+            \midrule
+            \multirow{4}{*}{\rotatebox{90}{\textbf{Disc.}}} 
+            & Gramian Angular & 0.291 & 0.061 & 0.313 & 0.157 & 0.363 & 0.183 \\
+            & Vanilla Folding & 0.058 & \cellcolor{blue!10}\textbf{0.005} & \cellcolor{blue!10}\textbf{0.050} & 0.009 & 0.136 & 0.010 \\
+            & Basic DE        & 0.091 & 0.035 & 0.102 & 0.046 & 0.153 & 0.019 \\
+            & Ours DE         & \cellcolor{blue!10}\textbf{0.048} & 0.007 & 0.065 & \cellcolor{blue!10}\textbf{0.007} & \cellcolor{blue!10}\textbf{0.128} & \cellcolor{blue!10}\textbf{0.007} \\
+            \midrule
+            \multirow{4}{*}{\rotatebox{90}{\textbf{Pred.}}} 
+            & Gramian Angular & 0.049 & 0.013 & 0.048 & 0.015 & 0.049 & 0.016 \\
+            & Vanilla Folding & 0.047 & 0.013 & 0.047 & 0.013 & 0.047 & 0.014 \\
+            & Basic DE        & 0.053 & 0.022 & 0.051 & 0.025 & 0.055 & 0.027 \\
+            & Ours DE         & \cellcolor{blue!10}\textbf{0.047} & \cellcolor{blue!10}\textbf{0.012} & \cellcolor{blue!10}\textbf{0.047} & \cellcolor{blue!10}\textbf{0.012} & \cellcolor{blue!10}\textbf{0.047} & \cellcolor{blue!10}\textbf{0.011} \\
+            \bottomrule
+        \end{tabular}
+        }
+    \end{subtable}
+    \hfill
+    \begin{subtable}[t]{0.40\linewidth}
+        \centering
+        \caption{Imputation methods with 50\% drop-rate.}
+        \label{tab:ablation_50_combined}
+        \resizebox{\linewidth}{!}{
+        \begin{tabular}{l|cc|cc}
+            \toprule
+            & \multicolumn{2}{c|}{\textbf{Disc.}} & \multicolumn{2}{c}{\textbf{Pred.}} \\
+            \textbf{Model} & Energy & Stock & Energy & Stock \\
+            \midrule
+            $GN \rightarrow \text{NaN}$        & 0.457 & 0.102 & 0.058 & 0.014 \\
+            $0 \rightarrow \text{NaN}$         & 0.269 & 0.158 & 0.051 & 0.014 \\
+            LI                                 & 0.251 & 0.013 & 0.049 & 0.019 \\
+            PI                                 & 0.201 & 0.012 & 0.053 & 0.016 \\
+            NCDE                               & 0.102 & 0.013 & 0.058 & 0.013 \\
+            CSDI                               & 0.088 & 0.012 & 0.048 & 0.013 \\
+            SI                                 & 0.069 & 0.010 & 0.047 & 0.013 \\
+            Ours (TST)                         & \cellcolor{blue!10}\textbf{0.065} & \cellcolor{blue!10}\textbf{0.007} & \cellcolor{blue!10}\textbf{0.047} & \cellcolor{blue!10}\textbf{0.012} \\
+            \bottomrule
+        \end{tabular}
+        }
+    \end{subtable}
+    \vspace{-3mm}
+\end{table}
+
+
+\vspace{-3mm}
+\section{Conclusions}
+\vspace{-2mm}
+
+
+In this work, we introduced a novel two-step framework for generating realistic regular time series from irregularly sampled sequences. By integrating a Time Series Transformer (TST) for completion with a vision-based diffusion model leveraging masking, we effectively addressed the challenge of unnatural neighborhoods inherent in direct masking approaches. This hybrid strategy ensures that the diffusion model benefits from more structured and meaningful input while mitigating over-reliance on completed values. Our extensive evaluations across multiple benchmarks demonstrated state-of-the-art performance, with improvements of up to 70\% in discriminative score and an 85\% reduction in computational cost over prior methods. Furthermore, our approach scales effectively to long time series, significantly outperforming existing generative models in both accuracy and efficiency.
+
+Beyond these advancements, our work highlights the broader potential of integrating completion and masking strategies in generative modeling, particularly in domains where irregular sampling and missing values are prevalent. Future directions include extending our framework to multimodal time series generation, exploring self-supervised objectives for improved imputation, and integrating adaptive masking techniques that dynamically adjust completion reliance. By bridging the gap between irregular and regular time series generation, our method opens new possibilities for high-fidelity synthetic data generation in critical fields such as healthcare, finance, and climate science.
+
+
+\section*{Acknowledgments}
+This research was partially supported by the Lynn and William Frankel Center of the Computer Science Department, Ben-Gurion University of the Negev, an ISF grant 668/21, an ISF equipment grant, and by the Israeli Council for Higher Education (CHE) via the Data Science Research Center, Ben-Gurion University of the Negev, Israel.
+
+
+
+\clearpage
+\bibliographystyle{abbrv}
+\bibliography{refs}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% APPENDIX
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\clearpage
+\appendix
+
+\section{Time Series-to-Image Transformation}
+\label{app:ts2img}
+In this section, we provide a brief discussion on time series to image conversions. We then introduce Delay Embedding, the transformation we employed. Additionally, we describe an improvement we implemented to enhance the reversibility of delay embedding.
+
+\paragraph{Time series to image conversion.} The conversion of time series data into image representations has attracted significant interest for its ability to leverage computer vision methods in time series analysis. Techniques like Gramian Angular Fields~\cite{wang2015imaging}, Recurrence Plots~\cite{hatami2018classification}, and Line Graphs~\cite{li2024time} allow for mapping time series data to visual formats, enabling tasks such as classification and imputation. In the field of speech analysis, the short-time Fourier transform (STFT) \cite{allen1977short, allen1977unified, vetterli1992wavelets, flandrin2004empirical} is crucial for capturing frequency variations over time, which is vital for processing audio and speech data. Recent advancements have also explored incorporating mel-spectrograms in diffusion models, particularly in connection with latent diffusion spaces\cite{popov2021grad, chen2022resgrad, liu2023audioldm}. Furthermore, generative approaches such as Wasserstein GANs~\cite{brophy2019quick, hellermann2021leveraging} have been applied to time series in image form.
+
+\paragraph{Vanilla Folding} is a straightforward transformation. Given a time series $x$, we reshape it into an image $x_\text{img}$ by filling rows from left to right and moving to the next row upon reaching the end, padding with zeros if necessary. The inverse transformation reconstructs the original time series by reading the non-padded region row-wise. Despite its simplicity, this method scales well to very long sequences. Folding can also be interpreted as a specific case of delay embedding, as we explain below.
+
+\paragraph{Delay Embedding and Enhanced Reverse Transformation}
+
+~\cite{takens2006detecting} converts a univariate time series \( x_{1:L} \in \mathbb{R}^L \) into an image by structuring its information into columns and applying zero-padding as needed. This transformation is controlled by two hyperparameters: \( m \), which defines the skip value, and \( n \), which determines the number of columns. Given any channel of a time series, the corresponding matrix \( X \) is formed as follows:
+
+\[
+X = \begin{bmatrix}
+    x_1 & x_{m+1} & \dots & x_{L-n} \\
+    \vdots & \vdots & \dots & \vdots \\
+    x_n & x_{n+m+1} & \dots & x_L
+\end{bmatrix} \in \mathbb{R}^{n \times q} \ ,
+\]
+
+where \( q = \lceil (L-n)/m \rceil \). To match the input requirements of a neural network, the resulting image \( x_{\text{img}} \) is padded with zeros. This transformation is applied independently to each channel, and for multivariate time series, the matrices \( X \) from different channels are concatenated along a new axis. Given an input signal \( x \in \mathbb{R}^{L \times K} \), the output is a transformed representation \( x_{\text{img}} \in \mathbb{R}^{K \times n \times q} \), which is then zero-padded to obtain \( x_{\text{img}} \in \mathbb{R}^{K \times n \times n} \). Delay embedding efficiently scales to long sequences; for instance, choosing \( m=n=256 \) enables the encoding of sequences up to \( 65k \) in length using \( 256 \times 256 \) images.
+
+Our primary innovation lies in the reverse transformation process. In the original approach, only the first pixel corresponding to each time series value is used for reconstruction. Specifically, if \( x_i \) is mapped to multiple image indices, the original method selects the first corresponding pixel in the image for reconstruction. In contrast, our approach aggregates information from all corresponding image indices by computing the average of the associated pixels for each \( x_i \). For a given \( x_{1:L} \in \mathbb{R}^L \), both methods ensure that \( f^{-1}(f(x)) = x \).
+
+As shown in Table \ref{tab:ablation_de}, our approach consistently outperforms the original approach across various drop rates. For example, at a 30\% drop rate, our delay embedding (DE) approach achieves a discriminative score of $0.020$ for the ETTh1 dataset and $0.009$ for ETTh2, compared to $0.023$ and $0.018$ with the naive approach, respectively. Similarly, at a 50\% drop rate, the new DE method reduces the discriminative score to $0.032$ (ETTh1) and $0.005$ (ETTh2), outperforming the previous DE approach, which yielded scores of $0.040$ and $0.037$, respectively.
+
+
+\begin{table}[!h]
+    \centering
+    \begin{minipage}[t]{0.75\textwidth}
+        \centering
+        \vspace{-2.4cm}
+        \caption{Discriminative scores on ETTh1 and ETTh2 for sequence length 24 to compare the original inverse delay embedding vs. our inverse, evaluated in $30\%, 50\%, \text{and } 70\%$ missing rates.}
+        \label{tab:ablation_de}
+        \resizebox{\textwidth}{!}{
+        \begin{tabular}{ll|cc|cc|cc}
+            \toprule
+            & & \multicolumn{2}{c|}{\textbf{30\%}} & \multicolumn{2}{c|}{\textbf{50\%}} & \multicolumn{2}{c}{\textbf{70\%}} \\
+            & \textbf{Model} & ETTh1 & ETTh2 & ETTh2 & ETTh2 &  ETTh2 & ETTh2 \\ 
+            \midrule
+        
+            % Discriminative Score Section
+    
+            & Ours + Old inverse & 0.023 & 0.018 & 0.040 & 0.037 & 0.067 & 0.048 \\
+            & Ours + New inverse & \cellcolor{blue!10}\textbf{0.020} & \cellcolor{blue!10}\textbf{0.009} & \cellcolor{blue!10}\textbf{0.032} & \cellcolor{blue!10}\textbf{0.005} & \cellcolor{blue!10}\textbf{0.058} & \cellcolor{blue!10}\textbf{0.013} \\
+            \midrule
+    
+        \end{tabular}
+        }
+    \end{minipage}
+    \hfill
+    \begin{minipage}[b]{0.2\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{figs/delay_embedding.pdf} 
+        \label{fig:delay_embedding}
+        \vspace{-1cm}
+    \end{minipage}
+\end{table}
+
+
+\section{Training Losses}
+\label{app:loss_function}
+Our model consists of two main components: an Autoencoder (AE) and a vision diffusion model (ImagenTime). For each component, we modified the loss to handle irregular data more effectively.
+
+\subsection{Autoencoder Training Loss}
+
+The TST-Based AE is trained to reconstruct only the known (non-missing) values of the input data. Since we do not have access to the regularly sampled time series during training, the model learns to infer missing values from the irregularly sampled data. The masked reconstruction loss is defined as:
+
+\begin{equation}
+    \mathcal{L}_{e}^{t=0} = \frac{1}{|\mathcal{O}|} \sum_{i \in \mathcal{O}} (\tilde{x}_i - x_i)^2
+\end{equation}
+
+where $x$ is the original input data, $\tilde{x}$ is the reconstructed output, $\mathcal{O}$ represents the set of observed (non-missing) indices in the input $x$, and $|\mathcal{O}|$ is the number of observed values. This ensures that the loss function only penalizes reconstruction errors for the known values, without considering the missing ones.
+
+\subsection{ImagenTime Diffusion Training Loss}
+
+At the core of \textbf{ImagenTime} is the generative diffusion model, which follows the framework of Karras et al.~\cite{karras2022elucidating} for improved score-based modeling. The model employs a second-order ODE for the reverse process, balancing fast sampling and high-quality generations.
+
+For irregular time series data, we changed the training loss to ensure proper weighting of the diffusion steps and account for missing values. Given an input sequence \( x \) and a corresponding mask \( m \) indicating observed entries, the loss is defined as:
+
+\begin{equation}
+    \mathcal{L}_{\text{diff}} = \mathbb{E}_{x, \sigma} \left[ \| (D_\theta(x + \sigma n, \sigma) - x) \cdot m \|^2 \right]
+\end{equation}
+
+where:
+
+\begin{itemize}
+    \item $ x $ is the input time series with missing values.
+    \item $ n \sim \mathcal{N}(0, I) $ is standard Gaussian noise, scaled by $ \sigma $.
+    \item $ m $ is the mask, indicating the observed values.
+\end{itemize}
+
+The model reconstructs the output using both observed and imputed indices, treating the imputed values as natural neighbors to the observed ones. However, the loss is computed and compared only against the observed indices, ensuring that the comparison is made solely to the true distribution, unaffected by the imputed values. This allows the model to learn the distribution while maintaining accurate reconstruction of missing values.
+
+\section{Inference Time Analysis}
+
+\begin{figure}[!b]
+    \centering
+    \begin{minipage}[t]{0.48\linewidth} % Align top
+        \centering
+        \includegraphics[width=\linewidth]{figs/inference_time_vs_length.pdf}
+        \vspace{-5mm}
+        \caption{Comparison of inference time per sample in seconds vs. sequence length of our model and KoVae model.}
+        \label{fig:inference_time_vs_length}
+    \end{minipage}
+    \hfill
+    \begin{minipage}[t]{0.487\linewidth} % Align top
+        \centering
+        \includegraphics[width=\linewidth]{figs/disc_time_graph_inference.pdf}
+        \vspace{-5mm}
+        \caption{Comparison of discriminative score vs. inference time of a single sequence for our approach and KoVAE across different sequence lengths ($24, 96, \text{and } 768$). Lower discriminative scores indicate higher fidelity, and shorter inference times reflect greater efficiency.}
+        \label{fig:disc_time_graph_inference}
+    \end{minipage}
+\end{figure}
+
+
+In this section, we present a detailed comparison of the inference time between our approach and KoVAE, particularly in relation to sequence length. The evaluation is conducted across a range of sequence lengths: 24, 96, and 768. Additionally, we explore the relationship between inference time and sequence length for both models.
+
+\subsection{Inference Time vs. Sequence Length}
+
+{Figure~\ref{fig:inference_time_vs_length} illustrates the relationship between inference time per sample (in seconds) and sequence length for both our model and KoVAE. While KoVAE demonstrates faster sampling on short sequences, its efficiency degrades rapidly as the sequence length increases. KoVAE, which is based on a sequential VAE architecture for time series, processes each time step individually throughout the entire sequence, causing its computational cost to increase significantly with longer sequences and resulting in substantially longer inference times.}
+
+In contrast, our model maintains nearly constant inference time regardless of sequence length, making it highly efficient even for sequences as long as 5000 time steps. This is due to the use of delay embedding, which enables the model to compress long sequences into compact image representations with fixed dimensions. A clear turning point occurs at a sequence length of approximately 4500, beyond which our model consistently outperforms KoVAE in terms of inference time. This robust performance highlights the advantage of our method in terms of time efficiency, especially when dealing with long sequences.
+
+\subsection{Inference Time and Fidelity Comparison}
+
+As shown in Figure~\ref{fig:disc_time_graph_inference}, we evaluate the relationship between inference time and fidelity (indicated by the discriminative score) for a single sequence. Lower discriminative scores correspond to higher fidelity in the model’s predictions. On the other hand, inference time is a measure of efficiency, with shorter times indicating greater computational efficiency.
+
+Our approach consistently performs well by maintaining a low discriminative score, which translates into higher fidelity in its predictions. This is achieved while also managing to keep the inference time relatively low, even for longer sequences. Notably, our model uses only 18 sampling steps regardless of sequence length, which results in stable and fast inference times across all configurations.
+
+\subsection{Performance Comparison}
+
+As observed from both figures, our model exhibits a favorable trade-off between inference efficiency and fidelity. While KoVAE might be more efficient for shorter sequences, its performance degrades as sequence length increases, making it less suitable for long sequences. Our approach, however, remains consistently efficient and accurate, maintaining both low discriminative scores and linear inference times as sequence lengths scale.
+
+    
+
+
+\section{Experimental Setup}
+
+\subsection{Baseline Methods}
+We compare our method with several generative time series models designed for irregular data. KoVAE \cite{naiman2024generative} is specifically designed to handle irregularly sampled time series effectively. Additionally, we consider GT-GAN \cite{jeon2022gt}, another method tailored for irregular time series generation. Lastly, we evaluate against TimeGAN-$\Delta t$ \cite{yoon2019time}, a re-designed version of the original TimeGAN. Since TimeGAN does not natively support irregular time series, we follow GT-GAN and compare them with their
+re-designed versions. Specifically, extending regular approaches to support irregular TS requires the conversion of a dynamical module to its time-continuous version. we adapted it by converting its GRU layers to GRU-$\Delta t$, enabling the model to exploit the time differences between observations and capture temporal dynamics.
+
+\subsection{Datasets}
+We conduct experiments using a combination of synthetic and real-world datasets, each designed to evaluate the model under various conditions, including regular and irregular time-series settings.
+
+\paragraph{Sines} 
+This synthetic dataset contains 5 features, where each feature is independently generated using sinusoidal functions with different frequencies and phases. Specifically, for each feature \( i \in \{1, ..., 5\} \), the time-series data is defined as \( x_i(t) = \sin(2\pi f_i t + \theta_i) \), where \( f_i \sim U[0, 1] \) and \( \theta_i \sim U[-\pi, \pi] \). The dataset is characterized by its continuity and periodic properties, making it a suitable benchmark for evaluating the model’s ability to handle structured time-series data.
+
+\paragraph{Stocks} 
+The Stocks dataset comprises daily historical Google stock price data from 2004 to 2019. It includes six features: high, low, opening, closing, adjusted closing prices, and trading volume. Unlike Sines, this dataset lacks periodicity and primarily exhibits random walk patterns. It is a real-world dataset commonly used to benchmark financial time-series forecasting and modeling.
+
+\paragraph{MuJoCo} 
+MuJoCo (Multi-Joint dynamics with Contact) is a versatile physics simulation framework used to generate multivariate time-series data \cite{todorov2012mujoco}. The dataset contains 14 features representing state variables and control actions from simulated trajectories. This dataset is particularly suitable for evaluating models on dynamical systems and tasks involving physical interactions 
+
+\paragraph{Energy} 
+The Energy dataset is a real-world multivariate time-series dataset \cite{candanedo2017data} derived from the UCI Appliance Energy Prediction dataset. It includes 28 features, which are correlated and exhibit noisy periodicity and continuous-valued measurements. This dataset provides a challenging benchmark for forecasting and modeling tasks involving environmental and appliance energy consumption data.
+
+\paragraph{ETTh \& ETTm} 
+The ETTh (Electricity Transformer Temperature - Hourly) and ETTm (Electricity Transformer Temperature - Minute) datasets ~\cite{zhou2021informer} capture electricity load data from two power stations with varying temporal resolutions. These datasets are used for short- and long-term time-series forecasting tasks and are part of an established benchmark for evaluating generative and predictive models.
+
+\paragraph{Weather} 
+The Weather dataset includes daily meteorological measurements, such as temperature, precipitation, snowfall, snow depth, and minimum and maximum temperatures, collected from the United States Historical Climatology Network (USHCN)~\footnote{\url{https://knb.ecoinformatics.org/view/doi\%3A10.3334\%2FCDIAC\%2FCLI.NDP019}} . The dataset comprises measurements from 1,218 weather stations and is used for analyzing climatic trends and weather forecasting tasks.
+
+\paragraph{Electricity} 
+The Electricity dataset consists of electricity consumption data across multiple clients, represented as multivariate time-series. It is widely used for forecasting electricity loads and understanding temporal consumption patterns in energy-related applications.
+
+\paragraph{Traffic} 
+The Traffic dataset \cite{metro_interstate_traffic_volume_492} contains hourly traffic volume data for westbound I-94 in the Minneapolis-St. Paul, MN area, collected from 2012 to 2018. It includes eight features, mixing numerical measurements (e.g., temperature, rainfall, snowfall, cloud coverage, traffic volume) with several categorical variables (e.g., holiday indicators, weather descriptions), making it one of the few benchmarks that requires models to handle both continuous and categorical time-series data. The dataset captures multivariate, sequential patterns influenced by weather and holiday effects, making it particularly suitable as a generative benchmark for modeling complex dependencies across heterogeneous features.
+
+
+\subsection{Metrics}
+\label{app:metrics}
+
+\paragraph{Discriminative Score} 
+This metric measures the ability of a model to differentiate between real and generated data. A lower discriminative score indicates that the generated data is more indistinguishable from the real data, reflecting better generative performance. 
+This score is typically computed by training a binary classifier and evaluating its accuracy in distinguishing between the two datasets. A score close to random guessing suggests that the synthetic data is nearly indistinguishable from real data.
+
+\paragraph{Predictive Score} 
+The predictive score evaluates the quality of the generated data in terms of its utility for downstream predictive tasks. It is typically assessed using a supervised learning model trained on generated data and tested on real data, or vice versa. A higher predictive score indicates better alignment between real and generated distributions.
+
+\paragraph{Context-FID Score}
+A lower Frechet Inception Distance (FID) score indicates that synthetic sequences are more similar to the original data distribution. Paul et al. (2022) introduced a variation of FID, called Context-FID (Context-Frechet Inception Distance), which replaces the Inception model in the original FID calculation with TS2Vec, a time series representation learning method \cite{yue2022ts2vec}. Their findings suggest that models with the lowest Context-FID scores tend to achieve the best results in downstream tasks. Additionally, they demonstrated a strong correlation between the Context-FID score and the forecasting performance of generative models. To compute this score, synthetic and real time series samples are first generated, then encoded using a pre-trained TS2Vec model, after which the FID score is calculated based on the learned representations.
+
+\paragraph{Correlational Score}
+Building on the approach from \cite{liao2020conditional}, we estimate the covariance between the $i^{th}$ and $j^{th}$ features of a time series using the following formula:
+
+\[
+\text{cov}_{i,j} = \frac{1}{T} \sum_{t=1}^{T} X_t^{i} X_t^{j} - \left( \frac{1}{T} \sum_{t=1}^{T} X_t^{i} \right) \left( \frac{1}{T} \sum_{t=1}^{T} X_t^{j} \right).
+\]
+
+To quantify the correlation between real and synthetic data, we compute the following metric:
+
+\[
+\frac{1}{10} \sum_{i,j} \left| \frac{\text{cov}_r^{i,j}}{\sqrt{\text{cov}_r^{i,i} \, \text{cov}_r^{j,j}}} - \frac{\text{cov}_f^{i,j}}{\sqrt{\text{cov}_f^{i,i} \, \text{cov}_f^{j,j}}} \right|
+\]
+
+
+\subsection{Hyperparameters.}
+We summarize the key hyperparameters used in our framework in Tables~\ref{tab:hp_seq_24}, \ref{tab:hp_seq_96}, and \ref{tab:hp_seq_768}, corresponding to sequence lengths of 24, 96, and 768, respectively. The hyperparameters remain largely consistent across tasks, with variations in batch size, embedding dimensions, and image resolutions. We use the default EDM~\cite{karras2022elucidating} sampler for all datasets and follow a unified configuration for the U-Net architecture in the diffusion model. For further details, refer to~\cite{karras2022elucidating}. Additionally, all models were trained using the same learning rate schedule and optimization settings to ensure comparability across different sequence lengths.
+
+
+\begin{table*}[!ht]
+    \centering
+        \caption{Hyperparameter Settings for Sequence Length 24 Across Different Datasets}
+    \label{tab:hp_seq_24}
+    \setlength{\tabcolsep}{8pt} % Adjust the padding between columns
+    \resizebox{1\textwidth}{!}{
+    \begin{tabular}{lcccccccccc}
+        \toprule    
+        & \textbf{ETTh1} & \textbf{ETTh2} & \textbf{ETTm1} & \textbf{ETTm2} & \textbf{Weather}  & \textbf{Electricity}  & \textbf{Energy} & \textbf{Sine} & \textbf{Stock} & \textbf{Mujoco} \\
+        \midrule
+        \textbf{General} \\
+        \emph{image size}  & $16 \times 16$ & $16 \times 16$ & $16 \times 16$  & $16 \times 8$ & $8 \times 8$  & $8 \times 8$  & $8 \times 8$ & $8 \times 8$ & $8 \times 8$ & $8 \times 8$ \\
+        \emph{learning rate} & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ \\
+        \emph{batch size} & $128$ & $128$ & $128$ & $128$ & $128$ & $128$ & $128$ & $128$ & $128$ & $128$ \\
+        \emph{teacher forcing rate} & $0$ & $0$ & $0$ & $0$ & $0$ & $0$ & $0$ & $0$ & $0.2$ & $0$ \\
+        \midrule
+        \textbf{DE} \\
+        \emph{embedding(n)} & $8$  & $8$  & $8$  & $8$ & $8$ & $8$ & $8$ & $8$ & $8$ & $8$  \\
+        \emph{delay(m)} & $3$ & $3$  & $3$ & $3$ & $3$ & $3$ & $3$ & $3$ & $3$ & $3$\\
+        \midrule
+        \textbf{TST} \\
+        \emph{hidden\_dim} & $40$ & $40$ & $40$ & $40$ & $40$ & $40$ & $40$ & $40$ & $40$ & $40$ \\
+        \emph{n\_heads} & $5$ & $5$ & $5$ & $5$ & $5$ & $5$ & $5$ & $5$ & $5$ & $5$ \\
+        \emph{num\_layers} & $6$ & $6$ & $6$ & $6$ & $6$ & $6$ & $6$ & $6$ & $6$ & $6$ \\
+        \midrule
+        \textbf{Diffusion} \\
+        \emph{U-net channels} & $128$ & $128$ & $128$ & $128$ & $128$ & $128$ & $128$ & $128$ & $128$ & $64$ \\
+        \emph{in channels} & $[1, 2, 2, 2]$ & $[1, 2, 2, 2]$ & $[1, 2, 2, 2]$& $[1, 2, 2, 2]$ & $[1, 2, 2, 4]$ & $[1, 2, 2, 4]$ & $[1, 2, 2, 4]$ & $[1, 2, 2, 2]$ & $[1, 2, 2, 2]$ & $[1, 2, 2, 2]$ \\
+        \emph{attention revolution} & $[8, 4, 2]$ & $[8, 4, 2]$ & $[8, 4, 2]$& $[8, 4, 2]$ & $[8, 4, 2]$ & $[8, 4, 2]$ & $[8, 4, 2]$ & $[8, 4, 2]$ & $[8, 4, 2]$ & $[8, 4, 2]$ \\
+        \emph{sampling steps} & $18$ & $18$ & $18$ & $18$& $18$ & $18$ & $18$ & $18$ & $18$ & $18$ \\
+        \bottomrule
+    \end{tabular}}
+\end{table*}
+
+\begin{table*}[!ht]
+    \centering
+        \caption{Hyperparameter Settings for Sequence Length 96 Across Different Datasets}
+    \label{tab:hp_seq_96}
+    \setlength{\tabcolsep}{8pt} % Adjust the padding between columns
+    \resizebox{1\textwidth}{!}{
+    \begin{tabular}{lcccccccc}
+        \toprule    
+        & \textbf{ETTh1} & \textbf{ETTh2} & \textbf{ETTm1} & \textbf{ETTm2} & \textbf{Weather}  & \textbf{Energy} & \textbf{Sine} & \textbf{Stock} \\
+        \midrule
+        \textbf{General} \\
+        \emph{image size}  & $16 \times 16$ & $16 \times 16$ & $16 \times 16$  & $16 \times 16$ & $32 \times 32$  & $32\times 32$  & $16 \times 16$ & $16 \times 16$  \\
+        \emph{learning rate} & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ \\
+        \emph{batch size} & $32$ & $64$ & $128$ & $128$ & $32$ & $128$ & $128$ & $16$ \\
+        \emph{teacher forcing rate} & $0$ & $0$ & $0$ & $0$ & $0$ & $0$ & $0$ & $0.2$ \\
+        \midrule
+        \textbf{DE} \\
+        \emph{embedding(n)} & $16$  & $16$  & $16$  & $16$  & $32$  & $32$  & $16$  & $16$  \\
+        \emph{delay(m)} & $6$ & $6$ & $6$ & $6$ & $24$ & $24$ & $6$ & $6$ \\
+        \midrule
+        \textbf{TST} \\
+        \emph{hidden\_dim} & $40$ & $40$ & $40$ & $40$ & $40$ & $40$ & $40$ & $40$ \\
+        \emph{n\_heads} & $5$ & $5$ & $5$ & $5$ & $5$ & $5$ & $5$ & $5$  \\
+        \emph{num\_layers} & $6$ & $6$ & $6$ & $6$ & $6$ & $6$ & $6$ & $6$ \\
+        \midrule
+        \textbf{Diffusion} \\
+        \emph{U-net channels} & $128$ & $128$ & $128$ & $128$ & $128$ & $128$ & $128$ & $128$ \\
+        \emph{in channels} & $[1, 2, 2, 2]$ & $[1, 2, 2, 2]$ & $[1, 2, 2, 2]$& $[1, 2, 2, 2]$ & $[1, 2, 2, 4]$ & $[1, 2, 2, 4]$ & $[1, 2, 2, 2]$ & $[1, 2, 2, 2]$ \\
+        \emph{attention revolution} & $[16, 8, 4, 2]$ & $[16, 8, 4, 2]$ & $[16, 8, 4, 2]$ & $[16, 8, 4, 2]$ & $[32, 16, 8, 4, 2]$ & $[32, 16, 8, 4, 2]$ & $[16, 8, 4, 2]$ & $[16, 8, 4, 2]$  \\
+        \emph{sampling steps} & $18$ & $18$ & $18$ & $18$& $18$ & $18$ & $18$ & $18$ \\
+        \bottomrule
+    \end{tabular}}
+\end{table*}
+
+
+\begin{table*}[!ht]
+    \centering
+        \caption{Hyperparameter Settings for Sequence Length 768 Across Different Datasets}
+    \label{tab:hp_seq_768}
+    \setlength{\tabcolsep}{8pt} % Adjust the padding between columns
+    \resizebox{1\textwidth}{!}{
+    \begin{tabular}{lcccccccc}
+        \toprule    
+        & \textbf{ETTh1} & \textbf{ETTh2} & \textbf{ETTm1} & \textbf{ETTm2} & \textbf{Weather}  & \textbf{Energy} & \textbf{Sine} & \textbf{Stock} \\
+        \midrule
+        \textbf{General} \\
+        \emph{image size}  & $32\times 32$ & $32\times 32$ & $32\times 32$  & $32\times 32$ & $32 \times 32$  & $32\times 32$  & $32\times 32$ & $32\times 32$  \\
+        \emph{learning rate} & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ & $10^{-4}$ \\
+        \emph{batch size} & $32$ & $32$ & $32$ & $32$ & $32$ & $16$ & $32$ & $32$ \\
+        \emph{teacher forcing rate} & $0$ & $0$ & $0$ & $0$ & $0$ & $0$ & $0$ & $0.2$ \\
+        \midrule
+        \textbf{DE} \\
+        \emph{embedding(n)} & $32$  & $32$  & $32$  & $32$  & $32$  & $32$  & $32$  & $32$  \\
+        \emph{delay(m)} & $24$ & $24$ & $24$ & $24$ & $24$ & $24$ & $24$ & $24$ \\
+        \midrule
+        \textbf{TST} \\
+        \emph{hidden\_dim} & $40$ & $40$ & $40$ & $40$ & $40$ & $40$ & $40$ & $40$ \\
+        \emph{n\_heads} & $5$ & $5$ & $5$ & $5$ & $5$ & $5$ & $5$ & $5$  \\
+        \emph{num\_layers} & $6$ & $6$ & $6$ & $6$ & $6$ & $6$ & $6$ & $6$ \\
+        \midrule
+        \textbf{Diffusion} \\
+        \emph{U-net channels} & $128$ & $128$ & $128$ & $128$ & $128$ & $128$ & $128$ & $128$ \\
+        \emph{in channels} & $[1, 2, 2, 2]$ & $[1, 2, 2, 2]$ & $[1, 2, 2, 2]$& $[1, 2, 2, 2]$ & $[1, 2, 2, 4]$ & $[1, 2, 2, 4]$ & $[1, 2, 2, 2]$ & $[1, 2, 2, 2]$ \\
+        \emph{attention revolution} & $[32, 16, 8, 4, 2]$ & $[32, 16, 8, 4, 2]$ & $[32, 16, 8, 4, 2]$ & $[32, 16, 8, 4, 2]$ & $[32, 16, 8, 4, 2]$ & $[32, 16, 8, 4, 2]$ & $[32, 16, 8, 4, 2]$ & $[32, 16, 8, 4, 2]$  \\
+        \emph{sampling steps} & $18$ & $18$ & $18$ & $18$& $18$ & $18$ & $18$ & $18$ \\
+        \bottomrule
+    \end{tabular}}
+\end{table*}
+
+
+\clearpage
+
+\subsection{Natural vs. Unnatural Neighborhoods Experiment Setup}
+\label{sec:natural_vs_unnatural}
+
+In this section, we provide a detailed explanation of the experimental setup introduced in Sec.~\ref{sec:method}.
+
+\paragraph{Experiment Setup.}
+We first generate $1000$ two-dimensional samples $\{p\}$ drawn from a multivariate Gaussian distribution, with means centered at $(1,1)$, $(1,-1)$, $(-1,1)$, and $(-1,-1)$. A figure illustrating all sampled data appears in Figure ~\ref{fig:unnatural_neigh}A. To better simulate our real world environment, we transform each 2D datapoint into a $3 \times 4$ image by setting all pixels to zero except those at the center, which correspond to the $x$ and $y$ coordinates of the original point (e.g., $s[1,1] = p[0]$ and $s[1,2] = p[1]$). Figure~\ref{fig:unnatural_neigh}B depicts an example of this transformation. We refer to this dataset as $\mathcal{S}_{\mathrm{irregular}}$, as it simulates an ``irregular'' dataset containing zeros for missing values.
+
+
+Next, we construct a second dataset, $\mathcal{S}_{\mathrm{regular}}$, in which the zero entries are replaced with linear or nonlinear transformations of $p[0]$, $p[1]$, or both. This is intended to emulate a data-imputation step performed on the fist step of our method, yielding a more ``natural'' neighborhood of values. An data point example can be found in Figure ~\ref{fig:unnatural_neigh}C.
+We then compare three training setups:
+\begin{enumerate}
+    \item Train a diffusion model to predict the score across the \emph{entire} image (i.e., noise prediction in diffusion) on $\mathcal{S}_{\mathrm{irregular}}$.
+    \item Train a diffusion model to predict \emph{only} the two central (coordinate) pixels, using our masking technique, on $\mathcal{S}_{\mathrm{irregular}}$.
+    \item Train the same masked model as in (2), but on $\mathcal{S}_{\mathrm{regular}}$, where we have ``natural neighbors.''
+\end{enumerate}
+All score models share a simple architecture: a \texttt{Conv2D} layer with a $3\times 4$ kernel, followed by a \texttt{ReLU} activation, and a deconvolution layer that restores the original input size.
+
+\paragraph{Evaluation.}
+We employ two metrics:
+\begin{enumerate}
+    \item \textbf{Score Estimation Loss:} For fair comparison, we measure the score prediction error on the two central pixels (i.e., the original coordinates), regardless of the training strategy.
+    \item \textbf{Kernel Analysis:} We inspect the first-layer convolution kernels to determine which pixels the model focuses on. Since there are $64$ output channels, we compute the $L_1$ norm at each spatial position across all channels and then average them.
+\end{enumerate}
+\noindent
+
+
+\section{Additional Experiments and Analysis}
+
+\subsection{{“Unnatural” Neighborhoods: Stock Market Experiment}}
+\label{sec:unnatural_cont}
+As described in the main paper, we extend the synthetic experiment to a real-world dataset of stock prices. Implementation details appear in the main text; here we present the visual results (moved to the appendix due to space constraints). See Fig.~\ref{fig:unnatural_neigh_cont}.
+
+\begin{figure*}[t!]
+    \centering
+    \begin{overpic}[width=\textwidth]{figs/stocks_kernel_exp}
+        \put(47.5, -2){score $= 0.81$}
+        \put(63.0, -2){score $= 0.79$}
+        \put(78.0, -2){score $=\mathbf{0.29}$}
+    \end{overpic}
+    \vspace{-2mm}
+    \caption{Unnatural vs. natural neighborhoods on stock data. A data point (A) is mapped to an image with zeros and its coordinates centered (B). Denoising the entire image produces inferior kernels (D) compared to masking (E). Constructing natural neighborhoods (C) yields consistent kernels and improved scores (F).}
+    \label{fig:unnatural_neigh_cont}
+    \vspace{-3mm}
+\end{figure*}
+
+
+\label{sec:unatural_exp_cont}
+
+
+\subsection{Extending to Categorical and Numerical Features}
+\label{sec:categorical_numerical_features}
+
+{We further extend our evaluation to demonstrate that our method can handle mixed-type time series containing both numerical and categorical features. Categorical variables are mapped to learnable embedding vectors, which are jointly optimized with the generative model, transforming the input into a fully continuous representation that the diffusion process can operate on seamlessly. During generation, embeddings are mapped back to discrete categories using a simple postprocessing step. To validate this capability, we evaluated our method on the Traffic dataset which includes both numerical and categorical attributes, across multiple sequence lengths and missing rates. As reported in Tab.~\ref{tab:ablation_stock_only}, our approach achieves the best discriminative scores compared to prior methods, demonstrating its ability to effectively capture temporal dependencies in mixed-type time series while maintaining superior generative performance.}
+
+\begin{table}[t]
+\renewcommand{\arraystretch}{1}
+\centering
+\caption{Discriminative scores on mixed-type data (Traffic) with 30\%, 50\%, and 70\% drop-rate for sequence lengths of $24$, and $96$.}
+\label{tab:ablation_stock_only}
+\resizebox{.45\textwidth}{!}{
+\begin{tabular}{ll|c|c|c}
+    \toprule
+    & \textbf{Model} & \textbf{30\%} & \textbf{50\%} & \textbf{70\%} \\
+    \midrule
+
+    % Discriminative Score Section
+    \multirow{3}{*}{\rotatebox{0}{Len.\textbf{ = 24}}} 
+    & GT-GAN & 0.481 & 0.473 & 0.485 \\
+    & KoVAE & 0.154 & 0.172 & 0.222 \\
+    & Ours & \cellcolor{blue!10}\textbf{0.061} & \cellcolor{blue!10}\textbf{0.064} & \cellcolor{blue!10}\textbf{0.087} \\
+    \midrule
+
+    % Discriminative Score Section
+    \multirow{3}{*}{\rotatebox{0}{Len.\textbf{ = 96}}}  
+    & GT-GAN & 0.493 & 0.491 & 0.488 \\
+    & KoVAE & 0.212 & 0.245 & 0.307 \\
+    & Ours & \cellcolor{blue!10}\textbf{0.073} & \cellcolor{blue!10}\textbf{0.091} & \cellcolor{blue!10}\textbf{0.102} \\
+
+    \bottomrule
+\end{tabular}
+}
+\end{table}
+
+
+\subsection{Computational Efficiency of Completion Strategies}
+\label{sec:efficiency_completion_strategy}
+In addition to performance, we also compare the computational efficiency of completion strategies. Both NCDE and CSDI rely on costly operations—NCDE requires repeated cubic spline evaluations, while CSDI involves up to 1000 sampling steps per imputation—which makes them slow or infeasible for long sequences or high-dimensional data. In contrast, TST is lightweight and scales efficiently while still achieving competitive or superior results. As shown in Tab.~\ref{tab:training_imputation_times}, TST consistently trains faster and imputes orders of magnitude quicker than NCDE and CSDI; for instance, on the Energy dataset with sequence length $768$, NCDE could not be trained due to memory limits and CSDI required over 84 hours of training and 2394 minutes for imputing 1024 samples, whereas TST completed training in just 6.67 hours and imputed all samples in only 6.26 seconds. These findings highlight TST’s role as a scalable and efficient completion module, combining both high-quality generative performance and practical usability.
+
+\begin{table}[h]
+\centering
+\caption{Training (200 epochs) and imputation (1024 samples) times on RTX 3090. TST is significantly faster than NCDE and CSDI, especially for long sequences; NCDE times are omitted where training was infeasible.}
+\label{tab:training_imputation_times}
+\resizebox{\linewidth}{!}{
+    \begin{tabular}{c|l|cc|cc|cc}
+    \toprule
+    \textbf{Dataset} & \textbf{Seq. Len} & \multicolumn{2}{c|}{\textbf{TST (Ours)}} & \multicolumn{2}{c|}{\textbf{NCDE}} & \multicolumn{2}{c}{\textbf{CSDI}} \\
+    & & Train (\textbf{h}) & Impute (\textbf{s}) & Train (\textbf{h}) & Impute (\textbf{s}) & Train (\textbf{h}) & Impute (\textbf{min}) \\
+    \midrule
+    \multirow{3}{*}{\rotatebox[origin=c]{90}{Energy}} 
+    & 24   & \cellcolor{blue!10}\textbf{0.67}  & \cellcolor{blue!10}\textbf{0.64}   & 2.55  & 2.4   & 1.60   & 35.71   \\
+    & 96   & \cellcolor{blue!10}\textbf{0.80}  & \cellcolor{blue!10}\textbf{0.74}   & 7.68  & 5.6   & 5.43   & 135.29  \\
+    & 768  & \cellcolor{blue!10}\textbf{6.67}  & \cellcolor{blue!10}\textbf{6.26}   & --    & --    & 84.61  & 2394.71 \\
+    \midrule
+    \multirow{3}{*}{\rotatebox[origin=c]{90}{Stock}} 
+    & 24   & \cellcolor{blue!10}\textbf{0.10}  & \cellcolor{blue!10}\textbf{0.19}   & 0.67  & 2.0   & 0.18   & 15.40   \\
+    & 96   & \cellcolor{blue!10}\textbf{0.13}  & \cellcolor{blue!10}\textbf{0.20}   & 2.45  & 7.2   & 0.40   & 46.78   \\
+    & 768  & \cellcolor{blue!10}\textbf{1.10}  & \cellcolor{blue!10}\textbf{1.20}   & 59.32 & 56.0  & 3.55   & 514.08  \\
+    \bottomrule
+    \end{tabular}
+}
+\end{table}
+
+
+
+\subsection{Effect of Integrated Training Scheme}
+\label{sec:training_scheme}
+We investigate the impact of our integrated training scheme, which combines a short pre-training of the TST-based imputation module with joint training of both imputation and diffusion components. To assess its advantages, we compare three settings: (i) joint training with a brief TST pre-training (our approach), (ii) fully joint training from scratch, and (iii) a strict two-stage training where imputation is performed independently before generative training. Results in Tab.~\ref{tab:ablation_avg_768} demonstrate that our integrated approach consistently achieves the best discriminative performance across the Energy and Stock datasets, while fully joint training without pre-training suffers from unstable reconstructions, and the two-stage setup underperforms due to the lack of interaction between imputation and generative learning. These findings highlight that even a short pre-training phase can stabilize learning and enable the model to effectively leverage imputed values during generation.
+
+
+\begin{table}[t]
+\renewcommand{\arraystretch}{1}
+\centering
+\caption{Average discriminative scores across 30\%, 50\%, and 70\% drop-rates on the Energy and Stock datasets for sequence length of $768$.}
+\label{tab:ablation_avg_768}
+\resizebox{.6\textwidth}{!}{
+\begin{tabular}{l|cc}
+    \toprule
+    \textbf{Model} & \textbf{Energy} & \textbf{Stock} \\
+    \midrule
+    Joint training without pre-training & 0.278 & 0.076 \\
+    Training independently & 0.404 & 0.122 \\
+    \textbf{Joint training with pre-training (Ours)} & \cellcolor{blue!10}\textbf{0.222} & \cellcolor{blue!10}\textbf{0.024} \\
+    \bottomrule
+\end{tabular}
+}
+\end{table}
+
+
+\subsection{Quantitative Evaluation - Full Results}
+\label{sec:quant_eval_full}
+
+We present the complete results, including standard deviations, for the experiment conducted in the main text in Sec.~\ref{sec:quant_eval}. In Tab.~\ref{tab:irregular_24}, Tab.~\ref{tab:irregular_96}, and Tab.~\ref{tab:irregular_768}, we provide detailed performance results across all missing rates of $30\%$, $50\%$, and $70\%$ for sequence lengths of 24, 96, and 768, respectively.
+
+
+
+\subsection{Qualitative Evaluation - Cont.} 
+\label{sec:qual_eval_full}
+We provide the remaining missing rate analyses for the experiment described in Sec.~\ref{sec:qual_eval}. Fig.~\ref{fig:50_tsne_density} presents the analysis for a $50\%$ missing rate, while Fig.~\ref{fig:30_tsne_density} shows the analysis for a $30\%$ missing rate.
+
+Additionally, we quantitatively assess the overlap between the original and generated data cloud points in the two-dimensional plane. We compute the Wasserstein distances between the original data and the generated samples. The results, presented in Table~\ref{tab:wass_dist}, indicate that our method consistently achieves the lowest Wasserstein distances across all missing rates and sequence lengths, outperforming KoVAE in every case. Notably, for long time series, our model exhibits significantly better performance, demonstrating its robustness in handling larger and more complex sequences with high missing rates. This underscores our approach's ability to closely match the true data distribution, even under challenging conditions, and its superior effectiveness in managing incomplete time series.
+
+
+\clearpage 
+
+\begin{figure*}[t!]
+    \centering
+    \begin{overpic}[width=1\textwidth]{figs/50_tsne_density.pdf}
+        \put(1, 38){A} \put(34.5, 38){B} \put(67.5, 38){C}
+        \put(1, 18){D} \put(34.5, 18){E} \put(67.5, 18){F}
+    \end{overpic}
+    \vspace{-5mm}
+    \caption{2D t-SNE embeddings (top) and probability density functions (bottom) for the 50\% missing rate on ETTh1 (short), ETTm2 (medium), and Sine (long) datasets.
+    }
+    \label{fig:50_tsne_density}
+\end{figure*}
+
+\begin{figure*}[t!]
+    \centering
+    \begin{overpic}[width=1\textwidth]{figs/30_tsne_density.pdf}
+        \put(1, 38){A} \put(34.5, 38){B} \put(67.5, 38){C}
+        \put(1, 18){D} \put(34.5, 18){E} \put(67.5, 18){F}
+    \end{overpic}
+    \vspace{-5mm}
+    \caption{2D t-SNE embeddings (top) and probability density functions (bottom) for the 30\% missing rate on ETTh1 (short), ETTm2 (medium), and Sine (long) datasets.
+    }
+    \label{fig:30_tsne_density}
+\end{figure*}
+
+\begin{table}[!t]
+    \centering
+    \small % Reduce font size
+    \setlength{\tabcolsep}{2pt} % Adjust padding
+    \caption{Wasserstein distances between original data clusters, generated samples, and clusters from KoVAE for various missing rates $(30\%, 50\%, 70\%)$ and sequence lengths. Lower values indicate better similarity.}
+    \label{tab:wass_dist}
+    
+    \resizebox{0.75\columnwidth}{!}{ % Resize the table
+    \begin{tabular}{cc|ccc|ccc|ccc}
+        \toprule
+        & & \multicolumn{3}{c|}{\textbf{30\% Drop}} & \multicolumn{3}{c|}{\textbf{50\% Drop}} & \multicolumn{3}{c}{\textbf{70\% Drop}} \\
+        \textbf{Metric} & \textbf{Model} 
+        & Energy & Weather & Stocks 
+        & ETTh1 & ETTm2 & Sine 
+        & ETTh1 & ETTm2 & Sine 
+        \\
+        \midrule
+    
+        % Discriminative Score Section
+        \multirow{2}{*}{\textbf{Wass.$\downarrow$}} 
+        & KoVAE  & 3.97 & 7.64 & 5.53 & 4.78 & 5.92 & 6.25 & 3.38 & 4.37 & 12.07 \\
+        & Ours   & $\boldsymbol{1.08}$ & $\boldsymbol{2.85}$ & $\boldsymbol{1.68}$ & $\boldsymbol{1.62}$ & $\boldsymbol{1.84}$ & $\boldsymbol{1.50}$ & $\boldsymbol{1.33}$ & $\boldsymbol{2.39}$ & $\boldsymbol{2.42}$ \\
+    
+        \bottomrule
+    \end{tabular}}
+\end{table}
+
+
+\clearpage
+
+\subsection{Complexity Analysis Cont.}
+\label{sec:complexity_analyis_cont}
+Continuing from Sec.~\ref{sec:complexity}, where we summarized the upcoming experiment, we now present the full results.
+
+In Table~\ref{tab:combined_time_stacked}, we report the  \emph{net} training time (in hours) for our method (\textbf{Ours}) and \textbf{KoVAE} until convergence, measured under identical hardware (RTX3090) and batch size settings. Convergence was defined by the best discriminative score achieved during training; specifically, we sampled the generated data every 10 training epochs and computed the discriminative score against the real data. Note that the times shown exclude any overhead for data generation or evaluation; we only measure the pure training runtime until the point of highest discriminative performance.
+
+These training times are presented for three different sequence lengths (24, 96, 768) and three missing rates $(30\%, 50\%, 70\%)$. To assess the relative speedup of our approach over KoVAE, we averaged the training times of each model (when valid entries were available), computed the percentage speedup as 
+\[
+  \bigl(\tfrac{\text{KoVAE time} - \text{Ours time}}{\text{KoVAE time}} \times 100\%\bigr),
+\]
+and then averaged these speedups across the three missing rates. Our results show that:
+\begin{itemize}
+    \item At a sequence length of 24, \textbf{Ours} converges approximately \(\sim80\%\) faster on average.
+    \item At a sequence length of 96, \textbf{Ours} converges approximately \(\sim87\%\) faster on average.
+    \item At a sequence length of 768, \textbf{Ours} converges approximately \(\sim85\%\) faster on average.
+\end{itemize}
+
+These figures underscore the substantial reduction in training time provided by our method, ranging from about 80\% to 90\% faster than KoVAE in most settings, while still achieving superior performance based on the discriminative score. 
+
+\begin{table}[!h]
+    \centering
+    \small % Reduce font size
+    \setlength{\tabcolsep}{2pt} % Adjust column spacing
+    \caption{
+    \textbf{Training Time} (in hours) for irregular time series across sequence lengths (24, 96, 768) and missing rates (30\%, 50\%, 70\%).
+    }
+    \label{tab:combined_time_stacked}
+    
+    \resizebox{0.8\columnwidth}{!}{%
+    \begin{tabular}{c c c| c c c c c c c c}
+    \toprule
+    \textbf{Seq. Len.} & \textbf{Drop \%} & \textbf{Model} 
+    & \textbf{ETTh1} & \textbf{ETTh2} & \textbf{ETTm1} & \textbf{ETTm2}
+    & \textbf{Weather} & \textbf{Energy} & \textbf{Sine} & \textbf{Stock} \\
+    \midrule
+    
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    % SEQ LEN = 24
+    \multirow{6}{*}{\rotatebox{90}{\textbf{24}}}%
+    & \multirow{2}{*}{30\%} & KoVAE 
+       & 5.00 & 15.08 & 11.65 & 7.49 & 9.23 & 12.20 & 5.78 & 2.71 \\
+    & & Ours
+       & \cellcolor{blue!10}\textbf{0.73}
+       & \cellcolor{blue!10}\textbf{0.61}
+       & \cellcolor{blue!10}\textbf{1.18}
+       & \cellcolor{blue!10}\textbf{0.90}
+       & \cellcolor{blue!10}\textbf{4.77}
+       & \cellcolor{blue!10}\textbf{2.80}
+       & \cellcolor{blue!10}\textbf{0.50}
+       & \cellcolor{blue!10}\textbf{0.37} \\
+    \cmidrule(lr){2-11}
+    
+    & \multirow{2}{*}{50\%} & KoVAE 
+       & 4.98 & \cellcolor{blue!10}\textbf{4.73} & 7.80 & 6.68 & 2.20 & 28.59 & 6.86 & 1.03 \\
+    & & Ours
+       & \cellcolor{blue!10}\textbf{1.85}
+       & 6.75
+       & \cellcolor{blue!10}\textbf{1.18}
+       & \cellcolor{blue!10}\textbf{1.81}
+       & \cellcolor{blue!10}\textbf{0.38}
+       & \cellcolor{blue!10}\textbf{2.51}
+       & \cellcolor{blue!10}\textbf{0.60}
+       & \cellcolor{blue!10}\textbf{0.17} \\
+    \cmidrule(lr){2-11}
+    
+    & \multirow{2}{*}{70\%} & KoVAE 
+       & 9.45 & 12.55 & 10.98 & 5.48 & 6.08 & 8.91 & 4.22 & 2.36 \\
+    & & Ours
+       & \cellcolor{blue!10}\textbf{1.27}
+       & \cellcolor{blue!10}\textbf{0.92}
+       & \cellcolor{blue!10}\textbf{0.52}
+       & \cellcolor{blue!10}\textbf{1.58}
+       & \cellcolor{blue!10}\textbf{5.82}
+       & \cellcolor{blue!10}\textbf{2.02}
+       & \cellcolor{blue!10}\textbf{0.35}
+       & \cellcolor{blue!10}\textbf{0.08} \\
+    \midrule
+    
+    % SEQ LEN = 96
+    \multirow{6}{*}{\rotatebox{90}{\textbf{96}}}%
+    & \multirow{2}{*}{30\%} & KoVAE 
+       & 25.80 & 8.10 & 13.79 & 25.92 & 33.87 & 4.94 & 6.90 & 7.71 \\
+    & & Ours
+       & \cellcolor{blue!10}\textbf{3.38}
+       & \cellcolor{blue!10}\textbf{0.80}
+       & \cellcolor{blue!10}\textbf{1.35}
+       & \cellcolor{blue!10}\textbf{0.95}
+       & \cellcolor{blue!10}\textbf{2.43}
+       & \cellcolor{blue!10}\textbf{2.36}
+       & \cellcolor{blue!10}\textbf{1.20}
+       & \cellcolor{blue!10}\textbf{0.23} \\
+    \cmidrule(lr){2-11}
+    
+    & \multirow{2}{*}{50\%} & KoVAE 
+       & 1.42 & 17.26 & 11.04 & 11.90 & 14.79 & 18.01 & 22.47 & 3.90 \\
+    & & Ours
+       & \cellcolor{blue!10}\textbf{0.59}
+       & \cellcolor{blue!10}\textbf{0.57}
+       & \cellcolor{blue!10}\textbf{1.32}
+       & \cellcolor{blue!10}\textbf{0.95}
+       & \cellcolor{blue!10}\textbf{1.06}
+       & \cellcolor{blue!10}\textbf{1.33}
+       & \cellcolor{blue!10}\textbf{0.47}
+       & \cellcolor{blue!10}\textbf{0.46} \\
+    \cmidrule(lr){2-11}
+    
+    & \multirow{2}{*}{70\%} & KoVAE 
+       & 31.91 & 7.12 & 19.90 & 15.77 & 17.52 & 18.11 & 2.91 & 7.76 \\
+    & & Ours
+       & \cellcolor{blue!10}\textbf{0.61}
+       & \cellcolor{blue!10}\textbf{4.34} 
+       & \cellcolor{blue!10}\textbf{1.05}
+       & \cellcolor{blue!10}\textbf{3.65}
+       & \cellcolor{blue!10}\textbf{2.12}
+       & \cellcolor{blue!10}\textbf{1.49}
+       & \cellcolor{blue!10}\textbf{2.72}
+       & \cellcolor{blue!10}\textbf{1.60} \\
+    \midrule
+    
+    % SEQ LEN = 768
+    \multirow{6}{*}{\rotatebox{90}{\textbf{768}}}%
+    & \multirow{2}{*}{30\%} & KoVAE 
+       & 62.19 & 59.70 & 92.48 & 69.48 & 40.88 & 13.30 & 18.03 & 16.59 \\
+    & & Ours
+       & \cellcolor{blue!10}\textbf{4.72}
+       & \cellcolor{blue!10}\textbf{1.96}
+       & \cellcolor{blue!10}\textbf{7.57}
+       & \cellcolor{blue!10}\textbf{6.45}
+       & \cellcolor{blue!10}\textbf{16.46}
+       & \cellcolor{blue!10}\textbf{3.50}
+       & \cellcolor{blue!10}\textbf{2.93}
+       & \cellcolor{blue!10}\textbf{3.11} \\
+    \cmidrule(lr){2-11}
+    
+    & \multirow{2}{*}{50\%} & KoVAE 
+       & 15.52 & 37.41 & 26.30 & 45.66 & 46.99 & 19.86 & 5.49 & 14.84 \\
+    & & Ours
+       & \cellcolor{blue!10}\textbf{4.74}
+       & \cellcolor{blue!10}\textbf{2.96}
+       & \cellcolor{blue!10}\textbf{7.23}
+       & \cellcolor{blue!10}\textbf{6.48}
+       & \cellcolor{blue!10}\textbf{7.18}
+       & \cellcolor{blue!10}\textbf{2.35}
+       & \cellcolor{blue!10}\textbf{2.89}
+       & \cellcolor{blue!10}\textbf{1.21} \\
+    
+    \bottomrule
+    \end{tabular}
+    } % End resizebox
+\end{table}
+
+
+\begin{table*}[!t]
+\centering
+\setlength{\tabcolsep}{9pt} % Adjust column padding as needed
+\caption{
+Evaluation metrics for irregular time series with 24 sequence length (30\%, 50\%, 70\% drop).
+Arrows ($\uparrow/\downarrow$) indicate whether higher or lower values are better.
+}
+\label{tab:irregular_24}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{cc|cccccccccc}
+    \toprule
+    \textbf{Metric} & \textbf{Model} 
+    & Etth1 & Etth2 & Ettm1 & Ettm2 & Weather & Electricity & Energy & Sine & Stock & Mujoco \\
+    \midrule
+    
+    %%%%%%%%%%%%%%%
+    % 30% DROP
+    %%%%%%%%%%%%%%%
+    \multicolumn{12}{c}{\textbf{30\% Drop}} \\[3pt]  
+    \midrule
+    \multirow{4}{*}{\textbf{Disc.} $\downarrow$} 
+      & TimeGAN 
+         & 0.499 
+         & 0.499 
+         & 0.499 
+         & 0.499 
+         & 0.493 
+         & 0.498 
+         & 0.448 
+         & 0.494 
+         & 0.463 
+         & 0.471 \\
+      & GT-GAN  
+         & 0.473 
+         & 0.371 
+         & 0.420 
+         & 0.369 
+         & 0.472 
+         & 0.409 
+         & 0.333 
+         & 0.363 
+         & 0.251 
+         & 0.249 \\
+      & KoVAE   
+         & 0.208 
+         & 0.075 
+         & 0.045 
+         & 0.077 
+         & 0.229 
+         & 0.497 
+         & 0.280 
+         & 0.035 
+         & 0.162 
+         & 0.123 \\
+      & Ours    
+         & \cellcolor{blue!10}\textbf{0.020} 
+         & \cellcolor{blue!10}\textbf{0.009}
+         & \cellcolor{blue!10}\textbf{0.014}
+         & \cellcolor{blue!10}\textbf{0.006}
+         & \cellcolor{blue!10}\textbf{0.029}
+         & \cellcolor{blue!10}\textbf{0.399}
+         & \cellcolor{blue!10}\textbf{0.048}
+         & \cellcolor{blue!10}\textbf{0.013}
+         & \cellcolor{blue!10}\textbf{0.007}
+         & \cellcolor{blue!10}\textbf{0.009} \\
+    \midrule
+    
+    \multirow{4}{*}{\textbf{Pred.} $\downarrow$} 
+      & TimeGAN 
+         & 0.156 
+         & 0.305 
+         & 0.146 
+         & 0.262 
+         & 0.388 
+         & 0.183 
+         & 0.375 
+         & 0.145 
+         & 0.087 
+         & 0.118 \\
+      & GT-GAN  
+         & 0.174 
+         & 0.092 
+         & 0.119 
+         & 0.097 
+         & 0.147 
+         & 0.148 
+         & 0.066 
+         & 0.099 
+         & 0.021 
+         & 0.048 \\
+      & KoVAE   
+         & 0.058 
+         & 0.050 
+         & \cellcolor{blue!10}\textbf{0.044} 
+         & 0.051 
+         & 0.029 
+         & \cellcolor{blue!10}\textbf{0.048} 
+         & 0.049 
+         & 0.074 
+         & 0.019 
+         & 0.043 \\
+      & Ours    
+         & \cellcolor{blue!10}\textbf{0.052} 
+         & \cellcolor{blue!10}\textbf{0.043} 
+         & \cellcolor{blue!10}\textbf{0.044} 
+         & \cellcolor{blue!10}\textbf{0.045}
+         & \cellcolor{blue!10}\textbf{0.022} 
+         & \cellcolor{blue!10}\textbf{0.048} 
+         & \cellcolor{blue!10}\textbf{0.047} 
+         & \cellcolor{blue!10}\textbf{0.070} 
+         & \cellcolor{blue!10}\textbf{0.012} 
+         & \cellcolor{blue!10}\textbf{0.040} \\
+    \midrule
+
+    \multirow{4}{*}{\textbf{Fid.} $\downarrow$} 
+      & TimeGAN 
+         & 2.934 
+         & 2.565 
+         & 2.437 
+         & 2.924 
+         & 1.612 
+         & 18.04 
+         & 4.440 
+         & 2.919 
+         & 2.475 
+         & 3.628 \\
+      & GT-GAN  
+         & 1.689 
+         & 15.26 
+         & 27.43 
+         & 6.902 
+         & 1.161 
+         & 9.907 
+         & 1.305 
+         & 1.810 
+         & 2.429 
+         & 0.656 \\
+      & KoVAE   
+         & 1.769 
+         & 0.211 
+         & 0.181 
+         & 0.609 
+         & 0.539 
+         & 7.606 
+         & 0.645 
+         & 0.048 
+         & 0.741 
+         & 0.428 \\
+      & Ours    
+         & \cellcolor{blue!10}\textbf{0.071} 
+         & \cellcolor{blue!10}\textbf{0.023}
+         & \cellcolor{blue!10}\textbf{0.023}
+         & \cellcolor{blue!10}\textbf{0.010}
+         & \cellcolor{blue!10}\textbf{0.018}
+         & \cellcolor{blue!10}\textbf{3.451} 
+         & \cellcolor{blue!10}\textbf{0.033}
+         & \cellcolor{blue!10}\textbf{0.032}
+         & \cellcolor{blue!10}\textbf{0.009}
+         & \cellcolor{blue!10}\textbf{0.028} \\
+    \midrule
+
+    \multirow{4}{*}{\textbf{Corr.} $\downarrow$} 
+      & TimeGAN 
+         & 6.317 
+         & 0.862 
+         & 2.290 
+         & 0.357 
+         & 0.744 
+         & 11.13 
+         & 3.663 
+         & 2.131 
+         & 0.273 
+         & 0.844 \\
+      & GT-GAN  
+         & 7.167 
+         & 0.918 
+         & 2.519 
+         & 0.358 
+         & 0.782 
+         & 14.93 
+         & 3.855 
+         & 3.141 
+         & 0.264 
+         & 0.803 \\
+      & KoVAE   
+         & 0.148 
+         & 0.088 
+         & 0.162 
+         & 0.483 
+         & 1.852 
+         & 4.351 
+         & 2.910 
+         & 0.049 
+         & 0.032 
+         & 0.561 \\
+      & Ours    
+         & \cellcolor{blue!10}\textbf{0.070}
+         & \cellcolor{blue!10}\textbf{0.048}
+         & \cellcolor{blue!10}\textbf{0.059}
+         & \cellcolor{blue!10}\textbf{0.045}
+         & \cellcolor{blue!10}\textbf{0.424}
+         & \cellcolor{blue!10}\textbf{2.041}
+         & \cellcolor{blue!10}\textbf{0.815}
+         & \cellcolor{blue!10}\textbf{0.016}
+         & \cellcolor{blue!10}\textbf{0.007}
+         & \cellcolor{blue!10}\textbf{0.331} \\
+    \midrule
+    
+    %%%%%%%%%%%%%%%
+    % 50% DROP
+    %%%%%%%%%%%%%%%
+    \multicolumn{12}{c}{\textbf{50\% Drop}} \\[3pt]
+    \midrule
+    \multirow{4}{*}{\textbf{Disc.} $\downarrow$} 
+      & TimeGAN 
+         & 0.499 
+         & 0.499 
+         & 0.499 
+         & 0.499 
+         & 0.499 
+         & 0.498 
+         & 0.479 
+         & 0.496 
+         & 0.487 
+         & 0.483 \\
+      & GT-GAN  
+         & 0.462 
+         & 0.371 
+         & 0.407 
+         & 0.376 
+         & 0.496 
+         & 0.391 
+         & 0.317 
+         & 0.372 
+         & 0.265 
+         & 0.270 \\
+      & KoVAE   
+         & 0.188 
+         & 0.086 
+         & 0.057 
+         & 0.077 
+         & 0.498 
+         & 0.499 
+         & 0.298 
+         & 0.030 
+         & 0.092 
+         & 0.117 \\
+      & Ours    
+         & \cellcolor{blue!10}\textbf{0.032}
+         & \cellcolor{blue!10}\textbf{0.005}
+         & \cellcolor{blue!10}\textbf{0.013}
+         & \cellcolor{blue!10}\textbf{0.013}
+         & \cellcolor{blue!10}\textbf{0.035}
+         & \cellcolor{blue!10}\textbf{0.360}
+         & \cellcolor{blue!10}\textbf{0.065}
+         & \cellcolor{blue!10}\textbf{0.014}
+         & \cellcolor{blue!10}\textbf{0.007}
+         & \cellcolor{blue!10}\textbf{0.007} \\
+    \midrule
+    
+    \multirow{4}{*}{\textbf{Pred.} $\downarrow$} 
+      & TimeGAN 
+         & 0.210 
+         & 0.343 
+         & 0.157 
+         & 0.292 
+         & 0.404 
+         & 0.230 
+         & 0.501 
+         & 0.123 
+         & 0.058 
+         & 0.402 \\
+      & GT-GAN  
+         & 0.176 
+         & 0.091 
+         & 0.118 
+         & 0.096 
+         & 0.127 
+         & 0.147 
+         & 0.064 
+         & 0.101 
+         & 0.018 
+         & 0.056 \\
+      & KoVAE   
+         & 0.057 
+         & 0.053 
+         & 0.045 
+         & 0.050 
+         & 0.114 
+         & \cellcolor{blue!10}\textbf{0.043}
+         & 0.050 
+         & 0.072 
+         & 0.019 
+         & 0.042 \\
+      & Ours    
+         & \cellcolor{blue!10}\textbf{0.053}
+         & \cellcolor{blue!10}\textbf{0.045}
+         & \cellcolor{blue!10}\textbf{0.043}
+         & \cellcolor{blue!10}\textbf{0.041}
+         & \cellcolor{blue!10}\textbf{0.022}
+         & 0.049
+         & \cellcolor{blue!10}\textbf{0.047}
+         & \cellcolor{blue!10}\textbf{0.068}
+         & \cellcolor{blue!10}\textbf{0.012}
+         & \cellcolor{blue!10}\textbf{0.040} \\
+    \midrule
+    
+    \multirow{4}{*}{\textbf{Fid.} $\downarrow$} 
+      & TimeGAN 
+         & 4.131 
+         & 3.132 
+         & 2.642 
+         & 2.693 
+         & 2.839 
+         & 20.184 
+         & 6.408 
+         & 2.124 
+         & 2.352 
+         & 4.141 \\
+      & GT-GAN  
+         & 1.504 
+         & 5.839 
+         & 4.201 
+         & 9.468 
+         & 5.919 
+         & 9.741 
+         & 1.935 
+         & 1.785 
+         & 2.258 
+         & 0.664 \\
+      & KoVAE   
+         & 1.309 
+         & 0.319 
+         & 0.207 
+         & 0.115 
+         & 9.830 
+         & 3.972
+         & 0.421 
+         & 0.030 
+         & 0.225 
+         & 0.371 \\
+      & Ours    
+         & \cellcolor{blue!10}\textbf{0.134}
+         & \cellcolor{blue!10}\textbf{0.026}
+         & \cellcolor{blue!10}\textbf{0.045}
+         & \cellcolor{blue!10}\textbf{0.018}
+         & \cellcolor{blue!10}\textbf{0.040}
+         & \cellcolor{blue!10}\textbf{3.633}
+         & \cellcolor{blue!10}\textbf{0.061}
+         & \cellcolor{blue!10}\textbf{0.007}
+         & \cellcolor{blue!10}\textbf{0.057}
+         & \cellcolor{blue!10}\textbf{0.026} \\
+    \midrule
+
+    \multirow{4}{*}{\textbf{Corr.} $\downarrow$} 
+      & TimeGAN 
+         & 2.293 
+         & 0.932 
+         & 1.864 
+         & 0.352 
+         & 0.835 
+         & 13.79 
+         & 3.761 
+         & 2.192 
+         & 2.021 
+         & 0.825 \\
+      & GT-GAN  
+         & 7.088 
+         & 0.928 
+         & 2.443 
+         & 0.361 
+         & 0.807 
+         & 14.91 
+         & 3.971 
+         & 3.204 
+         & 0.255 
+         & 0.804 \\
+      & KoVAE   
+         & 0.173 
+         & 0.283 
+         & 0.132 
+         & 0.157 
+         & 5.027 
+         & 4.152 
+         & 1.822 
+         & 0.029 
+         & 0.072 
+         & 0.555 \\
+      & Ours    
+         & \cellcolor{blue!10}\textbf{0.112}
+         & \cellcolor{blue!10}\textbf{0.047}
+         & \cellcolor{blue!10}\textbf{0.058}
+         & \cellcolor{blue!10}\textbf{0.026}
+         & \cellcolor{blue!10}\textbf{0.363}
+         & \cellcolor{blue!10}\textbf{2.044}
+         & \cellcolor{blue!10}\textbf{0.872}
+         & \cellcolor{blue!10}\textbf{0.015}
+         & \cellcolor{blue!10}\textbf{0.011}
+         & \cellcolor{blue!10}\textbf{0.342} \\
+    \midrule
+    
+    %%%%%%%%%%%%%%%
+    % 70% DROP
+    %%%%%%%%%%%%%%%
+    \multicolumn{12}{c}{\textbf{70\% Drop}} \\[3pt] 
+    \midrule
+    \multirow{4}{*}{\textbf{Disc.} $\downarrow$} 
+      & TimeGAN 
+         & 0.500 
+         & 0.499 
+         & 0.500 
+         & 0.500 
+         & 0.499 
+         & 0.500 
+         & 0.496 
+         & 0.500 
+         & 0.488 
+         & 0.494 \\
+      & GT-GAN  
+         & 0.478 
+         & 0.366 
+         & 0.409 
+         & 0.353 
+         & 0.475 
+         & 0.480 
+         & 0.325 
+         & 0.278 
+         & 0.230 
+         & 0.275 \\
+      & KoVAE   
+         & 0.196 
+         & 0.081 
+         & 0.048 
+         & 0.046 
+         & 0.269 
+         & 0.498 
+         & 0.392 
+         & 0.065 
+         & 0.101 
+         & 0.119 \\
+      & Ours    
+         & \cellcolor{blue!10}\textbf{0.058}
+         & \cellcolor{blue!10}\textbf{0.013}
+         & \cellcolor{blue!10}\textbf{0.010}
+         & \cellcolor{blue!10}\textbf{0.015}
+         & \cellcolor{blue!10}\textbf{0.106}
+         & \cellcolor{blue!10}\textbf{0.392}
+         & \cellcolor{blue!10}\textbf{0.128}
+         & \cellcolor{blue!10}\textbf{0.008}
+         & \cellcolor{blue!10}\textbf{0.010}
+         & \cellcolor{blue!10}\textbf{0.009} \\
+    \midrule
+    
+    \multirow{4}{*}{\textbf{Pred.} $\downarrow$} 
+      & TimeGAN 
+         & 0.436 
+         & 0.359 
+         & 0.401 
+         & 0.387 
+         & 0.390 
+         & 0.372 
+         & 0.496 
+         & 0.734 
+         & 0.072 
+         & 0.442 \\
+      & GT-GAN  
+         & 0.207 
+         & 0.094 
+         & 0.137 
+         & 0.089 
+         & 0.162 
+         & 0.149 
+         & 0.076 
+         & 0.088 
+         & 0.020 
+         & 0.051 \\
+      & KoVAE   
+         & 0.056 
+         & 0.060 
+         & 0.046 
+         & 0.048 
+         & 0.028 
+         & 0.051 
+         & 0.052 
+         & 0.076 
+         & \cellcolor{blue!10}\textbf{0.012}
+         & 0.044 \\
+      & Ours    
+         & \cellcolor{blue!10}\textbf{0.054}
+         & \cellcolor{blue!10}\textbf{0.049}
+         & \cellcolor{blue!10}\textbf{0.045}
+         & \cellcolor{blue!10}\textbf{0.047}
+         & \cellcolor{blue!10}\textbf{0.023}
+         & \cellcolor{blue!10}\textbf{0.049}
+         & \cellcolor{blue!10}\textbf{0.047}
+         & \cellcolor{blue!10}\textbf{0.069}
+         & \cellcolor{blue!10}\textbf{0.012} 
+         & \cellcolor{blue!10}\textbf{0.041} \\
+    \midrule
+    
+    \multirow{4}{*}{\textbf{Fid.} $\downarrow$} 
+      & TimeGAN 
+         & 2.356 
+         & 3.900 
+         & 5.179 
+         & 4.036 
+         & 2.683 
+         & 31.95 
+         & 8.674 
+         & 3.296 
+         & 3.178 
+         & 4.432 \\
+      & GT-GAN  
+         & 3.442 
+         & 4.805 
+         & 11.24 
+         & 2.784 
+         & 1.194 
+         & 10.33 
+         & 1.354 
+         & 1.498 
+         & 1.857 
+         & 0.671 \\
+      & KoVAE   
+         & 1.477 
+         & 0.215 
+         & 0.153 
+         & 0.116 
+         & 0.727 
+         & 7.610 
+         & 0.820 
+         & 0.033 
+         & 0.141 
+         & 0.292 \\
+      & Ours    
+         & \cellcolor{blue!10}\textbf{0.167}
+         & \cellcolor{blue!10}\textbf{0.056}
+         & \cellcolor{blue!10}\textbf{0.073}
+         & \cellcolor{blue!10}\textbf{0.043}
+         & \cellcolor{blue!10}\textbf{0.451}
+         & \cellcolor{blue!10}\textbf{3.653}
+         & \cellcolor{blue!10}\textbf{0.301}
+         & \cellcolor{blue!10}\textbf{0.007}
+         & \cellcolor{blue!10}\textbf{0.041}
+         & \cellcolor{blue!10}\textbf{0.044} \\
+    \midrule
+    
+    \multirow{4}{*}{\textbf{Corr.} $\downarrow$} 
+      & TimeGAN 
+         & 6.821 
+         & 0.959 
+         & 2.470 
+         & 0.387 
+         & 0.728
+         & 14.80 
+         & 3.848 
+         & 3.051 
+         & 3.354 
+         & 0.867 \\
+      & GT-GAN  
+         & 7.190 
+         & 0.921 
+         & 2.438 
+         & 0.351 
+         & 0.785 
+         & 14.92 
+         & 3.842 
+         & 3.502 
+         & 0.254 
+         & 0.809 \\
+      & KoVAE   
+         & 0.228 
+         & 0.160 
+         & 0.096 
+         & 0.144 
+         & 1.817 
+         & 4.213 
+         & 3.157 
+         & 0.029 
+         & 0.095 
+         & 0.566 \\
+      & Ours    
+         & \cellcolor{blue!10}\textbf{0.071}
+         & \cellcolor{blue!10}\textbf{0.104}
+         & \cellcolor{blue!10}\textbf{0.079}
+         & \cellcolor{blue!10}\textbf{0.055}
+         & \cellcolor{blue!10}\textbf{0.403} 
+         & \cellcolor{blue!10}\textbf{2.007}
+         & \cellcolor{blue!10}\textbf{1.330}
+         & \cellcolor{blue!10}\textbf{0.015}
+         & \cellcolor{blue!10}\textbf{0.037}
+         & \cellcolor{blue!10}\textbf{0.348} \\
+    \bottomrule
+\end{tabular}
+}
+\end{table*}
+
+
+\begin{table*}[!t]
+\centering
+\setlength{\tabcolsep}{12pt} % Adjust column padding
+\caption{
+Evaluation metrics for irregular time series with 96 sequence length (30\%, 50\%, 70\% drop).
+Arrows ($\uparrow/\downarrow$) indicate whether higher or lower values are better.
+}
+\label{tab:irregular_96}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{cc|cccccccc}
+    \toprule
+    \textbf{Metric} & \textbf{Model} 
+    & Etth1 & Etth2 & Ettm1 & Ettm2 & Weather & Energy & Sine & Stock \\
+    \midrule
+    
+    % 30% DROP
+    \multicolumn{10}{c}{\textbf{30\% Drop}} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Disc.}~$\downarrow$}
+      & KoVAE  & 0.255 & 0.096 & 0.264 & 0.075 & 0.290 & 0.416 & 0.244 & 0.114 \\
+      & Ours   & \cellcolor{blue!10}\textbf{0.037} 
+               & \cellcolor{blue!10}\textbf{0.036} 
+               & \cellcolor{blue!10}\textbf{0.033} 
+               & \cellcolor{blue!10}\textbf{0.028} 
+               & \cellcolor{blue!10}\textbf{0.084} 
+               & \cellcolor{blue!10}\textbf{0.130} 
+               & \cellcolor{blue!10}\textbf{0.004} 
+               & \cellcolor{blue!10}\textbf{0.011} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Pred.}~$\downarrow$} 
+      & KoVAE  & 0.062 & 0.062 & 0.053 & 0.047 & 0.040 & 0.077 & 0.164 & 0.016 \\
+      & Ours   & \cellcolor{blue!10}\textbf{0.052}
+               & \cellcolor{blue!10}\textbf{0.045}
+               & \cellcolor{blue!10}\textbf{0.044}
+               & \cellcolor{blue!10}\textbf{0.042}
+               & \cellcolor{blue!10}\textbf{0.023}
+               & \cellcolor{blue!10}\textbf{0.048}
+               & \cellcolor{blue!10}\textbf{0.155}
+               & \cellcolor{blue!10}\textbf{0.010} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Fid}~$\downarrow$}     
+      & KoVAE  & 5.223 & 0.915 & 4.073 & 0.645 & 2.942 & 4.075 & 2.725 & 0.944 \\
+      & Ours   & \cellcolor{blue!10}\textbf{0.156}
+               & \cellcolor{blue!10}\textbf{0.112}
+               & \cellcolor{blue!10}\textbf{0.147}
+               & \cellcolor{blue!10}\textbf{0.060}
+               & \cellcolor{blue!10}\textbf{0.169}
+               & \cellcolor{blue!10}\textbf{0.193}
+               & \cellcolor{blue!10}\textbf{0.018}
+               & \cellcolor{blue!10}\textbf{0.110} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Corr.}~$\downarrow$}     
+      & KoVAE  & 0.201 & 0.301 & 0.177 & 0.203 & 2.730 & 4.677 & 0.058 & 0.086 \\
+      & Ours   & \cellcolor{blue!10}\textbf{0.102}
+               & \cellcolor{blue!10}\textbf{0.075}
+               & \cellcolor{blue!10}\textbf{0.087}
+               & \cellcolor{blue!10}\textbf{0.042}
+               & \cellcolor{blue!10}\textbf{0.306}
+               & \cellcolor{blue!10}\textbf{0.827}
+               & \cellcolor{blue!10}\textbf{0.017}
+               & \cellcolor{blue!10}\textbf{0.016} \\
+    \midrule
+
+    % 50% DROP
+    \multicolumn{10}{c}{\textbf{50\% Drop}} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Disc.}~$\downarrow$}
+      & KoVAE  & 0.304 & 0.077 & 0.290 & 0.114 & 0.358 & 0.321 & 0.188 & 0.111 \\
+      & Ours   & \cellcolor{blue!10}\textbf{0.070}
+               & \cellcolor{blue!10}\textbf{0.067}
+               & \cellcolor{blue!10}\textbf{0.047}
+               & \cellcolor{blue!10}\textbf{0.017}
+               & \cellcolor{blue!10}\textbf{0.190}
+               & \cellcolor{blue!10}\textbf{0.153}
+               & \cellcolor{blue!10}\textbf{0.003}
+               & \cellcolor{blue!10}\textbf{0.018} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Pred.}~$\downarrow$} 
+      & KoVAE  & 0.063 & 0.055 & 0.053 & 0.054 & 0.051 & 0.063 & 0.161 & 0.016 \\
+      & Ours   & \cellcolor{blue!10}\textbf{0.054}
+               & \cellcolor{blue!10}\textbf{0.053}
+               & \cellcolor{blue!10}\textbf{0.044}
+               & \cellcolor{blue!10}\textbf{0.046}
+               & \cellcolor{blue!10}\textbf{0.025}
+               & \cellcolor{blue!10}\textbf{0.048}
+               & \cellcolor{blue!10}\textbf{0.155}
+               & \cellcolor{blue!10}\textbf{0.011} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Fid}~$\downarrow$}     
+      & KoVAE  & 5.370 & 0.781 & 4.663 & 1.325 & 4.117 & 4.955 & 2.334 & 1.003 \\
+      & Ours   & \cellcolor{blue!10}\textbf{0.516}
+               & \cellcolor{blue!10}\textbf{0.487}
+               & \cellcolor{blue!10}\textbf{0.179}
+               & \cellcolor{blue!10}\textbf{0.130}
+               & \cellcolor{blue!10}\textbf{0.567}
+               & \cellcolor{blue!10}\textbf{0.182}
+               & \cellcolor{blue!10}\textbf{0.018}
+               & \cellcolor{blue!10}\textbf{0.105} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Corr.}~$\downarrow$}     
+      & KoVAE  & 0.246 & 0.288 & 0.247 & 0.638 & 2.490 & 5.142 & 0.044 & 0.085 \\
+      & Ours   & \cellcolor{blue!10}\textbf{0.154}
+               & \cellcolor{blue!10}\textbf{0.219}
+               & \cellcolor{blue!10}\textbf{0.090}
+               & \cellcolor{blue!10}\textbf{0.113}
+               & \cellcolor{blue!10}\textbf{1.176}
+               & \cellcolor{blue!10}\textbf{1.186}
+               & \cellcolor{blue!10}\textbf{0.019}
+               & \cellcolor{blue!10}\textbf{0.011} \\
+    \midrule
+
+    % 70% DROP
+    \multicolumn{10}{c}{\textbf{70\% Drop}} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Disc.}~$\downarrow$}
+      & KoVAE  & 0.294 & 0.137 & 0.274 & 0.079 & 0.374 & 0.332 & 0.286 & 0.073 \\
+      & Ours   & \cellcolor{blue!10}\textbf{0.102}
+               & \cellcolor{blue!10}\textbf{0.057}
+               & \cellcolor{blue!10}\textbf{0.039}
+               & \cellcolor{blue!10}\textbf{0.044}
+               & \cellcolor{blue!10}\textbf{0.182}
+               & \cellcolor{blue!10}\textbf{0.272}
+               & \cellcolor{blue!10}\textbf{0.002}
+               & \cellcolor{blue!10}\textbf{0.021} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Pred.}~$\downarrow$} 
+      & KoVAE  & 0.062 & 0.055 & 0.056 & 0.049 & 0.047 & 0.064 & 0.171 & 0.029 \\
+      & Ours   & \cellcolor{blue!10}\textbf{0.053}
+               & \cellcolor{blue!10}\textbf{0.050}
+               & \cellcolor{blue!10}\textbf{0.046}
+               & \cellcolor{blue!10}\textbf{0.044}
+               & \cellcolor{blue!10}\textbf{0.027}
+               & \cellcolor{blue!10}\textbf{0.051}
+               & \cellcolor{blue!10}\textbf{0.155}
+               & \cellcolor{blue!10}\textbf{0.012} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Fid}~$\downarrow$}     
+      & KoVAE  & 6.932 & 1.638 & 3.473 & 1.019 & 3.983 & 5.051 & 8.083 & 0.657 \\
+      & Ours   & \cellcolor{blue!10}\textbf{0.399}
+               & \cellcolor{blue!10}\textbf{0.926}
+               & \cellcolor{blue!10}\textbf{0.187}
+               & \cellcolor{blue!10}\textbf{0.235}
+               & \cellcolor{blue!10}\textbf{0.447}
+               & \cellcolor{blue!10}\textbf{0.553}
+               & \cellcolor{blue!10}\textbf{0.016}
+               & \cellcolor{blue!10}\textbf{0.112} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Corr.}~$\downarrow$}     
+      & KoVAE  & 0.226 & 0.496 & 0.101 & 0.465 & 2.607 & 4.611 & 0.565 & 0.095 \\
+      & Ours   & \cellcolor{blue!10}\textbf{0.087}
+               & \cellcolor{blue!10}\textbf{0.159}
+               & \cellcolor{blue!10}\textbf{0.100}
+               & \cellcolor{blue!10}\textbf{0.126}
+               & \cellcolor{blue!10}\textbf{1.187}
+               & \cellcolor{blue!10}\textbf{1.470}
+               & \cellcolor{blue!10}\textbf{0.013}
+               & \cellcolor{blue!10}\textbf{0.015} \\
+    \bottomrule
+\end{tabular}
+}
+\end{table*}
+
+
+
+\begin{table*}[!t]
+\centering
+\setlength{\tabcolsep}{12pt} % Adjust column spacing
+\caption{
+Evaluation metrics for irregular time series with 768 sequence length (30\%, 50\%, 70\% drop).
+Arrows ($\uparrow/\downarrow$) indicate whether higher or lower values are better.
+}
+\label{tab:irregular_768}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{cc|cccccccc}
+    \toprule
+    \textbf{Metric} & \textbf{Model} 
+    & Etth1 & Etth2 & Ettm1 & Ettm2 & Weather & Energy & Sine & Stock \\
+    \midrule
+    
+    %%%%%%%%%%%%%%%
+    % 30% DROP
+    %%%%%%%%%%%%%%%
+    \multicolumn{10}{c}{\textbf{30\% Drop}} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Disc.}~$\downarrow$}
+      & KoVAE 
+          & 0.239 
+          & 0.237 
+          & 0.282 
+          & 0.160 
+          & 0.411 
+          & 0.371 
+          & 0.284 
+          & 0.289 \\
+      & Ours  
+          & \cellcolor{blue!10}\textbf{0.045}
+          & \cellcolor{blue!10}\textbf{0.032}
+          & \cellcolor{blue!10}\textbf{0.067}
+          & \cellcolor{blue!10}\textbf{0.047}
+          & \cellcolor{blue!10}\textbf{0.093}
+          & \cellcolor{blue!10}\textbf{0.145}
+          & \cellcolor{blue!10}\textbf{0.005}
+          & \cellcolor{blue!10}\textbf{0.025} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Pred.}~$\downarrow$}
+      & KoVAE 
+          & 0.077 
+          & 0.074 
+          & 0.059 
+          & 0.081 
+          & 0.061 
+          & 0.089 
+          & 0.223 
+          & 0.020 \\
+      & Ours  
+          & \cellcolor{blue!10}\textbf{0.052}
+          & \cellcolor{blue!10}\textbf{0.056}
+          & \cellcolor{blue!10}\textbf{0.047}
+          & \cellcolor{blue!10}\textbf{0.051}
+          & \cellcolor{blue!10}\textbf{0.027}
+          & \cellcolor{blue!10}\textbf{0.025}
+          & \cellcolor{blue!10}\textbf{0.204}
+          & \cellcolor{blue!10}\textbf{0.011} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Fid}~$\downarrow$}
+      & KoVAE 
+          & 11.16 
+          & 9.448 
+          & 11.47 
+          & 8.869 
+          & 12.21 
+          & 25.50 
+          & 38.71 
+          & 7.431 \\
+      & Ours  
+          & \cellcolor{blue!10}\textbf{0.318}
+          & \cellcolor{blue!10}\textbf{0.258}
+          & \cellcolor{blue!10}\textbf{0.373}
+          & \cellcolor{blue!10}\textbf{0.220}
+          & \cellcolor{blue!10}\textbf{0.110}
+          & \cellcolor{blue!10}\textbf{0.755}
+          & \cellcolor{blue!10}\textbf{0.184}
+          & \cellcolor{blue!10}\textbf{0.116} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Corr.}~$\downarrow$}
+      & KoVAE 
+          & 0.378 
+          & 0.528 
+          & 0.480 
+          & 0.859 
+          & 3.136 
+          & 8.138 
+          & 0.411 
+          & 0.041 \\
+      & Ours  
+          & \cellcolor{blue!10}\textbf{0.088}
+          & \cellcolor{blue!10}\textbf{0.119}
+          & \cellcolor{blue!10}\textbf{0.126}
+          & \cellcolor{blue!10}\textbf{0.086}
+          & \cellcolor{blue!10}\textbf{0.269}
+          & \cellcolor{blue!10}\textbf{0.849}
+          & \cellcolor{blue!10}\textbf{0.006}
+          & \cellcolor{blue!10}\textbf{0.004} \\
+    \midrule
+    
+    %%%%%%%%%%%%%%%
+    % 50% DROP
+    %%%%%%%%%%%%%%%
+    \multicolumn{10}{c}{\textbf{50\% Drop}} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Disc.}~$\downarrow$}
+      & KoVAE 
+          & 0.270 
+          & 0.191 
+          & 0.197 
+          & 0.225 
+          & 0.428 
+          & 0.372 
+          & 0.426 
+          & 0.302 \\
+      & Ours  
+          & \cellcolor{blue!10}\textbf{0.061}
+          & \cellcolor{blue!10}\textbf{0.030}
+          & \cellcolor{blue!10}\textbf{0.061}
+          & \cellcolor{blue!10}\textbf{0.048}
+          & \cellcolor{blue!10}\textbf{0.097}
+          & \cellcolor{blue!10}\textbf{0.244}
+          & \cellcolor{blue!10}\textbf{0.009}
+          & \cellcolor{blue!10}\textbf{0.029} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Pred.}~$\downarrow$}
+      & KoVAE 
+          & 0.074 
+          & 0.064 
+          & 0.056 
+          & 0.084 
+          & 0.064 
+          & 0.086 
+          & 0.222 
+          & 0.023 \\
+      & Ours  
+          & \cellcolor{blue!10}\textbf{0.053}
+          & \cellcolor{blue!10}\textbf{0.057}
+          & \cellcolor{blue!10}\textbf{0.047}
+          & \cellcolor{blue!10}\textbf{0.048}
+          & \cellcolor{blue!10}\textbf{0.027}
+          & \cellcolor{blue!10}\textbf{0.051}
+          & \cellcolor{blue!10}\textbf{0.204}
+          & \cellcolor{blue!10}\textbf{0.015} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Fid}~$\downarrow$}
+      & KoVAE 
+          & 14.56 
+          & 7.412 
+          & 11.51 
+          & 9.373 
+          & 18.59 
+          & 19.58 
+          & 38.49 
+          & 8.274 \\
+      & Ours  
+          & \cellcolor{blue!10}\textbf{0.589}
+          & \cellcolor{blue!10}\textbf{0.248}
+          & \cellcolor{blue!10}\textbf{0.305}
+          & \cellcolor{blue!10}\textbf{0.211}
+          & \cellcolor{blue!10}\textbf{0.225}
+          & \cellcolor{blue!10}\textbf{0.916}
+          & \cellcolor{blue!10}\textbf{0.211}
+          & \cellcolor{blue!10}\textbf{0.199} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Corr.}~$\downarrow$}
+      & KoVAE 
+          & 0.290 
+          & 0.574 
+          & 0.428 
+          & 0.842 
+          & 4.836 
+          & 12.63 
+          & 0.336 
+          & 0.085 \\
+      & Ours  
+          & \cellcolor{blue!10}\textbf{0.103}
+          & \cellcolor{blue!10}\textbf{0.128}
+          & \cellcolor{blue!10}\textbf{0.107}
+          & \cellcolor{blue!10}\textbf{0.119}
+          & \cellcolor{blue!10}\textbf{0.455}
+          & \cellcolor{blue!10}\textbf{1.473}
+          & \cellcolor{blue!10}\textbf{0.006}
+          & \cellcolor{blue!10}\textbf{0.042} \\
+    \midrule
+    
+    %%%%%%%%%%%%%%%
+    % 70% DROP
+    %%%%%%%%%%%%%%%
+    \multicolumn{10}{c}{\textbf{70\% Drop}} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Disc.}~$\downarrow$}
+      & KoVAE 
+          & 0.206 
+          & 0.176 
+          & 0.231 
+          & 0.203 
+          & 0.445 
+          & 0.409 
+          & 0.340 
+          & 0.263 \\
+      & Ours  
+          & \cellcolor{blue!10}\textbf{0.160}
+          & \cellcolor{blue!10}\textbf{0.072}
+          & \cellcolor{blue!10}\textbf{0.046}
+          & \cellcolor{blue!10}\textbf{0.061}
+          & \cellcolor{blue!10}\textbf{0.116}
+          & \cellcolor{blue!10}\textbf{0.251}
+          & \cellcolor{blue!10}\textbf{0.005}
+          & \cellcolor{blue!10}\textbf{0.013} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Pred.}~$\downarrow$}
+      & KoVAE 
+          & 0.065 
+          & 0.071 
+          & 0.065 
+          & 0.062 
+          & 0.086 
+          & 0.088 
+          & 0.234 
+          & 0.051 \\
+      & Ours  
+          & \cellcolor{blue!10}\textbf{0.054}
+          & \cellcolor{blue!10}\textbf{0.056}
+          & \cellcolor{blue!10}\textbf{0.047}
+          & \cellcolor{blue!10}\textbf{0.052}
+          & \cellcolor{blue!10}\textbf{0.028}
+          & \cellcolor{blue!10}\textbf{0.050}
+          & \cellcolor{blue!10}\textbf{0.204}
+          & \cellcolor{blue!10}\textbf{0.013} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Fid}~$\downarrow$}
+      & KoVAE 
+          & 16.05 
+          & 8.052 
+          & 17.54 
+          & 6.595 
+          & 21.69 
+          & 28.46 
+          & 38.60 
+          & 6.114 \\
+      & Ours  
+          & \cellcolor{blue!10}\textbf{1.739}
+          & \cellcolor{blue!10}\textbf{0.812}
+          & \cellcolor{blue!10}\textbf{0.496}
+          & \cellcolor{blue!10}\textbf{0.362}
+          & \cellcolor{blue!10}\textbf{0.619}
+          & \cellcolor{blue!10}\textbf{0.718}
+          & \cellcolor{blue!10}\textbf{0.317}
+          & \cellcolor{blue!10}\textbf{0.167} \\
+    \midrule
+    \multirow{2}{*}{\textbf{Corr.}~$\downarrow$}
+      & KoVAE 
+          & 0.331 
+          & 0.718 
+          & 0.305 
+          & 0.515 
+          & 1.786 
+          & 5.49  
+          & 0.391 
+          & \cellcolor{blue!10}\textbf{0.013} \\   % KoVAE wins here
+      & Ours  
+          & \cellcolor{blue!10}\textbf{0.118}
+          & \cellcolor{blue!10}\textbf{0.071}
+          & \cellcolor{blue!10}\textbf{0.133}
+          & \cellcolor{blue!10}\textbf{0.179}
+          & \cellcolor{blue!10}\textbf{0.650}
+          & \cellcolor{blue!10}\textbf{0.798}
+          & \cellcolor{blue!10}\textbf{0.006}
+          & 0.034 \\  % KoVAE is smaller in Stock for Corr (0.013 < 0.034)
+    \bottomrule
+\end{tabular}
+}
+\end{table*}
+
+
+
+
+\end{document}

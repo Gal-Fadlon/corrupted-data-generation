@@ -76,6 +76,9 @@ def discriminative_score_metrics(ori_data, generated_data, args):
 
         def forward(self, x):
             _, last_hidden_state = self.rnn(x)
+            # last_hidden_state: (num_layers*directions, batch, hidden)
+            # Squeeze to (batch, hidden) so Linear output is (batch, 1)
+            last_hidden_state = last_hidden_state.squeeze(0)
             y_hat_logit = self.linear(last_hidden_state)
             y_hat = nn.functional.sigmoid(y_hat_logit)
             return y_hat_logit, y_hat
@@ -123,7 +126,7 @@ def discriminative_score_metrics(ori_data, generated_data, args):
 
         y_pred_final = np.squeeze(np.concatenate((y_pred_real_curr, y_pred_fake_curr), axis=0))
         y_label_final = np.concatenate(
-            (np.ones([y_pred_real_curr.shape[1], ]), np.zeros([y_pred_fake_curr.shape[1], ])),
+            (np.ones([y_pred_real_curr.shape[0], ]), np.zeros([y_pred_fake_curr.shape[0], ])),
             axis=0)
 
         # Compute the accuracy

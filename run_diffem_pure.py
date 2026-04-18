@@ -39,6 +39,7 @@ from utils.utils_data import (
 from utils.utils_args import parse_args_irregular
 from models.our import TS2img_Karras, TS2img_Karras_Cond
 from models.sampler import DiffusionProcess, ConditionalDiffusionProcess
+from utils.train_unconditional import train_unconditional_regular
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -771,6 +772,17 @@ def main(args):
             if logger is not None:
                 logger.log('em/iteration', em_iter, em_iter)
         
+
+        # ================================================================
+        # Phase 3 — Train unconditional model (same as run_regular.py)
+        # ================================================================
+        final_metrics = train_unconditional_regular(
+            args, reconstructions, test_loader, args.device, logger,
+        )
+        if final_metrics:
+            print("Phase 3 (unconditional) final metrics:")
+            for k, v in final_metrics.items():
+                print(f"  {k}: {v:.4f}")
         # === Phase 3 is now integrated into the EM loop ===
         # Unconditional model is trained progressively during EM iterations
         # No need for separate final training

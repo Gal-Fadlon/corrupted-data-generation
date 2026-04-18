@@ -1,0 +1,35 @@
+#!/bin/bash
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name stft_c
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### STFT lift — Regime (c): vanilla MMPS, all misspecifications (no corrections)
+### Mirrors delay-embedding Row 1a baseline: fixed sigma_y=0.1, no adaptive/proj/obs-CG/warm
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --missing_rate 0.5 \
+    --allow_tf32 \
+    --embedder stft \
+    --wandb true \
+    --tags "stft_validation" "energy" "50_missing_rate" "vanilla_mmps" "regime_c" \
+    --no_adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --mmps_cg_iters 5 \
+    --no_consistency_projection \
+    --no_obs_space_cg \
+    --no_warm_start_cg \
+    --lambda_obs 0.0 \
+    --lambda_rep 0.0 \
+    --no_phase3

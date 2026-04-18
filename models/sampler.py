@@ -2,6 +2,7 @@ import numpy as np
 import torch
 
 from utils.ambient_net_input import concat_ones_mask
+from utils.mmps_denoise import slice_denoised_to_data_channels
 
 
 class DiffusionProcess():
@@ -34,6 +35,7 @@ class DiffusionProcess():
         self._ambient_concat = bool(
             getattr(args, 'ambient_concat_further_mask', False)
         )
+        self._data_c = shape[0]
 
     def sample(self, latents, class_labels=None):
 
@@ -59,14 +61,18 @@ class DiffusionProcess():
 
             # Euler step.
             x_in = concat_ones_mask(x_hat, self._ambient_concat)
-            denoised = self.net(x_in, t_hat, class_labels).to(torch.float64)
+            denoised = slice_denoised_to_data_channels(
+                self.net(x_in, t_hat, class_labels).to(torch.float64), self._data_c
+            )
             d_cur = (x_hat - denoised) / t_hat
             x_next = x_hat + (t_next - t_hat) * d_cur
 
             # Apply 2nd order correction.
             if i < self.num_steps - 1:
                 x_in2 = concat_ones_mask(x_next, self._ambient_concat)
-                denoised = self.net(x_in2, t_next, class_labels).to(torch.float64)
+                denoised = slice_denoised_to_data_channels(
+                    self.net(x_in2, t_next, class_labels).to(torch.float64), self._data_c
+                )
                 d_prime = (x_next - denoised) / t_next
                 x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
 
@@ -111,7 +117,8 @@ class ConditionalDiffusionProcess():
         self.S_noise = 1
         self.num_steps = args.diffusion_steps
 
-    def sample_conditional(self, cond_img, cond_mask, class_labels=None, xT=None):
+    def sample_conditional(self, cond_img, cond_mask, class_labels=None, xT=None,
+                           x_obs_img=None, obs_mask_img=None):
         """
         Sample from the conditional distribution q_theta(x|y).
         
@@ -120,6 +127,10 @@ class ConditionalDiffusionProcess():
             cond_mask: conditioning mask (batch, 1, H, W)
             class_labels: optional class labels
             xT: initial noise (if None, sample from N(0, I))
+            x_obs_img: observed data in image space for repaint guidance (batch, C, H, W).
+                       When provided together with obs_mask_img, observed positions in x_next
+                       are replaced with forward-noised observations at each reverse step.
+            obs_mask_img: binary mask for repaint guidance (batch, 1, H, W), 1=observed.
         
         Returns:
             x_0: sampled clean image (batch, target_C, H, W)
@@ -172,10 +183,18 @@ class ConditionalDiffusionProcess():
                 d_prime = (x_next - denoised) / t_next
                 x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
 
+            # Repaint guidance: replace observed positions with forward-noised observations
+            if x_obs_img is not None and obs_mask_img is not None and t_next > 0:
+                noise = torch.randn_like(x_obs_img.to(torch.float64))
+                x_obs_noisy = x_obs_img.to(torch.float64) + t_next * noise
+                mask64 = obs_mask_img.to(torch.float64)
+                x_next = mask64 * x_obs_noisy + (1 - mask64) * x_next
+
         return x_next.to(torch.float32)
 
     @torch.no_grad()
-    def sampling(self, cond_img, cond_mask, num_samples=None):
+    def sampling(self, cond_img, cond_mask, num_samples=None,
+                 x_obs_img=None, obs_mask_img=None):
         """
         Sample from the conditional distribution.
         
@@ -183,19 +202,25 @@ class ConditionalDiffusionProcess():
             cond_img: conditioning image (batch, cond_C, H, W)
             cond_mask: conditioning mask
             num_samples: number of samples per conditioning (default 1)
+            x_obs_img: observed data for repaint guidance (batch, C, H, W), optional.
+            obs_mask_img: binary mask for repaint guidance (batch, 1, H, W), optional.
         
         Returns:
             samples: (batch * num_samples, target_C, H, W)
         """
         if num_samples is None or num_samples == 1:
-            return self.sample_conditional(cond_img, cond_mask)
+            return self.sample_conditional(cond_img, cond_mask,
+                                           x_obs_img=x_obs_img,
+                                           obs_mask_img=obs_mask_img)
         
         # Generate multiple samples per conditioning
         batch_size = cond_img.shape[0]
         all_samples = []
         
         for _ in range(num_samples):
-            samples = self.sample_conditional(cond_img, cond_mask)
+            samples = self.sample_conditional(cond_img, cond_mask,
+                                              x_obs_img=x_obs_img,
+                                              obs_mask_img=obs_mask_img)
             all_samples.append(samples)
         
         return torch.cat(all_samples, dim=0)

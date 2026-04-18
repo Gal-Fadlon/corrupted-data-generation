@@ -1,0 +1,34 @@
+#!/bin/bash
+
+################################################################################################
+### sbatch configuration parameters must start with #SBATCH and must precede any other commands.
+### To ignore, just add another # - like so: ##SBATCH
+################################################################################################
+
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --time 0-12:00:00			### limit the time of job running. Format: D-H:MM:SS
+#SBATCH --job-name agv3_m1_50			### name of the job
+#SBATCH --output agentic_spectral_cg_v3_ettm1_50-%J.out
+
+#SBATCH --gpus=1
+
+### Print some data to output file ###
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+### Start your src_code below ####
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+module load anaconda
+source activate idan2_env
+python run_diffem_agentic_spectral_cg.py \
+    --config ./configs/seq_len_24/ettm1.yaml \
+    --missing_rate 0.5 \
+    --estep_n_samples 3 \
+    --mmps_cg_iters 1 \
+    --agentic_em \
+    --allow_tf32 \
+    --wandb true \
+    --tags "agentic_spectral_cg_v3" "ETTm1" "50_missing_rate" "iter_stl_init" "augmented_mstep" "uniform_loss" "fixed_spectral_diag" "early_stopping" "no_phase3"

@@ -1,0 +1,35 @@
+#!/bin/bash
+#SBATCH --partition rtx6000
+#SBATCH --qos azencot
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name paper_sigma_c050
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### Tier 3: sigma_y sensitivity — c=0.50 on Energy 50%
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --missing_rate 0.5 \
+    --wandb true \
+    --tags "paper" "energy" "50_missing_rate" "sigma_sensitivity" "c_050" "tier3" \
+    --adaptive_sigma_y \
+    --sigma_y_ratio 0.5 \
+    --sigma_y_floor 0.01 \
+    --mmps_cg_iters 5 \
+    --consistency_projection \
+    --obs_space_cg \
+    --no_warm_start_cg \
+    --lambda_obs 0 \
+    --lambda_rep 0 \
+    --em_iters 5 \
+    --phase3 \
+    --eval_all_metrics

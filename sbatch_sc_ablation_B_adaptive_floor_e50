@@ -1,0 +1,37 @@
+#!/bin/bash
+
+################################################################################################
+### sbatch configuration parameters must start with #SBATCH and must precede any other commands.
+### To ignore, just add another # - like so: ##SBATCH
+################################################################################################
+
+#SBATCH --partition rtx6000			### specify partition name where to run a job.
+#SBATCH --qos azencot
+#SBATCH --time 7-00:00:00			### limit the time of job running.
+#SBATCH --job-name sc_B50		### name of the job
+#SBATCH --output train-%J.out			### output log for running job - %J for job number
+
+#SBATCH --gpus=1				### number of GPUs
+
+### Print some data to output file ###
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### Ablation B: adaptive sigma_y with floor + final projection + L_obs
+module load anaconda
+source activate idan2_env
+python run_diffem_mmps_self_correcting.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --missing_rate 0.5 \
+    --wandb true \
+    --tags "self_correcting_em" "energy" "50_missing_rate" "ablation_B_adaptive_floor" \
+    --adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --sigma_y_floor 0.01 \
+    --mmps_cg_iters 3 \
+    --consistency_projection \
+    --lambda_obs 0.5

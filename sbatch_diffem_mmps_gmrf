@@ -1,0 +1,33 @@
+#!/bin/bash
+################################################################################################
+### DiffEM MMPS + GMRF Smoothness Prior
+### Sweep gmrf_lambda across array tasks.  Fallback: main + normal.
+################################################################################################
+
+#SBATCH --partition rtx6000
+#SBATCH --qos azencot
+#SBATCH --time 2-00:00:00
+#SBATCH --job-name mmps_gmrf
+#SBATCH --output diffem_mmps_gmrf-%A_%a.out
+#SBATCH --error diffem_mmps_gmrf-%A_%a.out.err
+#SBATCH --gpus=1
+
+#SBATCH --array=0-3
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+LAMBDAS=(0.01 0.05 0.1 0.5)
+LAM=${LAMBDAS[$SLURM_ARRAY_TASK_ID]}
+
+echo "$(date)  array_task=${SLURM_ARRAY_TASK_ID}  gmrf_lambda=${LAM}"
+
+module load anaconda
+source activate /home/arbivid/.conda/envs/idan2_env
+
+python run_diffem_mmps_gmrf.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --missing_rate 0.5 \
+    --gmrf_lambda "${LAM}" \
+    --wandb true \
+    --tags "diffem_mmps_gmrf" "energy" "50_missing_rate" "gmrf_lambda_${LAM}" "iter_stl_init"

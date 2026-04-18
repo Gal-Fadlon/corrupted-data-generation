@@ -1,0 +1,34 @@
+#!/bin/bash
+################################################################################################
+### Irregular Gaussian baseline (noise grid). Fallback: main + normal + 3090/4090.
+### Primary GPU try: rtx6000 → sbatch_irregular_gaussian_baseline_energy_grid_rtx6000
+################################################################################################
+
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name irreg_gnoise_base
+#SBATCH --output irreg_gnoise_base-%J.out
+#SBATCH --error irreg_gnoise_base-%J.out.err
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --mem=32G
+#SBATCH --cpus-per-task=6
+# Pick one GPU line (3090 or 4090); comment the other:
+#SBATCH --gpus=rtx_3090:1
+##SBATCH --gpus=rtx_4090:1
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+echo "$(date)"
+echo -e "SLURM_JOBID:\t\t${SLURM_JOBID}"
+echo -e "SLURM_JOB_NODELIST:\t${SLURM_JOB_NODELIST}"
+echo -e "PWD:\t\t\t$(pwd)"
+
+module load anaconda
+source activate /home/arbivid/.conda/envs/idan2_env
+
+python run_irregular_gaussian_baseline.py \
+  --config ./configs/seq_len_24/energy.yaml \
+  --run_noise_grid \
+  --wandb true \
+  --tags "irregular_gaussian_baseline" "energy" "noise_grid" "seq_len_24" "vs_diffem" "main_normal"

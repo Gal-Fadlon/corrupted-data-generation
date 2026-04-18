@@ -1,0 +1,35 @@
+#!/bin/bash
+################################################################################################
+### DiffEM MMPS Gaussian noise (dedicated A=I script), σ grid aligned with baseline.
+### Fallback: main + normal + 3090/4090.
+### Primary: sbatch_diffem_mmps_gaussian_noise_energy_array_rtx6000
+################################################################################################
+
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name diffem_gn_mmps
+#SBATCH --output diffem_gn_mmps-%A_%a.out
+#SBATCH --error diffem_gn_mmps-%A_%a.out.err
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --mem=32G
+#SBATCH --cpus-per-task=6
+#SBATCH --gpus=rtx_3090:1
+##SBATCH --gpus=rtx_4090:1
+#SBATCH --array=0-4
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+SIGMAS=(0.03 0.06 0.09 0.12 0.18)
+SIG=${SIGMAS[$SLURM_ARRAY_TASK_ID]}
+
+echo "$(date)  array_task=${SLURM_ARRAY_TASK_ID}  sigma=${SIG}"
+
+module load anaconda
+source activate /home/arbivid/.conda/envs/idan2_env
+
+python run_diffem_mmps_gaussian_noise.py \
+  --config ./configs/seq_len_24/energy.yaml \
+  --corruption_noise_level "${SIG}" \
+  --wandb true \
+  --tags "diffem_mmps_gaussian_noise" "energy" "sigma${SIG}" "seq_len_24" "vs_irregular_baseline" "main_normal"

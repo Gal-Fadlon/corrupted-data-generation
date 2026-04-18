@@ -35,13 +35,14 @@ from tqdm import tqdm
 from metrics import evaluate_model_irregular
 from metrics.memorization import compute_memorization_metric
 from utils.loggers import WandbLogger, PrintLogger, CompositeLogger
-from utils.utils import restore_state, create_model_name_and_dir, print_model_params, log_config_and_tags
+from utils.utils import create_model_name_and_dir, print_model_params, log_config_and_tags
 from utils.utils_data import (
     gen_dataloader, save_reconstructions, load_reconstructions
 )
 from utils.utils_args import parse_args_irregular
 from models.our import TS2img_Karras
 from models.sampler import DiffusionProcess
+from utils.train_unconditional import train_unconditional_regular
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -744,7 +745,7 @@ def main(args):
         print("DiffEM-MMPS Training Complete!")
         print("="*60)
         if best_metrics:
-            print("Best metrics across EM iterations:")
+            print("Best EM-loop metrics:")
             for k, v in best_metrics.items():
                 print(f"  {k}: {v:.4f}")
 

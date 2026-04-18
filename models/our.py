@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from utils.ambient_net_input import concat_mask_channel, concat_ones_mask
 from models.networks import EDMPrecond, EDMPrecondConditional
 from models.ema import LitEma
-from models.img_transformations import DelayEmbedder, SpectrogramEmbedder, GAFEmbedder, MultiViewEmbedder
+from models.img_transformations import DelayEmbedder, SpectrogramEmbedder, STFTEmbedder, GAFEmbedder, MultiViewEmbedder
 from utils.utils_stl import stl_decompose_batch
 
 
@@ -224,9 +224,10 @@ class TS2img_Karras(nn.Module):
         self.ambient_concat_further_mask = bool(
             getattr(args, 'ambient_concat_further_mask', False)
         )
-        _in_ch = args.input_channels + (
-            1 if self.ambient_concat_further_mask else 0
-        )
+
+        self.embedder_kind = getattr(args, 'embedder', 'delay')
+        _data_ch = args.input_channels * (2 if self.embedder_kind == 'stft' else 1)
+        _in_ch = _data_ch + (1 if self.ambient_concat_further_mask else 0)
         self.net = EDMPrecond(
             args.img_resolution, _in_ch, channel_mult=args.ch_mult,
             model_channels=args.unet_channels, attn_resolutions=args.attn_resolution,
@@ -236,9 +237,17 @@ class TS2img_Karras(nn.Module):
         self.embedding = args.embedding
         self.seq_len = args.seq_len
         self.batch_size = args.batch_size
-        self.num_features = args.input_channels
+        self.num_features = _data_ch
 
-        self.ts_img = DelayEmbedder(self.device, args.seq_len, args.delay, args.embedding, self.batch_size, self.num_features)
+        if self.embedder_kind == 'stft':
+            self.ts_img = STFTEmbedder(
+                self.device, args.seq_len,
+                n_fft=getattr(args, 'stft_n_fft', 8),
+                hop_length=getattr(args, 'stft_hop_length', 4),
+                img_resolution=args.img_resolution,
+            )
+        else:
+            self.ts_img = DelayEmbedder(self.device, args.seq_len, args.delay, args.embedding, self.batch_size, args.input_channels)
 
         if args.ema:
             self.use_ema = True
@@ -259,6 +268,14 @@ class TS2img_Karras(nn.Module):
     def img_to_ts(self, img):
         return self.ts_img.img_to_ts(img)
 
+    def cache_embedder_stats(self, train_data_tensor):
+        """Cache any one-time statistics the embedder needs (e.g. STFT min/max).
+
+        Safe no-op for embedders that don't require pre-training statistics.
+        """
+        if hasattr(self.ts_img, 'cache_min_max_params'):
+            self.ts_img.cache_min_max_params(train_data_tensor)
+
     def loss_fn_irregular(self, x, mask=None):
         '''
         x          : real data if idx==None else perturbation data
@@ -276,6 +293,23 @@ class TS2img_Karras(nn.Module):
         to_log['karras loss'] = loss.detach().item()
         return loss, to_log
 
+    def loss_fn_weighted(self, x, confidence_weights):
+        """Denoising loss weighted by per-pixel confidence.
+
+        Identical to loss_fn_irregular with mask=None (data is complete)
+        but each pixel's squared error is scaled by confidence_weights.
+        When confidence_weights is all-ones this reduces to the plain loss.
+        """
+        to_log = {}
+        mask = torch.ones_like(x)
+        output, weight = self.forward_irregular(x, mask)
+        x_u = self.unpad(x, x.shape)
+        out_u = self.unpad(output, x.shape)
+        conf = self.unpad(confidence_weights, x.shape)
+        loss = (weight * conf * (out_u - x_u).square()).mean()
+        to_log['karras loss'] = loss.detach().item()
+        return loss, to_log
+
     def forward_irregular(self, x, mask, labels=None, augment_pipe=None):
         rnd_normal = torch.randn([x.shape[0], 1, 1, 1], device=x.device)
         sigma = (rnd_normal * self.P_std + self.P_mean).exp()
@@ -287,6 +321,8 @@ class TS2img_Karras(nn.Module):
             y + masked_noise, self.ambient_concat_further_mask
         )
         D_yn = self.net(x_in, sigma, labels, augment_labels=augment_labels)
+        if self.ambient_concat_further_mask:
+            D_yn = D_yn[:, : self.num_features, :, :]
         return D_yn, weight
 
     def unpad(self, x, original_shape):
@@ -335,6 +371,119 @@ class TS2img_Karras(nn.Module):
         """Reset EMA shadow weights to current model weights (fresh start per EM lap)."""
         if self.use_ema:
             self.model_ema.reset(self.net)
+
+    def _expand_mask_like(self, mask_img, x_img):
+        """Broadcast a binary mask to match the image tensor layout."""
+        if mask_img.dim() == 3:
+            mask_img = mask_img.unsqueeze(1)
+        mask_img = mask_img.to(dtype=x_img.dtype, device=x_img.device)
+        if mask_img.shape[1] == 1 and x_img.shape[1] > 1:
+            mask_img = mask_img.expand_as(x_img)
+        return mask_img
+
+    def _sample_keep_mask(self, base_mask, keep_prob):
+        """Sample a Bernoulli keep-mask on top of an existing binary mask."""
+        keep_prob = float(max(0.0, min(1.0, keep_prob)))
+        if keep_prob >= 1.0:
+            return base_mask
+        if keep_prob <= 0.0:
+            return torch.zeros_like(base_mask)
+        return base_mask * (torch.rand_like(base_mask) < keep_prob).float()
+
+    def _masked_prediction(self, x_img, input_mask):
+        """Run the EDM denoiser with an explicit visible-context mask."""
+        rnd_normal = torch.randn([x_img.shape[0], 1, 1, 1], device=x_img.device)
+        sigma = (rnd_normal * self.P_std + self.P_mean).exp()
+        edm_weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
+
+        noise = torch.randn_like(x_img) * sigma
+        x_noisy = x_img + noise
+        x_data = x_noisy * input_mask
+        x_input = concat_mask_channel(
+            x_data, input_mask[:, :1, :, :], self.ambient_concat_further_mask
+        )
+
+        D_x = self.net(x_input, sigma, None)
+        if self.ambient_concat_further_mask:
+            D_x = D_x[:, : self.num_features, :, :]
+
+        return D_x, edm_weight, sigma
+
+    def _weighted_mask_loss(self, x_img, pred_img, edm_weight, loss_mask):
+        """Compute a normalized EDM loss over a possibly soft spatial mask."""
+        x_unpad = self.unpad(x_img * loss_mask, x_img.shape)
+        pred_unpad = self.unpad(pred_img * loss_mask, x_img.shape)
+        norm = loss_mask.sum() + 1e-8
+        return (edm_weight * (pred_unpad - x_unpad).square()).sum() / norm
+
+    def loss_fn_trust_guided(self, x_img, obs_mask, imputed_weight=0.0,
+                             imputed_keep_prob=1.0, observed_keep_prob=1.0):
+        """Trust-aware loss with separate schedules for visible and supervised imputations.
+
+        The model always receives the EM reconstruction `x_img`, but can be trained to:
+          1. reveal only a subset of imputed pixels in the input, and/or
+          2. assign a small supervision weight to imputed targets.
+
+        This lets M-step training gradually trust reconstructed neighborhoods
+        without collapsing to self-training on all imputed pixels.
+        """
+        to_log = {}
+        obs_mask = self._expand_mask_like(obs_mask, x_img)
+        imputed_mask = (1.0 - obs_mask).clamp_(0.0, 1.0)
+
+        obs_keep = self._sample_keep_mask(obs_mask, observed_keep_prob)
+        imputed_keep = self._sample_keep_mask(imputed_mask, imputed_keep_prob)
+        input_mask = torch.clamp(obs_keep + imputed_keep, max=1.0)
+        loss_mask = obs_mask + float(imputed_weight) * imputed_mask
+
+        pred_img, edm_weight, sigma = self._masked_prediction(x_img, input_mask)
+        loss = self._weighted_mask_loss(x_img, pred_img, edm_weight, loss_mask)
+
+        to_log['trust_guided_loss'] = loss.detach().item()
+        with torch.no_grad():
+            to_log['sigma_mean'] = sigma.mean().item()
+            to_log['obs_visible_ratio'] = obs_keep.mean().item()
+            to_log['imputed_visible_ratio'] = imputed_keep.mean().item()
+            to_log['imputed_loss_weight'] = float(imputed_weight)
+            to_log['loss_mask_ratio'] = loss_mask.mean().item()
+
+        return loss, to_log
+
+    def loss_fn_trust_mixture(self, x_img, obs_mask, imputed_weight=0.0,
+                              imputed_keep_prob=1.0, observed_keep_prob=1.0,
+                              full_context_prob=0.5):
+        """Per-sample mixture of conservative and full-context trust regimes."""
+        to_log = {}
+        obs_mask = self._expand_mask_like(obs_mask, x_img)
+        imputed_mask = (1.0 - obs_mask).clamp_(0.0, 1.0)
+
+        conservative_obs = self._sample_keep_mask(obs_mask, observed_keep_prob)
+        full_imputed = self._sample_keep_mask(imputed_mask, imputed_keep_prob)
+
+        full_selector = (
+            torch.rand([x_img.shape[0], 1, 1, 1], device=x_img.device) <
+            float(max(0.0, min(1.0, full_context_prob)))
+        ).float()
+        full_selector = full_selector.expand_as(obs_mask)
+
+        conservative_input = conservative_obs
+        full_input = torch.clamp(obs_mask + full_imputed, max=1.0)
+        input_mask = full_selector * full_input + (1.0 - full_selector) * conservative_input
+        loss_mask = obs_mask + float(imputed_weight) * imputed_mask
+
+        pred_img, edm_weight, sigma = self._masked_prediction(x_img, input_mask)
+        loss = self._weighted_mask_loss(x_img, pred_img, edm_weight, loss_mask)
+
+        to_log['trust_mixture_loss'] = loss.detach().item()
+        with torch.no_grad():
+            to_log['sigma_mean'] = sigma.mean().item()
+            to_log['full_context_ratio'] = full_selector[:, :1, :, :].mean().item()
+            to_log['obs_visible_ratio'] = conservative_obs.mean().item()
+            to_log['imputed_visible_ratio'] = full_imputed.mean().item()
+            to_log['imputed_loss_weight'] = float(imputed_weight)
+            to_log['loss_mask_ratio'] = loss_mask.mean().item()
+
+        return loss, to_log
 
     # =========================================================================
     # Ambient-aware loss for training with masked/corrupted data
@@ -402,6 +551,8 @@ class TS2img_Karras(nn.Module):
 
         # --- Network prediction h_theta(x_input, sigma) -> E[X_0 | x_input] ---
         D_x = self.net(x_input, sigma, None)
+        if self.ambient_concat_further_mask:
+            D_x = D_x[:, : self.num_features, :, :]
 
         # --- Loss on *original* mask positions (A), normalized by observed count ---
         x_unpad = self.unpad(x_img * mask_img, x_img.shape)
@@ -490,6 +641,8 @@ class TS2img_Karras(nn.Module):
 
         # --- network prediction ---
         D_x = self.net(x_input, sigma, None)
+        if self.ambient_concat_further_mask:
+            D_x = D_x[:, : self.num_features, :, :]
 
         # =====================  full-space loss  =====================
         x_up = self.unpad(x_img, x_img.shape)

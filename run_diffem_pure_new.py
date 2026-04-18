@@ -24,17 +24,16 @@ import math
 from tqdm import tqdm
 from contextlib import contextmanager
 
-from metrics import evaluate_model_irregular
-from metrics.memorization import compute_memorization_metric
 from utils.loggers import WandbLogger, PrintLogger, CompositeLogger
+from utils.train_unconditional import train_unconditional_regular
 from utils.utils import restore_state, create_model_name_and_dir, print_model_params, log_config_and_tags
 from utils.utils_data import (
     gen_dataloader, apply_corruption,
     save_reconstructions, load_reconstructions
 )
 from utils.utils_args import parse_args_irregular
-from models.our import TS2img_Karras, TS2img_Karras_Cond
-from models.sampler import DiffusionProcess, ConditionalDiffusionProcess
+from models.our import TS2img_Karras_Cond
+from models.sampler import ConditionalDiffusionProcess
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -46,7 +45,7 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 SCRIPT_DEFAULTS = dict(
     m_step_epochs=100,       # paper uses 256 per lap; old default was 50
     e_step_sample_steps=64,  # paper uses 256 DDPM steps; 64 EDM Heun ≈ 256 DDPM
-    em_iters=20,
+    em_iters=10,
     em_eval_interval=1,
     uncond_epochs_per_iter=200,  # match m_step_epochs for fair uncond training
 )
@@ -480,112 +479,6 @@ def m_step(args, cond_model, optimizer, scheduler, reconstructions, em_iter,
     return cond_model
 
 
-# ============================= evaluation ==================================
-
-def _upload_plot(logger, plot_path, key, step):
-    """Try to upload a matplotlib figure, then delete the temp file."""
-    if logger is None:
-        return
-    uploaded = False
-    try:
-        logger.log_file(key, plot_path, step)
-        uploaded = True
-    except Exception as e:
-        print(f"  [warn] Plot upload failed: {e}")
-    if uploaded:
-        try:
-            os.remove(plot_path)
-        except OSError:
-            pass
-
-
-def evaluate_unconditional(args, uncond_model, uncond_optimizer, uncond_scheduler,
-                           reconstructions, test_loader, em_iter, device, logger=None):
-    """Train unconditional model on current reconstructions & evaluate."""
-    uncond_epochs = getattr(args, 'uncond_epochs_per_iter', None) or args.m_step_epochs
-
-    print(f"\n--- Unconditional eval (EM iter {em_iter}), {uncond_epochs} epochs ---")
-
-    recon_ds = Data.TensorDataset(torch.tensor(reconstructions, dtype=torch.float32))
-    recon_loader = Data.DataLoader(recon_ds, batch_size=args.batch_size,
-                                   shuffle=True, num_workers=args.num_workers)
-
-    uncond_model.train()
-    uncond_loss_history = []
-
-    patience = getattr(args, 'early_stop_patience', 20)
-    min_delta = getattr(args, 'early_stop_min_delta', 1e-4)
-    best_loss = float('inf')
-    no_improve_count = 0
-
-    for epoch in range(uncond_epochs):
-        epoch_loss, nb = 0.0, 0
-        for (x_clean,) in recon_loader:
-            x_clean = x_clean.to(device)
-            x_img = uncond_model.ts_to_img(x_clean)
-            loss, _ = uncond_model.loss_fn_irregular(x_img)
-            uncond_optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(uncond_model.parameters(), 1.0)
-            uncond_optimizer.step()
-            if uncond_scheduler is not None:
-                uncond_scheduler.step()
-            uncond_model.on_train_batch_end()
-            epoch_loss += loss.item()
-            nb += 1
-            torch.cuda.empty_cache()
-        avg = epoch_loss / max(nb, 1)
-        uncond_loss_history.append(avg)
-        if (epoch + 1) % 20 == 0 or epoch == 0:
-            print(f"    uncond epoch {epoch+1}/{uncond_epochs}  loss={avg:.5f}")
-        _log(logger, 'train/uncond_loss', avg, em_iter * uncond_epochs + epoch)
-
-        if avg < best_loss - min_delta:
-            best_loss = avg
-            no_improve_count = 0
-        else:
-            no_improve_count += 1
-        if no_improve_count >= patience and epoch >= 30:
-            print(f"    Early stopping at epoch {epoch+1}/{uncond_epochs} "
-                  f"(no improvement for {patience} epochs, best={best_loss:.5f})")
-            break
-
-    # --- generate & eval ---
-    uncond_model.eval()
-    gen_sig, real_sig = [], []
-    with torch.no_grad():
-        with uncond_model.ema_scope():
-            process = DiffusionProcess(
-                args, uncond_model.net,
-                (args.input_channels, args.img_resolution, args.img_resolution)
-            )
-            for data in tqdm(test_loader, desc="Uncond eval"):
-                x_img = process.sampling(sampling_number=data[0].shape[0])
-                x_ts = uncond_model.img_to_ts(x_img)
-                gen_sig.append(x_ts.cpu().numpy())
-                real_sig.append(data[0].cpu().numpy())
-
-    gen_sig = np.vstack(gen_sig)
-    real_sig = np.vstack(real_sig)
-
-    scores = evaluate_model_irregular(real_sig, gen_sig, args)
-    print(f"  Unconditional metrics (EM iter {em_iter}):")
-    for k, v in scores.items():
-        print(f"    {k}: {v:.4f}")
-        _log(logger, f'test/{k}', v, em_iter)
-
-    # memorization
-    mem_path = f"mem_hist_em{em_iter}.png"
-    mem_stats = compute_memorization_metric(real_sig, gen_sig, device=device, plot_path=mem_path)
-    for k, v in mem_stats.items():
-        val_str = f"{v:.4f}" if isinstance(v, float) else str(v)
-        print(f"    mem/{k}: {val_str}")
-        _log(logger, f'test/memorization/{k}', v, em_iter)
-    _upload_plot(logger, mem_path, 'test/memorization/histogram', em_iter)
-
-    return scores
-
-
 # ============================= main loop ===================================
 
 def main(args):
@@ -608,7 +501,7 @@ def main(args):
         # Unconditionally set our paper-aligned defaults.
         # CLI args can still override via --m_step_epochs etc.
         # We detect "user explicitly set" by checking against old argparse defaults.
-        OLD_ARGPARSE_DEFAULTS = dict(m_step_epochs=50, em_iters=20,
+        OLD_ARGPARSE_DEFAULTS = dict(m_step_epochs=50, em_iters=10,
                                      em_eval_interval=1, uncond_epochs_per_iter=None)
         for k, v in SCRIPT_DEFAULTS.items():
             old_default = OLD_ARGPARSE_DEFAULTS.get(k, '__MISSING__')
@@ -682,27 +575,11 @@ def main(args):
         )
 
         # ============================
-        # Unconditional model (for evaluation)
-        # ============================
-        uncond_model = TS2img_Karras(args=args, device=device).to(device)
-        uncond_optimizer = torch.optim.AdamW(
-            uncond_model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
-        )
-        uncond_total_steps = em_iters * m_epochs * steps_per_epoch
-        uncond_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            uncond_optimizer, T_max=max(uncond_total_steps, 1),
-            eta_min=args.learning_rate * 0.01
-        )
-
-        # ============================
         # Phase 2 — EM Loop
         # ============================
         print(f"\n{'='*60}")
         print(f"Phase 2: EM Loop — {em_iters} iterations")
         print(f"{'='*60}")
-
-        best_metrics = None
-        best_em_iter = -1
 
         for em_iter in range(em_iters):
             print(f"\n{'='*60}")
@@ -721,22 +598,14 @@ def main(args):
                 reconstructions, em_iter, device, logger=logger
             )
 
-            # ---------- Evaluation ----------
-            eval_interval = getattr(args, 'em_eval_interval', 1)
-            if (em_iter + 1) % eval_interval == 0 or em_iter == em_iters - 1:
-                metrics = evaluate_unconditional(
-                    args, uncond_model, uncond_optimizer, uncond_scheduler,
-                    reconstructions, test_loader, em_iter, device, logger
-                )
-                disc = metrics.get('disc_mean', float('inf'))
-                _log(logger, 'test/disc_mean_track', disc, em_iter)
-
-                if best_metrics is None or disc < best_metrics.get('disc_mean', float('inf')):
-                    best_metrics = metrics
-                    best_em_iter = em_iter
-                    print(f"  *** New best disc_mean={disc:.4f} at EM iter {em_iter} ***")
-
             _log(logger, 'em/iteration', em_iter, em_iter)
+
+        # ============================
+        # Phase 3 — Train unconditional model (same as run_regular.py)
+        # ============================
+        final_metrics = train_unconditional_regular(
+            args, reconstructions, test_loader, device, logger,
+        )
 
         # ============================
         # Summary
@@ -744,9 +613,9 @@ def main(args):
         print(f"\n{'='*60}")
         print("DiffEM-pure-new Training Complete!")
         print(f"{'='*60}")
-        if best_metrics:
-            print(f"Best metrics at EM iter {best_em_iter}:")
-            for k, v in best_metrics.items():
+        if final_metrics:
+            print("Final metrics:")
+            for k, v in final_metrics.items():
                 print(f"  {k}: {v:.4f}")
         logging.info("DiffEM-pure-new training complete")
 

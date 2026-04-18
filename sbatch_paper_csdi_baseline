@@ -1,0 +1,27 @@
+#!/bin/bash
+#SBATCH --partition rtx6000
+#SBATCH --qos azencot
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name paper_csdi_baseline
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### Table 3 Row 0c: CSDI-impute + EDM (stochastic commit-and-forget) on Energy 50%
+module load anaconda
+source activate idan2_env
+pip install -q linear_attention_transformer 2>/dev/null || true
+python run_csdi_impute_baseline.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --missing_rate 0.5 \
+    --wandb true \
+    --tags "paper" "energy" "50_missing_rate" "csdi_baseline" "table3_row0c" "stochastic_commit_and_forget" \
+    --csdi_epochs 200 \
+    --csdi_nsample 1 \
+    --eval_all_metrics

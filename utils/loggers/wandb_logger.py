@@ -61,6 +61,7 @@ class WandbLogger(BaseLogger):
         # concrete prefixes works on every wandb version.
         wandb.define_metric("em/*", step_metric="custom_step")
         wandb.define_metric("test/*", step_metric="custom_step")
+        wandb.define_metric("eval/*", step_metric="custom_step")
         wandb.define_metric("test/memorization/*", step_metric="custom_step")
         wandb.define_metric("warmstart/*", step_metric="custom_step")
         wandb.define_metric("*", step_metric="custom_step")
@@ -96,6 +97,9 @@ class WandbLogger(BaseLogger):
             self._flush_pending()
 
         self._pending[name] = _to_native(data)
+        # Duplicate discriminative eval metrics under eval/* for dedicated charts (same step as test/*).
+        if name in ("test/disc_mean", "test/disc_std"):
+            self._pending["eval/" + name.split("/", 1)[1]] = _to_native(data)
         self._pending_step = step
         self._pending_step_key = step_key
 
@@ -103,6 +107,9 @@ class WandbLogger(BaseLogger):
         """Log all metrics in a single wandb.log() call so they share one row."""
         self._flush_pending()
         log_dict = {k: _to_native(v) for k, v in metrics.items()}
+        for k in ("test/disc_mean", "test/disc_std"):
+            if k in log_dict:
+                log_dict["eval/" + k.split("/", 1)[1]] = log_dict[k]
         if step is not None:
             has_train = any(k in self._train_step_metrics for k in metrics)
             if has_train:

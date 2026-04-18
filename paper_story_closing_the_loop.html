@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Paper Story: Closing the Loop</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+</style>
+  <style type="text/css">html { box-sizing: border-box; }
+*, *::before, *::after { box-sizing: inherit; }
+html, body {
+margin: 0;
+padding: 0;
+color: #111111;
+background-color: #ffffff;
+-webkit-print-color-adjust: exact;
+print-color-adjust: exact;
+}
+body {
+font-family: Georgia, "Times New Roman", Times, serif;
+font-size: 12pt;
+line-height: 1.5;
+max-width: 42em;
+margin: 0 auto;
+padding: 1.25rem 1rem 2rem;
+}
+main { display: block; }
+h1 {
+font-size: 1.5rem;
+margin: 0 0 0.75rem;
+padding-bottom: 0.4rem;
+border-bottom: 2px solid #ccc;
+}
+h2 {
+font-size: 1.15rem;
+margin: 1.5rem 0 0.5rem;
+page-break-after: avoid;
+}
+h3 {
+font-size: 1.05rem;
+margin: 1.1rem 0 0.45rem;
+page-break-after: avoid;
+}
+p { margin: 0.55em 0; }
+ul, ol { margin: 0.55em 0; padding-left: 1.35rem; }
+li { margin: 0.25em 0; }
+strong { font-weight: 700; }
+hr {
+border: 0;
+border-top: 1px solid #ccc;
+margin: 1.1rem 0;
+}
+a { color: #0b57d0; }
+code {
+font-family: ui-monospace, Menlo, Consolas, monospace;
+font-size: 0.9em;
+background: #f4f4f4;
+padding: 0.1em 0.35em;
+border-radius: 3px;
+}
+pre {
+font-family: ui-monospace, Menlo, Consolas, monospace;
+font-size: 0.82rem;
+line-height: 1.4;
+background: #f8f8f8;
+border: 1px solid #ddd;
+border-radius: 4px;
+padding: 0.75rem 1rem;
+overflow-x: auto;
+white-space: pre-wrap;
+word-break: break-word;
+page-break-inside: avoid;
+}
+pre code { background: none; padding: 0; }
+table {
+width: 100%;
+border-collapse: collapse;
+font-size: 0.95em;
+margin: 0.9rem 0;
+}
+th, td {
+border: 1px solid #bbb;
+padding: 0.35rem 0.45rem;
+vertical-align: top;
+}
+th { background: #eaeaea; font-weight: 600; }
+blockquote {
+margin: 0.9rem 0;
+padding-left: 0.9rem;
+border-left: 3px solid #ccc;
+color: #333;
+}
+@media print {
+body { max-width: none; padding: 0; font-size: 11pt; }
+a { color: #111; text-decoration: none; }
+}
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Paper Story: Closing the Loop</h1>
+</header>
+<h1 id="paper-story-v5-closing-the-loop">Paper Story v5: Closing the
+Loop</h1>
+<p><strong>Working Title:</strong> “Closing the Loop: Learning to
+Generate, Impute, and Denoise Time Series from a Single Corrupted-Data
+Model”</p>
+<hr />
+<h2 id="the-core-selling-point-the-open-loop-bottleneck">The Core
+Selling Point: The Open-Loop Bottleneck</h2>
+<p>Every existing method for learning generative models from irregular
+time series follows the same open-loop pipeline:</p>
+<pre><code>irregular ts → imputer → regular ts → generator</code></pre>
+<p>The imputer doesn’t know what the generator needs. The generator
+doesn’t know where the imputer failed. Better generation knowledge never
+flows back to improve reconstruction. <strong>The system is blind to its
+own failure modes.</strong></p>
+<p>We show that this open-loop structure is the root cause of three
+fundamental limitations in the field:</p>
+<ol type="1">
+<li><strong>No feedback</strong> — the imputer’s ceiling bounds the
+generator’s quality permanently. The two stages never communicate.</li>
+<li><strong>No noise handling</strong> — observed values are treated as
+ground truth. When sensors are noisy, the model learns p(noisy), not
+p(clean).</li>
+<li><strong>Single-task inference</strong> — once trained, these models
+can only generate. Imputation, conditional generation, and denoising
+each require separate models with different architectures.</li>
+</ol>
+<p><strong>Our approach: close the loop.</strong> We replace the
+open-loop pipeline with a closed-loop EM framework where a single
+diffusion model serves as both generator and imputer — they co-evolve.
+The model’s own prior drives reconstruction (E-step), and
+reconstructions train the model (M-step). This directly addresses all
+three limitations.</p>
+<p>Within this framework, we also push evaluation far beyond prior work:
+block missingness, mixed per-sample rates, simultaneous noise + missing
+— realistic settings that no prior generation method has been tested
+on.</p>
+<hr />
+<h2 id="the-problem">1. The Problem</h2>
+<p>Learning generative models from irregular time series (missing
+values, sensor failures, variable sampling). Formally: given corrupted
+observations y = Ax + noise, learn p(x) and sample clean, complete
+sequences.</p>
+<p>The literature has fractured this into separate problems —
+generation, imputation, denoising — each with its own methods,
+architectures, and evaluation protocols. A practitioner who needs
+multiple capabilities must train and maintain multiple models.</p>
+<p><strong>We argue this fragmentation is unnecessary.</strong> All
+these tasks reduce to the same question: learning p(x) from corrupted
+data. A method that solves this underlying problem solves all the tasks
+simultaneously.</p>
+<hr />
+<h2 id="why-existing-methods-are-structurally-limited">2. Why Existing
+Methods Are Structurally Limited</h2>
+<h3 id="the-generation-imputation-divide">The generation-imputation
+divide</h3>
+<p>The literature treats generation and imputation as <strong>separate
+problems</strong> with separate methods, architectures, and evaluation
+protocols — despite both stemming from the same underlying question:
+learning p(x) from corrupted data.</p>
+<p><strong>Generation methods</strong> (ImagenTime, KoVAE, GT-GAN,
+TimeGAN) produce unconditional samples but cannot incorporate new
+observations at test time. A clinician with a patient’s partial ECG
+cannot get a plausible completion — only an entirely new synthetic
+ECG.</p>
+<p><strong>Imputation methods</strong> (CSDI, BRITS, GP-VAE) fill in
+missing values conditioned on observations but cannot generate
+unconditionally. They require observed values as input and offer no
+generation capability.</p>
+<p><strong>Diffusion methods</strong> (TSDiff, SSSD) have been applied
+to both but train separate models or use task-specific objectives for
+each. They do not learn a single prior from corrupted data that serves
+both tasks through the same inference mechanism.</p>
+<p>A practitioner who needs both must train and maintain <strong>two
+separate models</strong> with different architectures and losses.</p>
+<h3 id="the-open-loop-bottleneck-key-structural-analysis">The open-loop
+bottleneck (key structural analysis)</h3>
+<p>Every existing generation method follows the same open-loop
+pipeline:</p>
+<pre><code>Irregular data → [Imputer] → Completed data → [Generator] → Samples</code></pre>
+<ul>
+<li>GT-GAN / KoVAE: NCDE imputes → GAN/VAE generates</li>
+<li>ImagenTime: TST imputes → Diffusion generates + masking</li>
+</ul>
+<p>We identify three structural problems with this paradigm:</p>
+<p><strong>1. No feedback — the pipeline is one-directional.</strong>
+The imputer only learns from observed values. The generator only learns
+from imputed data. The generator’s growing understanding of the data
+distribution <strong>never flows back</strong> to improve imputation.
+The system’s ceiling is bounded by the imputer’s ability to guess from
+partial observations alone. ImagenTime’s masking mitigates blind trust
+in completions but does not solve the fundamental issue: the diffusion
+model cannot signal “this imputation is wrong given what I’ve learned
+about the distribution.”</p>
+<p><strong>2. No noise handling.</strong> Prior generation methods
+assume observed values are clean. TST trains with MSE(output,
+observed_value) — treating noisy values as ground truth. NCDE
+interpolates through noisy observations, propagating noise into the
+generator. When observations carry sensor noise (ubiquitous in real
+deployments), these methods learn p(x_noisy), not p(x_clean). This is
+not a parameter tweak — it is a fundamentally different treatment of
+observations that prior generation methods cannot replicate without
+redesign.</p>
+<p><strong>3. Generation-only at test time.</strong> Once trained, these
+models can only sample unconditionally. If new partial observations
+arrive at test time (a common use case: conditioning on what you already
+know about a patient), they require entirely separate imputation
+machinery.</p>
+<p><strong>These are not independent weaknesses — they share a root
+cause:</strong> the separation of imputation and generation into two
+disconnected stages. The imputer and generator never communicate. Any
+solution must address this separation directly.</p>
+<p><strong>This is why simply improving the imputer or the generator
+cannot close the gap.</strong> The architecture itself prevents the two
+components from helping each other. What’s needed is a fundamentally
+different structure — one where generation and imputation are not
+separate stages but the same operation.</p>
+<hr />
+<h2 id="our-approach-close-the-loop-unify-the-tasks">3. Our Approach:
+Close the Loop, Unify the Tasks</h2>
+<h3 id="the-key-idea">The key idea</h3>
+<p>If a single diffusion model learns p(x) directly from corrupted
+observations — without a separate imputer — all three limitations
+dissolve:</p>
+<ul>
+<li><strong>Feedback</strong> emerges naturally: the model’s own
+evolving prior drives reconstruction, and better reconstructions improve
+the prior. The generator IS the imputer.</li>
+<li><strong>Noise handling</strong> becomes a parameter: corruption
+enters via the observation likelihood p(y|x) = N(Ax, Σ_y), not via
+architecture. The model learns p(x_clean) by construction.</li>
+<li><strong>Multi-task inference</strong> is supported within a single
+framework: generation = unconditional sampling; imputation = posterior
+sampling conditioned on observations; conditional generation = posterior
+sampling with partial data. In practice, achieving strong performance
+per task may require task-specific or multi-task training.</li>
+</ul>
+<h3 id="algorithmic-realization">Algorithmic realization</h3>
+<p>We cast the problem as empirical Bayes solved via EM with diffusion
+model posteriors (building on Rozet et al., 2024):</p>
+<pre><code>┌──────────────────────────────────┐
+│   Diffusion Model q_θ(x)        │
+│   (generator AND imputer)        │
+└──────┬───────────────┬───────────┘
+       │               │
+  M-step: train    E-step: posterior
+  on reconstructed sampling from
+  data             corrupted observations
+       │               │
+       └── co-evolve ──┘</code></pre>
+<ul>
+<li><strong>E-step:</strong> For each corrupted observation (y, A),
+reconstruct x ~ q_{θ_k}(x | y, A) using the current prior via posterior
+sampling.</li>
+<li><strong>M-step:</strong> Train q_{θ_{k+1}}(x) on reconstructions via
+standard denoising score matching, warm-starting from θ_k.</li>
+</ul>
+<p>Each iteration: better prior → better reconstructions → better
+training data → better prior. This is the closed-loop feedback that
+open-loop methods lack.</p>
+<p><strong>What this produces:</strong> A proper unconditional diffusion
+model — no modified training objective, no architectural changes. The
+M-step is standard score matching. This means the model is compatible
+with any downstream sampling scheme, any future improvement to diffusion
+inference.</p>
+<h3 id="what-we-credit-vs.-what-we-claim">What we credit vs. what we
+claim</h3>
+<p><strong>We credit:</strong> The EM framework for diffusion priors
+(Rozet et al., 2024) and the posterior sampling machinery (MMPS, CG
+solvers). These appear in Background (~1 page), clearly cited.</p>
+<p><strong>We claim:</strong> (1) The problem analysis — identifying the
+structural limitations of open-loop methods and the
+generation-imputation divide; (2) The multi-task framework for time
+series — showing that closing the loop supports generation, imputation,
+conditional generation, and denoising within a single architecture; (3)
+Frequency-aware posterior sampling — the spectral theory and CG operator
+that make the framework work properly for time series; (4)
+Domain-specific adaptations — STL initialization, curriculum,
+noise-dependent cutoff; (5) The broadest evaluation scope in the
+field.</p>
+<hr />
+<h2 id="making-it-work-for-time-series-frequency-aware-posterior-sampling">4.
+Making it Work for Time Series: Frequency-Aware Posterior Sampling</h2>
+<p>Closing the loop via EM already delivers the multi-task capability.
+But the quality of each EM iteration depends on the quality of posterior
+sampling in the E-step. Here, time series differ fundamentally from
+images.</p>
+<h3 id="the-problem-with-isotropic-posterior-sampling">The problem with
+isotropic posterior sampling</h3>
+<p>The posterior sampling uses a CG operator:</p>
+<pre><code>CG_op(v) = Σ_y · v + σ_t² · A · VJP(Aᵀ v)</code></pre>
+<p>Prior work treats Σ_y as isotropic: Σ_y = σ²I. Although our method
+operates in image space via the delay embedding (following the
+ImagenTime framework), the underlying signal structure remains temporal
+— pixel correlations in the delay-embedded image reflect temporal
+adjacency, not natural-image-like local isotropy. An isotropic Σ_y
+ignores the frequency hierarchy inherent to the temporal domain.
+<strong>For time series, it is wrong</strong> — and we prove why.</p>
+<h3 id="proposition-1-frequency-dependent-observational-informativeness">Proposition
+1 (Frequency-dependent observational informativeness)</h3>
+<p>For a stationary time series observed through random masking,
+observations constrain different frequencies to vastly different
+degrees.</p>
+<p><strong>Setup.</strong> x ∈ ℝ^T stationary Gaussian with PSD S_xx(f);
+random mask A with aᵢ ~ Bernoulli(p); observation noise n ~ N(0, σ_n²
+I).</p>
+<p><strong>Result.</strong> The relative informativeness at frequency f
+is:</p>
+<pre><code>R(f) = σ_n² / (p · S_xx(f) + σ_n²)</code></pre>
+<p>For time series with decaying spectra (universal in natural signals,
+verified on all our datasets):</p>
+<ul>
+<li>Low f: R(f) → 0 — observations highly informative</li>
+<li>High f: R(f) → 1 — observations uninformative</li>
+</ul>
+<p><strong>Intuition.</strong> Low frequencies vary slowly — neighboring
+observed timesteps carry redundant information. High frequencies change
+every timestep — each missing sample destroys unrecoverable
+information.</p>
+<p><strong>Scope:</strong> Exact for fully observed (p=1),
+asymptotically tight for random masking (large T). The qualitative
+conclusion holds for any signal with decaying spectral energy,
+stationary or not — verified empirically across all datasets including
+non-stationary ones.</p>
+<h3 id="corollary-isotropic-σ_y-creates-a-systematic-mismatch">Corollary:
+isotropic Σ_y creates a systematic mismatch</h3>
+<p>Σ_y = σ²I forces the posterior to weight observations equally at all
+frequencies — over-trusting at high frequencies (uninformative) and
+under-utilizing at low frequencies (highly informative). This degrades
+E-step reconstructions, which degrades M-step training data, which
+compounds across EM iterations.</p>
+<h3 id="proposition-2-wiener-filter-structure">Proposition 2 (Wiener
+filter structure)</h3>
+<p>When Σ_y is frequency-dependent, the posterior correction takes the
+Wiener filter form:</p>
+<pre><code>w(f) ≈ σ_t² S_J(f) / (Σ_y(f) + σ_t² S_J(f))</code></pre>
+<p>Signal power over total power — the MMSE-optimal linear
+estimator.</p>
+<h3 id="the-spectral-cg-operator">The spectral CG operator</h3>
+<p><strong>One equation change</strong> to the CG operator:</p>
+<pre><code>Σ_y(f) = σ_y² · (1 + (f / f_cutoff(σ_t))^n)</code></pre>
+<p>with noise-dependent cutoff:</p>
+<pre><code>f_cutoff(σ_t) = max(0.05, 1.0 - σ_t / σ_max)</code></pre>
+<p>Diagonal in DFT basis (FFT → scale → IFFT). Two parameters: filter
+order n (default 2) and σ_y. The Butterworth shape captures the
+monotonic increase motivated by Proposition 1. This is a design choice
+motivated by the theory, not a direct consequence of it.</p>
+<p>The noise-dependent cutoff aligns with the diffusion coarse-to-fine
+schedule: early steps trust only low frequencies, late steps incorporate
+progressively higher frequencies. When σ_t is very small (σ_t/σ_max &lt;
+0.05), we fall back to isotropic.</p>
+<h3 id="role-in-the-narrative">Role in the narrative</h3>
+<p>The spectral theory is <strong>not the headline</strong> — the
+unified framework is. The spectral theory answers a specific question:
+“You claim the closed-loop EM is the right framework — but why does it
+need frequency-aware corrections for time series?” Props 1-2 give a
+precise, principled answer. This satisfies the theory reviewer while the
+framework narrative satisfies the impact reviewer.</p>
+<hr />
+<h2 id="domain-specific-adaptations">5. Domain-Specific Adaptations</h2>
+<h3 id="stl-initialization">5.1 STL initialization</h3>
+<p>Rather than starting EM from a random Gaussian prior, we initialize
+from iterative STL decomposition of corrupted data. STL separates trend
+(low-frequency) from seasonal (periodic) from residual — a warm-start
+aligned with time-series spectral structure. This reduces EM iterations
+to convergence.</p>
+<h3 id="curriculum-annealing-auxiliary-observations">5.2 Curriculum:
+annealing auxiliary observations</h3>
+<p>Early EM iterations struggle with severe missingness (weak prior +
+hard reconstruction). We temporarily reveal extra positions filled with
+previous-iteration reconstructions, decaying from ~30% extra to zero by
+the final third of EM. This stabilizes the E-step without contaminating
+the final model.</p>
+<h3 id="pipeline">5.3 Pipeline</h3>
+<pre><code>Algorithm: Closed-Loop EM for Irregular Time Series
+────────────────────────────────────────────────────
+Input: Corrupted observations {(yᵢ, Aᵢ)}, noise level σ_y
+Output: Unified diffusion model q_θ(x)
+
+Phase 1 — Initialization:
+  1. Compute STL reconstructions
+  2. Train θ₀ on STL reconstructions
+
+Phase 2 — EM iterations:
+  3. For k = 0, ..., K-1:
+     a. Curriculum: augment masks (annealing to zero)
+     b. E-step: reconstruct xᵢ ~ q_{θ_k}(x | yᵢ, Aᵢ)
+        using spectral CG posterior sampling
+     c. Reset EMA; M-step: train θ_{k+1} on {xᵢ}
+
+Phase 3 — Final training:
+  4. Train fresh model on final reconstructions
+
+Test time (supported inference modes):
+  Generate     → unconditional sampling
+  Impute       → posterior sampling given (y_new, A_new)
+  Conditional  → posterior sampling given partial observations
+  Denoise      → posterior sampling with Σ_y reflecting noise level
+  (task-specific or multi-task training may be needed per mode)</code></pre>
+<hr />
+<h2 id="contributions-reframed">6. Contributions (Reframed)</h2>
+<ol type="1">
+<li><strong>Multi-task framework.</strong> We present a single
+architectural framework that supports generation, imputation,
+conditional generation, and denoising for corrupted time series via
+closed-loop EM. Achieving strong performance per task may require
+task-specific or multi-task training, but the framework is unified — no
+prior method in the time series generation literature supports this
+range of tasks. This is the paper’s primary contribution.</li>
+<li><strong>Problem analysis.</strong> We identify three structural
+limitations of existing open-loop generation methods — no feedback, no
+noise handling, single-task inference — and trace them to the separation
+of imputation and generation. This analysis clarifies why closing the
+loop resolves all three simultaneously.</li>
+<li><strong>Frequency-aware posterior sampling for time series.</strong>
+We prove that observational informativeness under masking is frequency-
+dependent (Proposition 1) and derive a spectral CG operator that yields
+Wiener-optimal corrections (Proposition 2). This makes the E-step
+principled for time series and improves reconstruction quality across EM
+iterations.</li>
+<li><strong>Domain-specific adaptations.</strong> STL initialization,
+observation curriculum, noise-dependent cutoff — each reducing EM
+iterations or improving stability.</li>
+<li><strong>Broadest evaluation scope in the field.</strong> Standard
+benchmarks (30/50/70%), plus block missingness, mixed missing rates,
+noisy observations, conditional generation, and imputation from the same
+model — settings no prior generation method addresses. <strong>The
+evaluation itself is a contribution</strong> — it redefines what the
+benchmark should be.</li>
+</ol>
+<hr />
+<h2 id="experimental-design-one-model-many-tasks">7. Experimental
+Design: One Model, Many Tasks</h2>
+<h3 id="the-killer-table">The killer table</h3>
+<p>The most powerful result in the paper is not any single metric — it’s
+a table that looks like this:</p>
+<table>
+<colgroup>
+<col style="width: 23%" />
+<col style="width: 34%" />
+<col style="width: 11%" />
+<col style="width: 29%" />
+</colgroup>
+<thead>
+<tr>
+<th>Task</th>
+<th>Prior SOTA method</th>
+<th>Our method</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Generation (30% missing)</td>
+<td>ImagenTime (separate imputer + generator)</td>
+<td><strong>Same model</strong></td>
+<td>Our primary setting</td>
+</tr>
+<tr>
+<td>Generation (50% missing)</td>
+<td>ImagenTime</td>
+<td><strong>Same model</strong></td>
+<td></td>
+</tr>
+<tr>
+<td>Generation (70% missing)</td>
+<td>ImagenTime</td>
+<td><strong>Same model</strong></td>
+<td>Harder — prior methods degrade more</td>
+</tr>
+<tr>
+<td>Generation (block missing)</td>
+<td>No prior results</td>
+<td><strong>Same model</strong></td>
+<td>New setting</td>
+</tr>
+<tr>
+<td>Generation (mixed rates)</td>
+<td>No prior results</td>
+<td><strong>Same model</strong></td>
+<td>New setting</td>
+</tr>
+<tr>
+<td>Generation (noisy + missing)</td>
+<td>No prior results</td>
+<td><strong>Same model</strong></td>
+<td>New setting</td>
+</tr>
+<tr>
+<td>Imputation</td>
+<td>CSDI (dedicated imputer)</td>
+<td><strong>Same model</strong></td>
+<td>Beats specialist models</td>
+</tr>
+<tr>
+<td>Conditional generation</td>
+<td>Not possible</td>
+<td><strong>Same model</strong></td>
+<td>Free capability</td>
+</tr>
+</tbody>
+</table>
+<p>One row per task. Same “Our method” column throughout. Every
+competitor is a different model trained specifically for that one task.
+<strong>That’s the visual punchline.</strong></p>
+<h3 id="baselines-per-task">Baselines per task</h3>
+<p><strong>Generation:</strong> ImagenTime, KoVAE, GT-GAN, TimeGAN
+(open-loop); isotropic EM (our ablation).</p>
+<p><strong>Imputation:</strong> CSDI, BRITS, GP-VAE (dedicated
+imputation models).</p>
+<p><strong>Oracle:</strong> TSDiff (trained on clean data — upper bound,
+not competitor).</p>
+<h3 id="settings">Settings</h3>
+<table>
+<colgroup>
+<col style="width: 35%" />
+<col style="width: 32%" />
+<col style="width: 31%" />
+</colgroup>
+<thead>
+<tr>
+<th>Setting</th>
+<th>What it tests</th>
+<th>Why we can, others can’t</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Standard</strong> (30/50/70%, lengths 24-10920)</td>
+<td>Baseline comparison</td>
+<td>Expected by reviewers</td>
+</tr>
+<tr>
+<td><strong>Mixed missing rates</strong> (per-sample ~ U(0,0.7))</td>
+<td>Realistic heterogeneous corruption</td>
+<td>EM handles per-sample A natively</td>
+</tr>
+<tr>
+<td><strong>Block missingness</strong> (contiguous gaps)</td>
+<td>Hardest setting; tests learned distribution</td>
+<td>Prior must generalize, not interpolate</td>
+</tr>
+<tr>
+<td><strong>Conditional generation</strong></td>
+<td>Practical downstream application</td>
+<td>Posterior sampling = free capability</td>
+</tr>
+<tr>
+<td><strong>Noisy + irregular</strong></td>
+<td>Simultaneous corruption</td>
+<td>Σ_y handles both; others treat noise as GT</td>
+</tr>
+<tr>
+<td><strong>Imputation</strong> (same model)</td>
+<td>Dual-use capability</td>
+<td>Generation models can’t impute</td>
+</tr>
+</tbody>
+</table>
+<h3 id="robustness-story">Robustness story</h3>
+<ul>
+<li><strong>Across severity:</strong> Smaller quality gap between 30%
+and 70% than prior methods — M-step always trains on fully-reconstructed
+data.</li>
+<li><strong>Across corruption type:</strong> Switching between
+random/block missing causes less degradation — corruption is a
+parameter, not architecture.</li>
+<li><strong>Noise immunity:</strong> Prior methods degrade
+proportionally (learn p(x_noisy)); our Σ_y absorbs noise, M-step trains
+on denoised data.</li>
+</ul>
+<hr />
+<h2 id="the-key-ablation-tells-the-whole-story">8. The Key Ablation
+(Tells the Whole Story)</h2>
+<table>
+<colgroup>
+<col style="width: 19%" />
+<col style="width: 8%" />
+<col style="width: 17%" />
+<col style="width: 14%" />
+<col style="width: 7%" />
+<col style="width: 32%" />
+</colgroup>
+<thead>
+<tr>
+<th>Method</th>
+<th>Loop</th>
+<th>Multi-task</th>
+<th>Noise</th>
+<th>Spectral</th>
+<th>What it shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ImagenTime</td>
+<td>Open</td>
+<td>Gen only</td>
+<td>No</td>
+<td>No</td>
+<td>Prior SOTA ceiling</td>
+</tr>
+<tr>
+<td>Isotropic EM</td>
+<td>Closed</td>
+<td>Gen + Imp + Cond</td>
+<td>Yes (σ_y)</td>
+<td>No</td>
+<td><strong>Closing the loop is the big jump</strong></td>
+</tr>
+<tr>
+<td><strong>Spectral EM (ours)</strong></td>
+<td><strong>Closed</strong></td>
+<td><strong>Gen + Imp + Cond</strong></td>
+<td><strong>Yes (Σ_y(f))</strong></td>
+<td><strong>Yes</strong></td>
+<td><strong>+ principled TS corrections</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>The story this tells:</strong></p>
+<ol type="1">
+<li><strong>Open → Closed</strong> (biggest jump): Closing the loop is
+the structural win. The model goes from single-task to multi-task, from
+noise-blind to noise-aware, from open-loop ceiling to self-improving.
+This is the paradigm shift.</li>
+<li><strong>Isotropic → Spectral</strong> (principled improvement): The
+spectral correction makes the E-step faithful to time-series observation
+structure. The improvement is consistent and principled, grounded in
+Propositions 1-2. It’s the difference between “applying EM to time
+series” and “understanding what time series requires.”</li>
+</ol>
+<p><strong>Both matter, but for different reasons.</strong> The
+closed-loop jump gives the capabilities. The spectral correction gives
+the theory reviewer something to respect and the method reviewer
+confidence that the design is principled, not ad-hoc.</p>
+<hr />
+<h2 id="addressing-computational-cost-proactive">9. Addressing
+Computational Cost (Proactive)</h2>
+<p><strong>The concern:</strong> EM iterations with posterior sampling
+sound expensive.</p>
+<p><strong>Our response:</strong></p>
+<ol type="1">
+<li><strong>One sample per observation.</strong> Our E-step draws a
+single posterior sample per sequence. Training set size stays N.</li>
+<li><strong>Warm-starting.</strong> Each M-step initializes from
+previous parameters — fine-tuning, not training from scratch.</li>
+<li><strong>STL initialization.</strong> Starts the prior close to the
+target, reducing EM iterations needed.</li>
+<li><strong>Marginal spectral overhead.</strong> The spectral CG
+replaces a scalar multiplication with FFT → scale → IFFT. With 1 CG
+iteration (our default), this adds ~16ms per diffusion step.</li>
+</ol>
+<p><strong>Total:</strong> Wall-clock within a small constant factor of
+ImagenTime’s single-pass training. [Report GPU-hours per dataset.]</p>
+<hr />
+<h2 id="addressing-identifiability-proactive">10. Addressing
+Identifiability (Proactive)</h2>
+<p><strong>The concern:</strong> Severe corruption → distinct priors
+produce the same p(y). Can EM converge to the wrong distribution?</p>
+<p><strong>Our response:</strong> This is inherent to all corrupted-data
+methods. Proposition 1 gives a precise answer: low-frequency components
+are identifiable; high-frequency components rely on inductive bias. Our
+spectral Σ_y explicitly encodes this — at frequencies where observations
+are uninformative, the model relies on its learned structure rather than
+pretending to extract information that isn’t there. Block missingness
+experiments directly test identifiability.</p>
+<hr />
+<h2 id="the-narrative-arc-elevator-pitch">11. The Narrative Arc
+(Elevator Pitch)</h2>
+<p><strong>The problem.</strong> Learning from irregular time series
+today requires separate models for separate tasks: one architecture for
+generation, another for imputation, possibly a third for denoising. Each
+trains differently, evaluates differently, and none benefits from the
+others.</p>
+<p><strong>The insight.</strong> These are not separate problems. They
+are all instances of “learn p(x) from corrupted data.” A framework that
+learns p(x) directly — without separating imputation from generation —
+can address all of them within a single architecture.</p>
+<p><strong>The method.</strong> We train an unconditional diffusion
+model from corrupted observations via closed-loop EM: the model’s own
+prior reconstructs training data (E-step), and reconstructions train the
+model (M-step). The generator IS the imputer — they co-evolve. The
+framework supports generation (unconditional sampling), imputation
+(posterior sampling with observations), conditional generation
+(posterior sampling with partial data), and denoising (posterior
+sampling with noise model). In practice, strong performance per task may
+require task-specific or multi-task training.</p>
+<p><strong>The design.</strong> Making this work well for time series
+requires understanding the frequency structure of irregular
+observations. We prove that sparse masking constrains low frequencies
+far more than high frequencies, and derive a spectral correction to the
+posterior sampling that respects this structure.</p>
+<p><strong>The result.</strong> SOTA generation quality across all
+benchmarks. The broadest evaluation scope in the field. And a unified
+model that replaces separate generation and imputation pipelines — the
+first of its kind for irregular time series.</p>
+<hr />
+<h2 id="preempting-reviewer-concerns">12. Preempting Reviewer
+Concerns</h2>
+<h3 id="isnt-this-just-diffem-applied-to-time-series">“Isn’t this just
+DiffEM applied to time series?”</h3>
+<p>The EM framework is credited. But: (a) No one has shown that
+closed-loop EM supports a multi-task framework for time series — this
+capability analysis is new; (b) Naively applying isotropic EM to time
+series works but the spectral correction is what makes it principled —
+Props 1-2 are absent from all prior applications; (c) The domain
+adaptations (STL init, curriculum, noise-dependent cutoff) are
+non-trivial and necessary; (d) The evaluation scope itself is a
+contribution.</p>
+<p>The ablation quantifies: isotropic EM already beats open-loop methods
+(validating the closed-loop paradigm), and spectral EM improves further
+(validating the frequency-aware design).</p>
+<h3 id="the-spectral-improvement-over-isotropic-is-moderate.">“The
+spectral improvement over isotropic is moderate.”</h3>
+<p>Correct — and this is the honest story. The <strong>big jump is
+closing the loop</strong>, which gives the multi-task capability and
+structural advantages. The spectral correction is a consistent,
+principled improvement grounded in time-series-specific theory. We don’t
+overclaim it as the main result. Together they form a complete
+framework: the paradigm (EM) + the principled domain adaptation
+(spectral).</p>
+<h3 id="proposition-1-assumes-stationaritygaussianitybernoulli-masking.">“Proposition
+1 assumes stationarity/Gaussianity/Bernoulli masking.”</h3>
+<p>Exact result under these assumptions. Qualitative conclusion (low
+freqs better constrained) holds for any signal with decaying spectral
+energy — verified empirically on all datasets. The Butterworth
+parameterization depends only on monotonicity, not on S_xx(f).</p>
+<h3 id="tsdiffsssd-also-do-generation-imputation.">“TSDiff/SSSD also do
+generation + imputation.”</h3>
+<p>They learn from <strong>clean</strong> data. They cannot handle the
+corrupted-data setting. When only corrupted data is available (our
+setting), they cannot be applied.</p>
+<h3 id="test-time-corruption-differs-from-training">“Test-time
+corruption differs from training?”</h3>
+<p>The learned prior q_θ(x) is unconditional — it does not encode a
+corruption pattern. Posterior sampling at test time can use any (A,
+σ_y). Block missingness experiments test this: train on random masking,
+evaluate on structured blocks.</p>
+<h3 id="the-f_cutoff-is-fixed-dataset-specific">“The f_cutoff is fixed —
+dataset-specific?”</h3>
+<p>The schedule f_cutoff(σ_t) = max(0.05, 1 - σ_t/σ_max) is
+dataset-agnostic by design: it encodes only the principle that diffusion
+resolves frequencies coarse-to-fine. We ablate filter order and σ_y and
+find the method is robust — monotonicity is what matters, not the
+precise cutoff.</p>
+<hr />
+<h2 id="why-this-gets-accepted">13. Why This Gets Accepted</h2>
+<table>
+<colgroup>
+<col style="width: 7%" />
+<col style="width: 92%" />
+</colgroup>
+<thead>
+<tr>
+<th>Reviewer type</th>
+<th>What they see</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Impact</strong></td>
+<td>First unified model for irregular TS: generates, imputes,
+conditionally generates, denoises — from one set of weights. This
+changes how practitioners approach the problem.</td>
+</tr>
+<tr>
+<td><strong>Results</strong></td>
+<td>SOTA across the board + broadest evaluation scope + beats specialist
+imputation models with a generation model</td>
+</tr>
+<tr>
+<td><strong>Theory</strong></td>
+<td>Prop 1 (exact + asymptotics) + Wiener filter — principled, not
+ad-hoc</td>
+</tr>
+<tr>
+<td><strong>Elegance</strong></td>
+<td>“The generator IS the imputer” — one model, one training procedure,
+many capabilities. The spectral correction is one equation.</td>
+</tr>
+<tr>
+<td><strong>Robustness</strong></td>
+<td>First generation method that handles noise by design; smaller
+degradation across severity and corruption types</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The acceptance case in one sentence:</strong> “This paper
+shows that generation, imputation, and conditional generation from
+irregular time series are not separate problems requiring separate
+models — they are the same problem, and a single closed-loop diffusion
+model solves all of them.”</p>
+<hr />
+<h2 id="known-limitations">14. Known Limitations</h2>
+<ol type="1">
+<li><strong>Linear Gaussian observation model.</strong> p(y|x) = N(Ax,
+Σ_y) with known A. Non-linear corruptions not covered.</li>
+<li><strong>Spectral theory scope.</strong> Proposition 1 is tightest
+for large T, i.i.d. masking. Short sequences and structured missingness
+are tested experimentally, not analyzed theoretically.</li>
+<li><strong>Identifiability at high frequencies.</strong> Severe
+corruption → HF content relies on inductive bias, not data.</li>
+<li><strong>Computational overhead.</strong> EM iterations add cost.
+Mitigated by warm-starting and STL init, but not free.</li>
+<li><strong>Gaussian moment-matching.</strong> Posterior sampling
+approximation. Accurate at extreme noise levels, may be less so for
+multi-modal distributions at intermediate noise.</li>
+</ol>
+<hr />
+<h2 id="positioning-summary">15. Positioning Summary</h2>
+<p><strong>Title-level message:</strong> Closing the loop — one model
+generates, imputes, and denoises from corrupted data.</p>
+<p><strong>Section 1-2 message:</strong> The field artificially
+separates generation and imputation. This is wrong.</p>
+<p><strong>Section 3 message:</strong> Closing the loop solves all three
+structural problems at once. Multi-task inference is automatic.</p>
+<p><strong>Section 4 message:</strong> Making it work WELL for time
+series requires frequency-aware posterior sampling. Here’s the
+theory.</p>
+<p><strong>Section 5-6 message:</strong> Here’s the full method and
+contributions.</p>
+<p><strong>Section 7-8 message:</strong> Here are the results — one
+model column, many task rows. Plus the ablation showing closed-loop is
+the big jump, spectral is the principled polish.</p>
+<p><strong>What the reader takes away:</strong> “These authors showed
+that you don’t need separate models for generation and imputation of
+irregular time series. One diffusion model does it all, and it does it
+better.”</p>
+</body>
+</html>

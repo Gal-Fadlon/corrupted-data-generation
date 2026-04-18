@@ -1,0 +1,34 @@
+#!/bin/bash
+#SBATCH --partition rtx6000
+#SBATCH --qos azencot
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name ab5_full
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### A5: Full system with GENTLE weights — all features on, reduced losses
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --missing_rate 0.5 \
+    --allow_tf32 \
+    --wandb true \
+    --tags "co_evolving_em" "energy" "50_missing_rate" "ablation" "a5_full_gentle" "tf32" \
+    --adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --sigma_y_floor 0.01 \
+    --mmps_cg_iters 5 \
+    --consistency_projection \
+    --obs_space_cg \
+    --warm_start_cg \
+    --lambda_obs 0.05 \
+    --lambda_rep 0.01 \
+    --no_phase3

@@ -1,0 +1,27 @@
+#!/bin/bash
+#SBATCH --partition rtx6000
+#SBATCH --qos azencot
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name paper_dps_em
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### Table 3 Row 1b: DPS-EM on Energy 50%
+module load anaconda
+source activate idan2_env
+python run_diffem_dps.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --missing_rate 0.5 \
+    --wandb true \
+    --tags "paper" "energy" "50_missing_rate" "dps_em" "table3_row1b" \
+    --dps_guidance_scale 1.0 \
+    --dps_sigma_y 0.01 \
+    --em_iters 5 \
+    --eval_all_metrics

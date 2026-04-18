@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Paper Story: Act-Observe-Adapt</title>
+  <style>
+
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+</style>
+  <style type="text/css">html { box-sizing: border-box; }
+*, *::before, *::after { box-sizing: inherit; }
+html, body {
+margin: 0;
+padding: 0;
+color: #111111;
+background-color: #ffffff;
+-webkit-print-color-adjust: exact;
+print-color-adjust: exact;
+}
+body {
+font-family: Georgia, "Times New Roman", Times, serif;
+font-size: 12pt;
+line-height: 1.5;
+max-width: 42em;
+margin: 0 auto;
+padding: 1.25rem 1rem 2rem;
+}
+main { display: block; }
+h1 {
+font-size: 1.5rem;
+margin: 0 0 0.75rem;
+padding-bottom: 0.4rem;
+border-bottom: 2px solid #ccc;
+}
+h2 {
+font-size: 1.15rem;
+margin: 1.5rem 0 0.5rem;
+page-break-after: avoid;
+}
+h3 {
+font-size: 1.05rem;
+margin: 1.1rem 0 0.45rem;
+page-break-after: avoid;
+}
+p { margin: 0.55em 0; }
+ul, ol { margin: 0.55em 0; padding-left: 1.35rem; }
+li { margin: 0.25em 0; }
+strong { font-weight: 700; }
+hr {
+border: 0;
+border-top: 1px solid #ccc;
+margin: 1.1rem 0;
+}
+a { color: #0b57d0; }
+code {
+font-family: ui-monospace, Menlo, Consolas, monospace;
+font-size: 0.9em;
+background: #f4f4f4;
+padding: 0.1em 0.35em;
+border-radius: 3px;
+}
+pre {
+font-family: ui-monospace, Menlo, Consolas, monospace;
+font-size: 0.82rem;
+line-height: 1.4;
+background: #f8f8f8;
+border: 1px solid #ddd;
+border-radius: 4px;
+padding: 0.75rem 1rem;
+overflow-x: auto;
+white-space: pre-wrap;
+word-break: break-word;
+page-break-inside: avoid;
+}
+pre code { background: none; padding: 0; }
+table {
+width: 100%;
+border-collapse: collapse;
+font-size: 0.95em;
+margin: 0.9rem 0;
+}
+th, td {
+border: 1px solid #bbb;
+padding: 0.35rem 0.45rem;
+vertical-align: top;
+}
+th { background: #eaeaea; font-weight: 600; }
+blockquote {
+margin: 0.9rem 0;
+padding-left: 0.9rem;
+border-left: 3px solid #ccc;
+color: #333;
+}
+@media print {
+body { max-width: none; padding: 0; font-size: 11pt; }
+a { color: #111; text-decoration: none; }
+}
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Paper Story: Act-Observe-Adapt</h1>
+</header>
+<h1 id="paper-story-v6-act-observe-adapt">Paper Story v6:
+Act-Observe-Adapt</h1>
+<p><strong>Working Title:</strong> “Act, Observe, Adapt: A
+Self-Calibrating Paradigm for Time Series Generation from Corrupted
+Data”</p>
+<hr />
+<h2 id="the-core-selling-point">The Core Selling Point</h2>
+<p>Every existing method for learning generative models from corrupted
+time series is <strong>static</strong>: choose a pipeline, fix the
+hyperparameters, run training, hope for the best. The pipeline is as
+follows: irregular ts → imputer → regular ts → generator. The imputer
+doesn’t know what the generator needs. The generator doesn’t know where
+the imputer failed. Nobody checks whether the reconstruction was
+faithful at 0.1 Hz vs 10 Hz. The system is blind to its own failure
+modes.</p>
+<p>We propose a different paradigm — one where the learning process
+<strong>monitors its own posterior uncertainty, diagnoses where it
+succeeds and fails, and adapts its behavior accordingly</strong>.
+Inspired by the Act-Observe-Plan-Evaluate loop in adaptive
+decision-making systems, our method:</p>
+<ol type="1">
+<li><strong>Acts</strong> — reconstructs corrupted data using the
+model’s own evolving prior (posterior sampling)</li>
+<li><strong>Observes</strong> — diagnoses reconstruction quality per
+frequency band via posterior disagreement across multiple samples</li>
+<li><strong>Plans</strong> — adapts the spectral trust profile: tighten
+where evidence is strong, relax where the model is uncertain</li>
+<li><strong>Evaluates</strong> — assesses convergence and decides
+whether to continue, adjust, or stop</li>
+</ol>
+<p>This is not a static pipeline. It is a <strong>self-calibrating
+learning loop</strong> that allocates modeling effort where the data can
+support it and relies on learned structure where it cannot.</p>
+<p>The result: a single unconditional diffusion model that generates,
+imputes, conditionally generates, and denoises time series — all from
+one set of weights. No prior method in the time series generation
+literature offers this.</p>
+<hr />
+<h2 id="the-problem">1. The Problem</h2>
+<p>Learning generative models from irregular time series: missing
+values, sensor noise, variable sampling rates. The data you have is not
+the data you want to model.</p>
+<p>Formally: given corrupted observations y = Ax + n (binary masking +
+Gaussian noise), learn p(x) — the distribution of clean, complete
+sequences — and sample from it.</p>
+<p>The field treats this as multiple separate problems: generation
+methods produce synthetic data but ignore corruption at test time;
+imputation methods fill gaps but cannot generate; denoising methods
+remove noise but assume complete observations. A practitioner needing
+multiple capabilities trains multiple models.</p>
+<p><strong>We argue this fragmentation stems from a deeper issue:
+existing methods do not learn from their own mistakes.</strong> They
+commit to a reconstruction strategy, train on the result, and never
+revisit whether that strategy was appropriate. The system cannot
+distinguish between “I reconstructed this well” and “I guessed and got
+lucky.”</p>
+<hr />
+<h2 id="the-static-pipeline-problem">2. The Static Pipeline Problem</h2>
+<h3 id="how-every-existing-generative-method-works">How every existing
+generative method works</h3>
+<p>All current generation approaches follow what we call the
+<strong>commit-and-forget</strong> pattern:</p>
+<pre><code>Corrupted data → [Fixed reconstruction] → Completed data → [Generator training] → Done</code></pre>
+<p>The reconstruction strategy is chosen once and never revisited. The
+generator trains on whatever comes out. Three consequences:</p>
+<p><strong>1. No self-assessment.</strong> The system cannot tell
+whether a reconstruction was faithful or fabricated. A time series with
+a missing week in the middle gets “completed” by interpolation — the
+generator trusts this equally whether the gap was 2 points (easy) or 200
+points (speculative). The pipeline has no mechanism to signal “I’m
+guessing here.”</p>
+<p><strong>2. No frequency awareness.</strong> Corruption affects
+different frequency bands differently. Missing 50% of samples at random
+barely affects low-frequency trends (neighboring points carry redundant
+information) but devastates high-frequency content (each missing sample
+is unrecoverable). Static pipelines treat all frequencies identically —
+they cannot distinguish “I know the trend” from “I’m fabricating the
+texture.”</p>
+<p><strong>3. No adaptation.</strong> Even if the generator learns that
+certain reconstructions were implausible (e.g., generated samples never
+resemble certain training reconstructions), this information never flows
+back to improve reconstruction. The two stages are disconnected: better
+generation knowledge cannot produce better training data.</p>
+<p>These are not independent flaws. They share a root cause: <strong>the
+learning process does not monitor or adapt its own behavior.</strong>
+The system is open-loop — it executes a fixed plan regardless of
+intermediate outcomes.</p>
+<h3 id="specific-instances">Specific instances</h3>
+<ul>
+<li><strong>ImagenTime:</strong> TST imputer commits to completions →
+diffusion trains on them. The masking augmentation mitigates blind trust
+but the imputer never improves from generation feedback.</li>
+<li><strong>GT-GAN / KoVAE:</strong> NCDE interpolates → GAN/VAE
+generates. Interpolation quality bounds generation quality
+permanently.</li>
+<li><strong>All of the above:</strong> Observed values treated as ground
+truth. When sensors are noisy, the model learns p(noisy), not
+p(clean).</li>
+</ul>
+<hr />
+<h2 id="a-new-paradigm-self-calibrating-generative-learning">3. A New
+Paradigm: Self-Calibrating Generative Learning</h2>
+<h3 id="the-key-shift">The key shift</h3>
+<p>Instead of committing to a fixed reconstruction strategy, we propose
+that the learning process should <strong>continuously monitor its own
+reconstruction quality and adapt accordingly</strong>. This transforms
+generative learning from a static pipeline into an adaptive loop.</p>
+<p>The paradigm has four phases, repeated iteratively:</p>
+<h3 id="act-reconstruct-via-posterior-sampling">Act: Reconstruct via
+Posterior Sampling</h3>
+<p>The model uses its own current prior to reconstruct corrupted
+observations. This is not imputation (filling gaps with a separate
+model) — it is posterior sampling: drawing x ~ p(x | y, A) where p(x) is
+the model’s own learned distribution.</p>
+<p>Crucially, we draw <strong>multiple samples</strong> (K per
+observation). A single reconstruction gives a point estimate. Multiple
+reconstructions reveal <strong>where the model is confident and where it
+is uncertain.</strong> This is the information the system needs to
+self-calibrate.</p>
+<h3 id="observe-diagnose-posterior-uncertainty-per-frequency-band">Observe:
+Diagnose Posterior Uncertainty per Frequency Band</h3>
+<p>Given K posterior samples, we compute inter-sample disagreement in
+the frequency domain. For each frequency f, the coefficient of variation
+across K samples tells us:</p>
+<ul>
+<li><strong>Low CV at frequency f:</strong> the K reconstructions agree
+→ the model is confident → observations constrain this frequency
+well</li>
+<li><strong>High CV at frequency f:</strong> the K reconstructions
+disagree → the model is uncertain → observations provide little
+information here</li>
+</ul>
+<p>This is a <strong>spectral X-ray of the model’s own epistemic
+state.</strong> It answers, for each frequency band, the question: “Am I
+reconstructing or hallucinating?”</p>
+<h3 id="plan-adapt-the-observation-trust-profile">Plan: Adapt the
+Observation Trust Profile</h3>
+<p>The diagnosis drives adaptation. The posterior sampling uses an
+observation noise model Σ_y that controls how much to trust observations
+vs. the learned prior at each frequency:</p>
+<pre><code>Σ_y(f) = σ_y² · (1 + (f / f_cutoff)^n)</code></pre>
+<p>The cutoff f_cutoff determines the boundary between “trust the data”
+(below cutoff) and “trust the prior” (above cutoff). After each Observe
+step, we adapt f_cutoff <strong>bidirectionally</strong>:</p>
+<ul>
+<li>If high-frequency bands show low disagreement →
+<strong>raise</strong> f_cutoff (the model can be trusted at higher
+frequencies now)</li>
+<li>If high-frequency bands show high disagreement →
+<strong>lower</strong> f_cutoff (the model is hallucinating — rely more
+on learned structure)</li>
+</ul>
+<p>This adaptation is smooth (blended with momentum) and bounded. The
+system automatically navigates the trust-observation frontier as its
+prior improves across iterations.</p>
+<h3 id="evaluate-assess-and-decide">Evaluate: Assess and Decide</h3>
+<p>After each Act-Observe-Plan cycle, the updated reconstructions train
+the model (standard score matching). Then we evaluate generation quality
+against the clean reference distribution (unconditional samples
+vs. original uncorrupted data):</p>
+<ul>
+<li><strong>Improving</strong> → continue the loop</li>
+<li><strong>Plateaued</strong> → the model has converged</li>
+<li><strong>Degrading</strong> → early-stop, restore best
+checkpoint</li>
+</ul>
+<p>The Evaluate step closes the outer loop: better evaluation informs
+whether the Plan was effective, which influences subsequent
+iterations.</p>
+<h3 id="the-complete-loop">The complete loop</h3>
+<pre><code>┌─────────────────────────────────────────────────────────┐
+│                Self-Calibrating EM Loop                  │
+│                                                         │
+│  ┌──────┐    ┌─────────┐    ┌──────┐    ┌──────────┐   │
+│  │ ACT  │───▶│ OBSERVE │───▶│ PLAN │───▶│ EVALUATE │──┐│
+│  │      │    │         │    │      │    │          │  ││
+│  │ K    │    │ Spectral│    │ Adapt│    │ Train +  │  ││
+│  │poster│    │ disagree│    │ Σ_y  │    │ assess   │  ││
+│  │ ior  │    │ ment    │    │      │    │          │  ││
+│  │ samp │    │ per freq│    │ cutoff│   │ converge?│  ││
+│  └──────┘    └─────────┘    └──────┘    └──────────┘  ││
+│       ▲                                        │       ││
+│       └────────────────────────────────────────┘       ││
+│              (model improves → better Act)              │
+│                                                         │
+│  Outer loop: better prior → better reconstructions      │
+│  Inner loop: diagnosis → better trust allocation        │
+└─────────────────────────────────────────────────────────┘</code></pre>
+<p><strong>Two nested feedback loops:</strong> 1. The <strong>outer
+loop</strong> (EM): better model → better reconstructions → better
+training data → better model 2. The <strong>inner loop</strong>
+(self-calibration): posterior disagreement → adapted trust → more
+faithful reconstructions</p>
+<p>Static pipelines have neither. Standard EM has only the outer loop.
+Our contribution is both.</p>
+<hr />
+<h2 id="why-this-paradigm-fits-corrupted-time-series">4. Why This
+Paradigm Fits Corrupted Time Series</h2>
+<h3 id="time-series-have-structured-identifiability">Time series have
+structured identifiability</h3>
+<p>Although our method operates in image space via the delay embedding
+(following the ImagenTime framework), the underlying signal structure
+remains fundamentally temporal. The delay embedding rearranges a 1D
+sequence into a 2D grid, but pixel correlations still reflect temporal
+adjacency — and crucially, the temporal frequency hierarchy persists:
+low frequencies are over-determined by sparse observations, high
+frequencies are under-determined. This is not an accident — it follows
+from the physics of sampling, and no change of representation can
+eliminate it.</p>
+<p><strong>Proposition 1 (Frequency-dependent informativeness).</strong>
+For a stationary process observed through random masking at rate p with
+noise σ_n, the relative informativeness at frequency f is:</p>
+<pre><code>R(f) = σ_n² / (p · S_xx(f) + σ_n²)</code></pre>
+<p>For signals with decaying power spectra (universal in natural time
+series): R(f) → 0 at low f (observations are highly informative), R(f) →
+1 at high f (observations are uninformative).</p>
+<p><strong>This is why self-calibration matters for time series
+specifically.</strong> The boundary between “identifiable” and
+“hallucinated” is frequency-dependent and shifts as the model improves.
+A static method cannot track this boundary. Our Observe step measures it
+empirically; our Plan step adapts to it.</p>
+<h3 id="the-wiener-optimal-structure">The Wiener-optimal structure</h3>
+<p><strong>Proposition 2.</strong> When the observation noise model is
+frequency- dependent, the posterior correction takes the Wiener filter
+form:</p>
+<pre><code>w(f) ≈ σ_t² S_J(f) / (Σ_y(f) + σ_t² S_J(f))</code></pre>
+<p>Signal power over total power — the minimum mean-square-error linear
+estimator. This is not something we impose; it emerges from making Σ_y
+frequency-aware. The Act step naturally performs Wiener-optimal
+reconstruction when the Plan step has correctly calibrated Σ_y.</p>
+<h3 id="connection-to-diffusions-coarse-to-fine-schedule">Connection to
+diffusion’s coarse-to-fine schedule</h3>
+<p>Diffusion models already resolve structure from coarse to fine: high
+noise levels (early steps) determine global shape; low noise levels
+(late steps) add detail. Our noise-dependent cutoff aligns with
+this:</p>
+<pre><code>f_cutoff(σ_t) = max(0.05, f_cutoff_base · (1.0 - σ_t / σ_max))</code></pre>
+<p>Early diffusion steps trust only the lowest frequencies. Late steps
+incorporate progressively higher frequencies, up to the limit determined
+by the Plan step’s current calibration. When σ_t is very small
+(σ_t/σ_max &lt; 0.05), we fall back to isotropic — at near-zero noise,
+all frequencies are directly observable.</p>
+<hr />
+<h2 id="multi-task-capabilities">5. Multi-Task Capabilities</h2>
+<p>The paradigm produces a standard unconditional diffusion model — not
+a specialized pipeline. Because the self-calibrating loop trains p(x)
+directly, the framework naturally supports multiple inference modes:</p>
+<table>
+<colgroup>
+<col style="width: 31%" />
+<col style="width: 54%" />
+<col style="width: 14%" />
+</colgroup>
+<thead>
+<tr>
+<th>Inference mode</th>
+<th>Mechanism</th>
+<th>Requires</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Generation</strong></td>
+<td>Unconditional sampling</td>
+<td>Nothing</td>
+</tr>
+<tr>
+<td><strong>Imputation</strong></td>
+<td>Posterior sampling given (y, A)</td>
+<td>Obs + mask</td>
+</tr>
+<tr>
+<td><strong>Conditional gen.</strong></td>
+<td>Posterior sampling given partial obs</td>
+<td>Partial</td>
+</tr>
+<tr>
+<td><strong>Denoising</strong></td>
+<td>Posterior sampling with Σ_y for noise</td>
+<td>Noisy obs</td>
+</tr>
+</tbody>
+</table>
+<p>In practice, achieving strong performance on each task may require
+task-specific training or incorporating multiple tasks during training.
+The architectural framework supports all modes, but the quality of each
+depends on the training configuration.</p>
+<p>Our model also handles <strong>new types of irregular time
+series</strong> that have never been tested before in previous works on
+generative models from irregular time series, such as mixed missing
+rates, block missingness, and more.</p>
+<hr />
+<h2 id="domain-adaptations">6. Domain Adaptations</h2>
+<h3 id="warm-start-via-stl-decomposition">6.1 Warm-start via STL
+decomposition</h3>
+<p>Rather than beginning the loop from a random prior (requiring many
+Act-Observe-Plan cycles to converge), we initialize with iterative STL
+decomposition of corrupted data. STL separates trend + seasonal +
+residual — a frequency-aligned warm-start that gives the first Act step
+a reasonable prior to work with.</p>
+<h3 id="curriculum-stabilizing-early-iterations">6.2 Curriculum:
+stabilizing early iterations</h3>
+<p>Early iterations face a cold-start problem: the prior is weak, so
+posterior sampling is noisy, so the Observe step sees high disagreement
+everywhere, so the Plan step trusts almost nothing. We stabilize this by
+temporarily revealing extra positions (filled with previous-iteration
+reconstructions), decaying from ~30% extra to zero by the final
+iterations. This gives the early Act step more to work with without
+contaminating the final model.</p>
+<h3 id="full-pipeline">6.3 Full pipeline</h3>
+<pre><code>Algorithm: Self-Calibrating EM for Corrupted Time Series
+──────────────────────────────────────────────────────────
+Input:  Corrupted observations {(yᵢ, Aᵢ)}, noise level σ_y
+Output: Unified diffusion model q_θ(x)
+
+Phase 1 — Warm-Start:
+  1. Compute STL decomposition of corrupted data
+  2. Train initial θ₀ on STL reconstructions
+
+Phase 2 — Self-Calibrating EM Loop:
+  3. For k = 0, ..., K-1:
+     a. Curriculum: augment masks (annealing to zero)
+     b. ACT: Draw K posterior samples per observation
+        using spectral CG with current f_cutoff
+     c. OBSERVE: Compute per-frequency inter-sample CV
+     d. PLAN: Adapt f_cutoff from spectral diagnosis
+     e. Train q_{θ_{k+1}} on K×N augmented samples
+     f. EVALUATE: Assess generation quality;
+        early-stop if no improvement for P iterations
+
+Test time (supported inference modes):
+  Generate     → unconditional sampling
+  Impute       → posterior sampling given (y_new, A_new)
+  Conditional  → posterior sampling with partial observations
+  Denoise      → posterior sampling with Σ_y for noise level
+  (task-specific or multi-task training may be needed per mode)</code></pre>
+<hr />
+<h2 id="contributions">7. Contributions</h2>
+<ol type="1">
+<li><p><strong>A self-calibrating paradigm for learning from corrupted
+data.</strong> We introduce Act-Observe-Plan-Evaluate as an organizing
+principle for iterative generative learning. The model monitors its own
+posterior uncertainty in the frequency domain and adapts its observation
+trust profile accordingly. This transforms EM from a static iterative
+procedure into an adaptive one. No prior method in time series
+generation includes self-monitoring of reconstruction quality.</p></li>
+<li><p><strong>Spectral self-diagnosis via posterior
+disagreement.</strong> We show that inter-sample coefficient of
+variation in the Fourier domain provides a practical, per-frequency
+measure of model confidence. This diagnostic drives bidirectional
+adaptation of the spectral filter and doubles as a convergence
+indicator.</p></li>
+<li><p><strong>Frequency-aware posterior sampling grounded in
+theory.</strong> We prove that observational informativeness under
+masking is frequency-dependent (Proposition 1) and that frequency-aware
+Σ_y yields Wiener-optimal posterior corrections (Proposition 2). The
+adaptive loop calibrates this theoretically-motivated structure against
+empirical posterior uncertainty.</p></li>
+<li><p><strong>Multi-task framework.</strong> The paradigm produces a
+standard unconditional diffusion model whose architecture supports
+generation, imputation, conditional generation, and denoising. Achieving
+strong performance per task requires task-specific or multi-task
+training, but the framework is unified — no prior method in the time
+series generation literature supports this range of tasks within a
+single architecture.</p></li>
+<li><p><strong>Broadest evaluation scope in the field.</strong> Standard
+benchmarks (30/50/70% missing) plus block missingness, mixed per-sample
+rates, noisy observations, conditional generation, and imputation from
+the same model. The evaluation redefines the benchmark.</p></li>
+</ol>
+<hr />
+<h2 id="experimental-design">8. Experimental Design</h2>
+<h3 id="the-multi-task-table">The multi-task table</h3>
+<p>The most powerful result: one framework across every task.</p>
+<table>
+<colgroup>
+<col style="width: 38%" />
+<col style="width: 35%" />
+<col style="width: 26%" />
+</colgroup>
+<thead>
+<tr>
+<th>Task</th>
+<th>Best prior method</th>
+<th>Our method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Generation (30% missing)</td>
+<td>ImagenTime (pipeline)</td>
+<td><strong>Our framework</strong></td>
+</tr>
+<tr>
+<td>Generation (50% missing)</td>
+<td>ImagenTime</td>
+<td><strong>Our framework</strong></td>
+</tr>
+<tr>
+<td>Generation (70% missing)</td>
+<td>ImagenTime</td>
+<td><strong>Our framework</strong></td>
+</tr>
+<tr>
+<td>Generation (block missing)</td>
+<td>No prior results</td>
+<td><strong>Our framework</strong></td>
+</tr>
+<tr>
+<td>Generation (mixed rates)</td>
+<td>No prior results</td>
+<td><strong>Our framework</strong></td>
+</tr>
+<tr>
+<td>Generation (noisy + missing)</td>
+<td>No prior results</td>
+<td><strong>Our framework</strong></td>
+</tr>
+<tr>
+<td>Imputation</td>
+<td>CSDI (dedicated imputer)</td>
+<td><strong>Our framework</strong></td>
+</tr>
+<tr>
+<td>Conditional generation</td>
+<td>Not available</td>
+<td><strong>Our framework</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="the-paradigm-ablation-tells-the-whole-story">The paradigm
+ablation (tells the whole story)</h3>
+<table>
+<colgroup>
+<col style="width: 42%" />
+<col style="width: 9%" />
+<col style="width: 24%" />
+<col style="width: 24%" />
+</colgroup>
+<thead>
+<tr>
+<th>Method</th>
+<th>Loop</th>
+<th>Self-calibrating</th>
+<th>Multi-task</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ImagenTime</td>
+<td>Open</td>
+<td>No</td>
+<td>Gen only</td>
+</tr>
+<tr>
+<td>Static EM (isotropic)</td>
+<td>Closed</td>
+<td>No</td>
+<td>Gen + Imp + Cond</td>
+</tr>
+<tr>
+<td>Static EM (spectral, fixed)</td>
+<td>Closed</td>
+<td>No (fixed Σ_y)</td>
+<td>Gen + Imp + Cond</td>
+</tr>
+<tr>
+<td><strong>Ours (adaptive spectral)</strong></td>
+<td>Closed</td>
+<td><strong>Yes</strong></td>
+<td>Gen + Imp + Cond</td>
+</tr>
+</tbody>
+</table>
+<p><strong>What this reveals:</strong></p>
+<ol type="1">
+<li><strong>Open → Closed</strong> (largest jump): Closing the loop is
+the structural win. Multi-task capability, noise handling, and
+self-improving training all come from this step.</li>
+<li><strong>Isotropic → Fixed spectral</strong> (consistent
+improvement): Making Σ_y frequency-aware improves reconstruction
+quality, grounded in Propositions 1-2.</li>
+<li><strong>Fixed → Adaptive spectral</strong> (the paradigm
+contribution): Self- calibration from posterior disagreement further
+improves quality and provides automatic convergence monitoring. The
+model knows which frequency bands it has learned and which it is still
+guessing.</li>
+</ol>
+<h3 id="settings">Settings</h3>
+<table>
+<colgroup>
+<col style="width: 38%" />
+<col style="width: 24%" />
+<col style="width: 36%" />
+</colgroup>
+<thead>
+<tr>
+<th>Setting</th>
+<th>What it tests</th>
+<th>Why the paradigm enables it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Standard</strong> (30/50/70%, lengths 24-10920)</td>
+<td>Baseline comparison</td>
+<td>Expected by reviewers</td>
+</tr>
+<tr>
+<td><strong>Mixed missing rates</strong> (per-sample ~ U(0,0.7))</td>
+<td>Heterogeneous corruption</td>
+<td>Per-sample (A, Σ_y) is native to the loop</td>
+</tr>
+<tr>
+<td><strong>Block missingness</strong> (contiguous gaps)</td>
+<td>Hardest setting; tests prior</td>
+<td>Self-calibration detects unreliable HF bands</td>
+</tr>
+<tr>
+<td><strong>Conditional generation</strong></td>
+<td>Downstream application</td>
+<td>Posterior sampling = free capability</td>
+</tr>
+<tr>
+<td><strong>Noisy + irregular</strong></td>
+<td>Simultaneous corruption</td>
+<td>Σ_y absorbs noise; static methods cannot</td>
+</tr>
+<tr>
+<td><strong>Imputation</strong> (same model)</td>
+<td>Dual-use</td>
+<td>Learned p(x) supports both tasks natively</td>
+</tr>
+</tbody>
+</table>
+<h3 id="what-to-show-about-the-self-calibration">What to show about the
+self-calibration</h3>
+<p>Key plots that validate the paradigm (beyond standard metric
+tables):</p>
+<ul>
+<li><strong>f_cutoff trajectory across EM iterations</strong>: shows the
+system learning to trust higher frequencies as the prior improves.
+Different datasets / corruption levels produce different trajectories.
+This is the paradigm in action.</li>
+<li><strong>Per-frequency CV heatmap</strong> (frequency × EM
+iteration): shows disagreement shrinking from high to low frequencies as
+training progresses. The “learning frontier” moving rightward is a
+compelling visual.</li>
+<li><strong>Spectral PSD comparison</strong> (generated vs. ground
+truth): shows that adaptive calibration produces better spectral
+fidelity than fixed approaches, especially at the mid-frequency
+boundary.</li>
+<li><strong>EM convergence curve</strong> with early-stopping: shows the
+Evaluate step correctly identifying when to stop.</li>
+</ul>
+<hr />
+<h2 id="addressing-concerns">9. Addressing Concerns</h2>
+<h3 id="this-is-just-em-with-adaptive-hyperparameters.">“This is just EM
+with adaptive hyperparameters.”</h3>
+<p>EM provides the outer loop. The self-calibration is the inner loop —
+it uses the model’s own posterior uncertainty to adapt the observation
+model in the frequency domain. This is absent from all prior EM
+applications. The distinction matters: standard EM with fixed
+hyperparameters works (our ablation shows this), but it cannot
+distinguish identifiable from non-identifiable frequency content. The
+self-calibrating variant can — and this is measurable.</p>
+<h3 id="the-adaptation-is-a-simple-rule-not-real-agency.">“The
+adaptation is a simple rule, not real agency.”</h3>
+<p>Correct — and we do not claim agency. We claim <em>inspiration</em>
+from the Act-Observe-Plan-Evaluate structure as an organizing principle
+for adaptive iterative learning. The specific adaptation mechanism
+(inter-sample Fourier CV → bidirectional cutoff adjustment) is
+intentionally simple, interpretable, and grounded in the spectral
+theory. Complexity is not the goal; appropriate adaptation is.</p>
+<h3 id="isnt-this-just-diffem-applied-to-time-series">“Isn’t this just
+DiffEM applied to time series?”</h3>
+<p>DiffEM provides the EM-with-diffusion-posteriors framework, which we
+credit. Our contributions are: (a) the self-calibration paradigm —
+monitoring posterior disagreement to adapt the observation model, absent
+from DiffEM; (b) the spectral theory motivating why adaptation matters
+for time series specifically; (c) the unified multi-task demonstration;
+(d) domain adaptations. The ablation quantifies each.</p>
+<h3 id="proposition-1-assumes-stationarity.">“Proposition 1 assumes
+stationarity.”</h3>
+<p>Exact under stationarity + Bernoulli masking. The qualitative
+conclusion (low frequencies better constrained than high) holds for any
+signal with decaying spectral energy — verified on all datasets. The
+self-calibration makes the theory’s limitations less consequential: even
+if the theoretical Σ_y shape is imperfect, the Observe step detects the
+mismatch and the Plan step corrects it. Theory provides the initial
+design; adaptation handles the rest.</p>
+<h3 id="how-expensive-is-k-sample-e-step">“How expensive is K-sample
+E-step?”</h3>
+<p>K posterior samples cost K× a single E-step. With K=3 (our default)
+and warm-started M-steps, total training is ~3-4× a single-sample EM
+baseline. We report exact GPU-hours per dataset. The self- calibration
+itself (FFT + CV computation + cutoff update) is negligible: &lt;1% of
+E-step time.</p>
+<h3 id="test-time-corruption-differs-from-training">“Test-time
+corruption differs from training?”</h3>
+<p>The learned prior is unconditional — it does not encode corruption.
+Posterior sampling at test time accepts any (A, Σ_y). Block missingness
+experiments validate this: trained on random masking, evaluated on
+structured blocks the model never saw.</p>
+<hr />
+<h2 id="known-limitations">10. Known Limitations</h2>
+<ol type="1">
+<li><strong>Linear Gaussian observation model.</strong> p(y|x) = N(Ax,
+Σ_y) with known A. Non-linear corruptions (quantization, clipping) not
+covered.</li>
+<li><strong>K-sample cost.</strong> Multi-sample E-step multiplies
+reconstruction cost by K. Effective but not free.</li>
+<li><strong>Spectral theory scope.</strong> Proposition 1 tightest for
+large T, i.i.d. masking. Short sequences tested empirically, not
+analyzed.</li>
+<li><strong>Simple adaptation rule.</strong> The cutoff adjustment is a
+scalar update from aggregate frequency statistics. More sophisticated
+per-frequency or per-sample adaptation is possible but not
+explored.</li>
+<li><strong>Gaussian moment matching.</strong> Posterior sampling
+approximation; may be less accurate for multi-modal distributions at
+intermediate noise levels.</li>
+<li><strong>High-frequency identifiability.</strong> Under severe
+corruption, high-frequency content relies on inductive bias. The Observe
+step correctly identifies this (high CV), but the generated content at
+those frequencies is learned structure, not data-driven.</li>
+</ol>
+<hr />
+<h2 id="the-narrative-arc">11. The Narrative Arc</h2>
+<p><strong>The problem.</strong> Learning from corrupted time series
+today uses static pipelines: reconstruct once, train once, hope the
+reconstruction was good enough. The system never checks.</p>
+<p><strong>The insight.</strong> The model can check. By drawing
+multiple posterior samples, it can measure its own uncertainty — per
+frequency band, per EM iteration. This transforms “Was my reconstruction
+faithful?” from an unanswerable question into a measurable quantity.</p>
+<p><strong>The paradigm.</strong> Act (reconstruct via posterior
+sampling), Observe (diagnose uncertainty in the frequency domain), Plan
+(adapt the observation trust profile), Evaluate (assess and decide). Two
+nested loops: EM improves the model; self-calibration ensures each EM
+step is as faithful as the current evidence allows.</p>
+<p><strong>The theory.</strong> Why this matters specifically for time
+series: observations constrain different frequencies to different
+degrees (Proposition 1), and the optimal posterior correction is a
+Wiener filter whose parameters the self-calibration loop learns to set
+(Proposition 2).</p>
+<p><strong>The result.</strong> A single unconditional diffusion model
+that replaces separate generation, imputation, and denoising pipelines.
+The broadest evaluation scope in the field. And a paradigm where the
+model doesn’t just learn from corrupted data — it learns <em>how
+well</em> it’s learning from corrupted data.</p>
+<hr />
+<h2 id="why-this-gets-accepted">12. Why This Gets Accepted</h2>
+<table>
+<colgroup>
+<col style="width: 11%" />
+<col style="width: 88%" />
+</colgroup>
+<thead>
+<tr>
+<th>Reviewer type</th>
+<th>What they see</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Novelty</strong></td>
+<td>New paradigm: self-calibrating generative learning from corrupted
+data. Not incremental over any prior.</td>
+</tr>
+<tr>
+<td><strong>Impact</strong></td>
+<td>First unified model for irregular TS. Replaces separate
+gen/imp/denoise pipelines. Practical benefit.</td>
+</tr>
+<tr>
+<td><strong>Theory</strong></td>
+<td>Props 1-2 ground the spectral design. Wiener filter emerges
+naturally. Honest about scope.</td>
+</tr>
+<tr>
+<td><strong>Method</strong></td>
+<td>The self-calibration is interpretable (CV → cutoff), grounded
+(theory), and ablated (three-row ablation).</td>
+</tr>
+<tr>
+<td><strong>Results</strong></td>
+<td>SOTA generation + beats specialist imputers + broadest eval scope +
+novel settings.</td>
+</tr>
+<tr>
+<td><strong>Elegance</strong></td>
+<td>“The model measures where it’s guessing and stops pretending.” One
+loop, many capabilities.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The acceptance case in one sentence:</strong> “We show that
+generative learning from corrupted time series should not be static —
+the model can monitor its own posterior uncertainty, adapt its
+observation model, and in doing so produce a single model that
+generates, imputes, and denoises better than dedicated methods for each
+task.”</p>
+<hr />
+<h2 id="positioning-vs.-v5-framing">13. Positioning vs. v5 Framing</h2>
+<p>The v5 “Closing the Loop” framing centers on
+<strong>unification</strong> — one model does everything. The paradigm
+is EM; the spectral correction is a domain adaptation.</p>
+<p>The v6 “Act-Observe-Adapt” framing centers on
+<strong>self-calibration</strong> as the key methodological idea. The
+unification is a consequence, not the headline. The emphasis shifts to:
+the model knows what it knows and what it doesn’t, per frequency, per
+iteration.</p>
+<p><strong>v6 is stronger when:</strong> - The adaptive spectral loop
+(K-sample diagnosis → f_cutoff adaptation) shows clear empirical gains
+over fixed spectral EM - The f_cutoff trajectory / CV heatmap plots are
+visually compelling - Reviewers value methodological novelty over
+application scope</p>
+<p><strong>v5 is stronger when:</strong> - The multi-task unification is
+the dominant result - The spectral adaptation gain is modest - Reviewers
+care more about “what can the model do” than “how does it learn”</p>
+<p>The ideal paper may combine both: the v6 paradigm as the method story
+(Sections 1-4), the v5 multi-task table as the results story (Sections
+5-7). The question is which goes in the title and abstract.</p>
+<hr />
+<h2 id="what-we-credit-vs.-what-we-claim">14. What We Credit vs. What We
+Claim</h2>
+<p><strong>We credit:</strong> - EM with diffusion posteriors (Rozet et
+al., 2024) - MMPS/CG posterior sampling machinery - The
+Act-Observe-Plan-Evaluate structure as a conceptual framework from
+adaptive decision-making</p>
+<p><strong>We claim:</strong> 1. The self-calibrating paradigm:
+monitoring posterior disagreement to adapt observation trust, applied to
+generative learning 2. Spectral self-diagnosis via inter-sample Fourier
+CV 3. The spectral theory (Props 1-2) motivating frequency-dependent
+trust for time series 4. A multi-task framework for generation,
+imputation, conditional generation, and denoising from corrupted data 5.
+Domain adaptations (STL init, curriculum, noise-dependent cutoff) 6. The
+broadest evaluation scope in the field</p>
+</body>
+</html>

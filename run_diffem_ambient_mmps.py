@@ -53,6 +53,7 @@ from utils.loggers import WandbLogger, PrintLogger, CompositeLogger
 from utils.utils import create_model_name_and_dir, print_model_params, log_config_and_tags
 from utils.utils_data import gen_dataloader
 from utils.utils_args import parse_args_irregular
+from utils.train_unconditional import train_unconditional_regular
 from models.our import TS2img_Karras
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -508,6 +509,17 @@ def main(args):
             if logger is not None:
                 logger.log('em/failed_at_iter', em_iter, em_iter)
             raise
+
+        # ================================================================
+        # Phase 3 — Train unconditional model (same as run_regular.py)
+        # ================================================================
+        final_metrics = train_unconditional_regular(
+            args, reconstructions, test_loader, args.device, logger,
+        )
+        if final_metrics:
+            print("Phase 3 (unconditional) final metrics:")
+            for k, v in final_metrics.items():
+                print(f"  {k}: {v:.4f}")
 
         print("\n" + "=" * 60)
         print(f"Ambient-MMPS [{corruption_type}] Complete!")

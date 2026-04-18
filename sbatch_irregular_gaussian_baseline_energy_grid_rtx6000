@@ -1,0 +1,29 @@
+#!/bin/bash
+################################################################################################
+### Irregular Gaussian baseline (noise grid). Primary: rtx6000 + azencot (like sbatch_general_blur_s1).
+### Fallback if QOSMaxGRESPerUser: sbatch_irregular_gaussian_baseline_energy_grid (main/normal/3090).
+################################################################################################
+
+#SBATCH --partition rtx6000
+#SBATCH --qos azencot
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name irreg_gnoise_base
+#SBATCH --output irreg_gnoise_base-%J.out
+#SBATCH --gpus=1
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+echo "$(date)"
+echo -e "SLURM_JOBID:\t\t${SLURM_JOBID}"
+echo -e "SLURM_JOB_NODELIST:\t${SLURM_JOB_NODELIST}"
+echo -e "PWD:\t\t\t$(pwd)"
+
+module load anaconda
+source activate idan2_env
+
+python run_irregular_gaussian_baseline.py \
+  --config ./configs/seq_len_24/energy.yaml \
+  --run_noise_grid \
+  --wandb true \
+  --tags "irregular_gaussian_baseline" "energy" "noise_grid" "seq_len_24" "vs_diffem" "rtx6000"

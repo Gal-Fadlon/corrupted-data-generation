@@ -48,6 +48,7 @@ from utils.utils_data import (
     gen_dataloader, save_reconstructions, load_reconstructions
 )
 from utils.utils_args import parse_args_irregular
+from utils.train_unconditional import train_unconditional_regular
 from models.our import TS2img_Karras
 from models.sampler import DiffusionProcess
 from utils.ambient_net_input import concat_mask_channel, concat_ones_mask
@@ -1772,6 +1773,17 @@ def main(args):
             if logger is not None:
                 logger.log('em/failed_at_iter', em_iter, em_iter)
             raise
+
+        # ================================================================
+        # Phase 3 — Train unconditional model (same as run_regular.py)
+        # ================================================================
+        final_metrics = train_unconditional_regular(
+            args, reconstructions, test_loader, args.device, logger,
+        )
+        if final_metrics:
+            print("Phase 3 (unconditional) final metrics:")
+            for k, v in final_metrics.items():
+                print(f"  {k}: {v:.4f}")
 
         print("\n" + "=" * 60)
         print(f"DiffEM-MMPS [{corruption_type}] + STL Curriculum Complete!")

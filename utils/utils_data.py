@@ -157,7 +157,58 @@ def add_gaussian_noise(data, noise_level=0.1):
     return noisy_data
 
 
-def real_data_loading(data_name, seq_len, missing_rate, gaussian_noise_level=0, noise_timestep=None):
+# CSV datasets that use ``real_data_loading`` (paired with run_irregular_gaussian_baseline).
+REAL_DATASETS_FOR_GAUSSIAN_BASELINE = frozenset(
+    {"stock", "energy", "ETTh1", "ETTh2", "ETTm1", "ETTm2", "weather", "electricity"}
+)
+
+
+def effective_gaussian_sigma(args):
+    """Noise std for ``real_data_loading`` / irregular baseline. Prefers positive ``gaussian_noise_level``."""
+    gnl = getattr(args, "gaussian_noise_level", None)
+    if gnl is not None and float(gnl) > 0:
+        return float(gnl)
+    return float(getattr(args, "corruption_noise_level", 0.01))
+
+
+def build_gaussian_baseline_corruption_pairs(args, seed=None):
+    """
+    Paired clean / noisy TS windows exactly as ``run_irregular_gaussian_baseline``:
+
+    - ``real_data_loading`` with ``missing_rate=0``
+    - ``add_gaussian_noise(ori_data, sigma)`` on the full MinMax-normalized series **before**
+      sliding windows (TS domain, same RNG stream as ``np.random`` when seeded).
+
+    Returns:
+        clean_data: (N, seq_len, C) float32
+        noisy_ts:   (N, seq_len, C) float32 — windows from noisy series (no index column)
+    """
+    if getattr(args, "dataset", None) not in REAL_DATASETS_FOR_GAUSSIAN_BASELINE:
+        raise ValueError(
+            f"build_gaussian_baseline_corruption_pairs: dataset {getattr(args, 'dataset', None)} "
+            f"not supported (use CSV datasets: {sorted(REAL_DATASETS_FOR_GAUSSIAN_BASELINE)})"
+        )
+    sigma = effective_gaussian_sigma(args)
+    if sigma <= 0:
+        raise ValueError("Gaussian sigma must be > 0 for baseline corruption pairs.")
+    noise_ts = getattr(args, "noise_timestep", None)
+    if seed is not None:
+        np.random.seed(int(seed))
+    clean_list, irregular_list = real_data_loading(
+        args.dataset,
+        args.seq_len,
+        missing_rate=0.0,
+        gaussian_noise_level=sigma,
+        noise_timestep=noise_ts,
+    )
+    clean_data = np.stack(clean_list).astype(np.float32)
+    irregular_stacked = np.stack(irregular_list)
+    noisy_ts = irregular_stacked[:, :, :-1].astype(np.float32)
+    return clean_data, noisy_ts
+
+
+def real_data_loading(data_name, seq_len, missing_rate, gaussian_noise_level=0, noise_timestep=None,
+                      missing_type='random', block_length=12):
     """Load and preprocess real-world data.
 
     Args:
@@ -166,6 +217,8 @@ def real_data_loading(data_name, seq_len, missing_rate, gaussian_noise_level=0, 
       - missing_rate: fraction of data points to remove
       - gaussian_noise_level: standard deviation of Gaussian noise to add
       - noise_timestep: if provided, compute noise level from diffusion schedule (overrides gaussian_noise_level)
+      - missing_type: 'random' (MCAR point-wise) or 'block' (contiguous gaps)
+      - block_length: length of each contiguous block when missing_type='block'
 
     Returns:
       - data: preprocessed data.
@@ -205,9 +258,22 @@ def real_data_loading(data_name, seq_len, missing_rate, gaussian_noise_level=0, 
         irregular_dataset = add_gaussian_noise(ori_data, gaussian_noise_level)
     generator = torch.Generator().manual_seed(56789)
 
-    removed_points = torch.randperm(ori_data.shape[0], generator=generator)[
-                     :int(ori_data.shape[0] * missing_rate)].sort().values
-    irregular_dataset[removed_points] = float('nan')
+    if missing_type == 'block' and missing_rate > 0:
+        T = ori_data.shape[0]
+        n_missing = int(T * missing_rate)
+        n_blocks = max(1, n_missing // block_length)
+        rng = np.random.RandomState(56789)
+        removed = set()
+        for _ in range(n_blocks):
+            start = rng.randint(0, max(1, T - block_length))
+            for j in range(start, min(start + block_length, T)):
+                removed.add(j)
+        removed_points = sorted(removed)[:n_missing]
+        irregular_dataset[removed_points] = float('nan')
+    else:
+        removed_points = torch.randperm(ori_data.shape[0], generator=generator)[
+                         :int(ori_data.shape[0] * missing_rate)].sort().values
+        irregular_dataset[removed_points] = float('nan')
     total_length = len(ori_data)
     index = np.array(range(total_length)).reshape(-1, 1)
 
@@ -653,7 +719,12 @@ def gen_dataloader(args):
         if hasattr(args, 'mix_missing_rates') and args.mix_missing_rates:
             ori_data, irregular_data_np = real_data_loading_with_mix_missing_rates(args.dataset, args.seq_len, gaussian_noise_level=args.gaussian_noise_level, noise_timestep=noise_timestep)
         else:
-            ori_data, irregular_data_np = real_data_loading(args.dataset, args.seq_len, missing_rate=args.missing_rate, gaussian_noise_level=args.gaussian_noise_level, noise_timestep=noise_timestep)
+            ori_data, irregular_data_np = real_data_loading(
+                args.dataset, args.seq_len, missing_rate=args.missing_rate,
+                gaussian_noise_level=args.gaussian_noise_level, noise_timestep=noise_timestep,
+                missing_type=getattr(args, 'missing_type', 'random'),
+                block_length=getattr(args, 'block_length', 12),
+            )
             
         ori_data = torch.Tensor(np.array(ori_data))
         ori_train_set = Data.TensorDataset(ori_data)

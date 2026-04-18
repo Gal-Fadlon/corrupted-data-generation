@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import torch
 import torch.nn.functional as F
+import torchaudio.transforms as T
 import math
 
 class TsImgEmbedder(ABC):
@@ -273,6 +274,195 @@ class SpectrogramEmbedder(TsImgEmbedder):
         )  # (B*C, T)
 
         return signal_out.reshape(B, C, self.seq_len).permute(0, 2, 1).to(device)
+
+
+class STFTEmbedder(TsImgEmbedder):
+    """
+    Complex STFT transformation storing real and imaginary parts as channels.
+
+    Unlike SpectrogramEmbedder (magnitude-only, lossy Griffin-Lim inverse),
+    this embedder preserves phase, making ts_to_img / img_to_ts a
+    near-invertible linear pair: ISTFT exactly inverts STFT when the window
+    satisfies COLA.  This is the linear lift L used in Theorem 1 (Section 3.6)
+    for the STFT validation experiment (Section 7.10).
+
+    Input:  (B, T, F)  -- multivariate time series
+    Output: (B, 2F, freq_bins, n_frames) -- real and imag channels stacked
+    """
+
+    def __init__(self, device, seq_len, n_fft, hop_length, img_resolution=None):
+        super().__init__(device, seq_len)
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.img_resolution = img_resolution
+        # Per-bin absolute-max scales for PURE-MULTIPLICATIVE normalization.
+        # Stored so that ts_to_img is a strictly linear operator L: y = L x,
+        # satisfying L(0)=0 and L(ax+by)=aL(x)+bL(y).  Any affine shift (e.g.
+        # the "-1" in min-max rescale to [-1, 1]) would break the CG adjoint
+        # identity <Gx, y> = <x, G^T y>, causing obs-space CG divergence
+        # (Section 5.2 of paper v3). See _stft_audit.py for verification.
+        self.scale_real = None
+        self.scale_imag = None
+        self.img_shape = None
+
+    @staticmethod
+    def pad_to_square(x, target_side, mask=0):
+        """Pad (B, C, H, W) to (B, C, target_side, target_side) with `mask`.
+
+        H and W must both be <= target_side.
+        """
+        _, _, h, w = x.shape
+        pad_h = target_side - h
+        pad_w = target_side - w
+        if pad_h < 0 or pad_w < 0:
+            raise ValueError(
+                f"STFT output ({h}x{w}) exceeds img_resolution={target_side}; "
+                "increase img_resolution or adjust stft_n_fft / stft_hop_length."
+            )
+        return torch.nn.functional.pad(
+            x, (0, pad_w, 0, pad_h), mode='constant', value=mask,
+        )
+
+    @staticmethod
+    def unpad(x, original_shape):
+        _, _, orig_h, orig_w = original_shape
+        return x[:, :, :orig_h, :orig_w]
+
+    def cache_min_max_params(self, train_data, chunk_size=512):
+        """Compute and cache per-bin ABS-MAX scaling factors.
+
+        We deliberately use purely multiplicative (linear) scaling:
+            y = x / abs_max     (forward)
+            x = y * abs_max     (inverse)
+        instead of min-max rescaling to [-1, 1] (which is affine and breaks
+        the CG adjoint identity used in Section 5.2 obs-space CG).
+
+        With per-bin `abs_max_bin = max(|real|, |imag|)` over the training
+        set, the normalized output lies in [-1, 1] exactly when the test
+        sample has coefficients bounded by the training-set extremes, and
+        is at most a small multiple of 1 otherwise - well-suited for EDM.
+
+        Args:
+            train_data: (B, T, F) training time series tensor.
+                        Call once before the training loop starts.
+            chunk_size: process the input in chunks of this many sequences
+                        to avoid `CUDA error: invalid configuration argument`
+                        from torch.stft / F.pad on very large batches.
+        """
+        train_data = train_data.detach().cpu()
+
+        n = train_data.shape[0]
+        abs_max_r = abs_max_i = None
+        for start in range(0, n, chunk_size):
+            chunk = train_data[start:start + chunk_size]
+            real, imag = self._stft_transform(chunk)
+            cur_abs_r = real.abs().amax(dim=0, keepdim=True)
+            cur_abs_i = imag.abs().amax(dim=0, keepdim=True)
+            if abs_max_r is None:
+                abs_max_r, abs_max_i = cur_abs_r, cur_abs_i
+            else:
+                abs_max_r = torch.maximum(abs_max_r, cur_abs_r)
+                abs_max_i = torch.maximum(abs_max_i, cur_abs_i)
+
+        # For "dead" bins where the STFT coefficient is structurally zero
+        # across the training set (e.g. imag parts of DC and Nyquist for real
+        # input signals), naively clamping `abs_max` to a small floor like
+        # 1e-6 would make y = x / 1e-6 amplify fp32 noise (~1e-7) to ~0.1,
+        # breaking linearity in practice.  Use identity scale (= 1.0) for
+        # dead bins so they stay numerically at ~1e-7 through ts_to_img.
+        dead_r = abs_max_r < 1e-5
+        dead_i = abs_max_i < 1e-5
+        abs_max_r = torch.where(dead_r, torch.ones_like(abs_max_r), abs_max_r)
+        abs_max_i = torch.where(dead_i, torch.ones_like(abs_max_i), abs_max_i)
+
+        self.scale_real = abs_max_r.to(self.device)
+        self.scale_imag = abs_max_i.to(self.device)
+
+    def _stft_transform(self, data):
+        """Raw complex STFT, returning real and imaginary tensors.
+
+        Args:
+            data: (B, T, F)
+        Returns:
+            real: (B, F, freq_bins, n_frames)
+            imag: (B, F, freq_bins, n_frames)
+        """
+        data = data.permute(0, 2, 1)  # (B, F, T)
+        spec = T.Spectrogram(
+            n_fft=self.n_fft, hop_length=self.hop_length,
+            center=True, power=None,
+        ).to(data.device)
+        transformed = spec(data)  # (B, F, freq_bins, n_frames) complex
+        return transformed.real, transformed.imag
+
+    @staticmethod
+    def _linear_scale(x, scale):
+        """Pure multiplicative scaling: y = x / scale.  Linear in x."""
+        return x / scale
+
+    @staticmethod
+    def _linear_unscale(x, scale):
+        """Inverse of _linear_scale: x = y * scale.  Linear in y."""
+        return x * scale
+
+    def ts_to_img(self, signal, pad=True, mask=0):
+        """
+        Args:
+            signal: (B, T, F)
+            pad:    if True and img_resolution is set, pad to a square image
+            mask:   fill value for padding (default 0)
+        Returns:
+            (B, 2F, H, W) -- real and imag channels concatenated.
+            If pad=True and img_resolution is set, H = W = img_resolution.
+        """
+        assert self.scale_real is not None, (
+            "Call cache_min_max_params(train_data) before using ts_to_img"
+        )
+        real, imag = self._stft_transform(signal)
+        real = self._linear_scale(real, self.scale_real.to(signal.device))
+        imag = self._linear_scale(imag, self.scale_imag.to(signal.device))
+        stft_out = torch.cat((real, imag), dim=1)
+
+        self.img_shape = tuple(stft_out.shape)
+
+        if pad and self.img_resolution is not None:
+            stft_out = self.pad_to_square(stft_out, self.img_resolution, mask=mask)
+
+        return stft_out
+
+    def _expected_spec_shape(self):
+        """Deterministic (freq_bins, n_frames) for torchaudio Spectrogram(center=True)."""
+        freq_bins = self.n_fft // 2 + 1
+        n_frames = self.seq_len // self.hop_length + 1
+        return freq_bins, n_frames
+
+    def img_to_ts(self, x_image):
+        """
+        Args:
+            x_image: (B, 2F, H, W) - either the raw STFT image or the padded square image
+        Returns:
+            (B, T, F)
+        """
+        if self.img_resolution is not None and (
+            x_image.shape[-1] == self.img_resolution
+            and x_image.shape[-2] == self.img_resolution
+        ):
+            freq_bins, n_frames = self._expected_spec_shape()
+            if freq_bins != self.img_resolution or n_frames != self.img_resolution:
+                x_image = x_image[:, :, :freq_bins, :n_frames]
+
+        half = x_image.shape[1] // 2
+        real, imag = x_image[:, :half], x_image[:, half:]
+
+        real = self._linear_unscale(real, self.scale_real.to(x_image.device))
+        imag = self._linear_unscale(imag, self.scale_imag.to(x_image.device))
+
+        complex_spec = torch.complex(real, imag)
+        ispec = T.InverseSpectrogram(
+            n_fft=self.n_fft, hop_length=self.hop_length, center=True,
+        ).to(x_image.device)
+        x_ts = ispec(complex_spec, self.seq_len)  # (B, F, T)
+        return x_ts.permute(0, 2, 1)  # (B, T, F)
 
 
 class GAFEmbedder(TsImgEmbedder):
