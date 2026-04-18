@@ -1,9 +1,0 @@
-sbatch sbatch_unified_proximal_denoise_gaussian_energy && \
-sbatch sbatch_unified_adaptive_sigma_obs_gaussian_energy && \
-sbatch sbatch_unified_residual_shrinkage_gaussian_energy && \
-sbatch sbatch_unified_truncated_reverse_gaussian_energy && \
-sbatch sbatch_unified_em_annealed_trust_gaussian_energy && \
-sbatch sbatch_unified_posterior_variance_gaussian_energy && \
-sbatch sbatch_unified_jacobian_projection_gaussian_energy && \
-sbatch sbatch_unified_bayesian_target_gaussian_energy && \
-sbatch sbatch_unified_tweedie_covariance_gaussian_energy
