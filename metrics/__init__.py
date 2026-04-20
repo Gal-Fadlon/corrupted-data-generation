@@ -30,7 +30,12 @@ def evaluate_model_irregular(real_sig, gen_sig, args, calc_other_metrics=False):
         pred_mean, pred_std = np.round(np.mean(predictive_score), 4), np.round(np.std(predictive_score), 4)
         print('predictive_score_mean: {}, predictive_score_std: {}'.format(pred_mean, pred_std))
 
-        fid_mean, fid_std, fid_conf_interval = calculate_fid(real_sig, gen_sig)
+        fid_mean, fid_std, fid_conf_interval = calculate_fid(
+            real_sig, gen_sig,
+            cache_dir=getattr(args, 'ts2vec_cache_dir', None),
+            dataset=getattr(args, 'dataset', None),
+            seq_len=real_sig.shape[1] if real_sig.ndim >= 2 else None,
+        )
         print('fid_score_mean: {}, fid_score_std: {}, fid_score_conf_interval: {}'.format(fid_mean, fid_std, fid_conf_interval))
 
         correlation_score_mean, correlation_score_std, correlation_score_conf_interval = calculate_pearson_correlation(

@@ -35,3 +35,20 @@ def print_model_params(logger, model):
     logging.info("number of model parameters: {}".format(params_num))
     logger.log_name_params('config/params_num', params_num)
 
+def extract_time(data):
+    """Returns Maximum sequence length and each sequence length.
+
+    Args:
+      - data: original data
+
+    Returns:
+      - time: extracted time information
+      - max_seq_len: maximum sequence length
+    """
+    time = list()
+    max_seq_len = 0
+    for i in range(len(data)):
+        max_seq_len = max(max_seq_len, len(data[i][:, 0]))
+        time.append(len(data[i][:, 0]))
+
+    return time, max_seq_len

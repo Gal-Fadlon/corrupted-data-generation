@@ -1,6 +1,7 @@
 from omegaconf import OmegaConf
 import argparse
 import sys
+import torch
 
 def parse_args_irregular():
     """
@@ -24,6 +25,14 @@ def parse_args_irregular():
     parser.add_argument('--beta1', type=float, default=1e-5, help='value of beta 1')
     parser.add_argument('--betaT', type=float, default=1e-2, help='value of beta T')
     parser.add_argument('--deterministic', action='store_true', default=False, help='deterministic sampling')
+    parser.add_argument(
+        '--allow_tf32', action='store_true', default=True,
+        help='Enable TF32 matmul/cudnn on Ampere+ (faster). Disable with --no_allow_tf32 if you hit CUDA illegal-instruction errors.',
+    )
+    parser.add_argument(
+        '--no_allow_tf32', action='store_false', dest='allow_tf32',
+        help='Disable TF32 matmul/cudnn',
+    )
 
     # ## --- config file --- # ##
     # NOTE: the below configuration are arguments. if given as CLI argument, they will override the config file values
@@ -50,6 +59,14 @@ def parse_args_irregular():
                         help='delay for the delay embedding transformation, only needed if using delay embedding')
     parser.add_argument('--embedding', type=int,
                         help='embedding for the delay embedding transformation, only needed if using delay embedding')
+    parser.add_argument('--embedder', type=str, default='delay',
+                        choices=['delay', 'stft'],
+                        help='Image embedding: delay (default, non-linear) or stft (linear, near-invertible). '
+                             'Used by the STFT validation experiment (Paper v3 §7.10).')
+    parser.add_argument('--stft_n_fft', type=int, default=8,
+                        help='FFT size for the STFT embedder (ignored when --embedder=delay)')
+    parser.add_argument('--stft_hop_length', type=int, default=4,
+                        help='Hop length for the STFT embedder (ignored when --embedder=delay)')
 
     # --- model--- :
     parser.add_argument('--img_resolution', type=int, help='image resolution')
@@ -90,6 +107,12 @@ def parse_args_irregular():
                         help='timestep fraction [0,1] to compute noise level from diffusion schedule. '
                              'If set, overrides gaussian_noise_level. 0=max noise (sigma_max), 1=min noise (sigma_min)')
     parser.add_argument('--new_metrics', type=int, default=1, help='save model')
+    parser.add_argument('--ts2vec_cache_dir', type=str,
+                        default='/cs/azencot_fsas/gal_and_idan/corrupted-data-generation/metrics/TS2Vec',
+                        help='Root dir for cached TS2Vec encoders used by context-FID. '
+                             'Layout: {root}/{dataset}/seq_len_{N}/seed{0..4}.ckpt. '
+                             'If set, context-FID loads cached encoders (or trains + saves on first miss). '
+                             'Pass "" or None to disable and train fresh every call.')
 
     # --- DiffEM Configuration ---
     parser.add_argument('--use_diffem', action='store_true', default=False,
@@ -135,6 +158,35 @@ def parse_args_irregular():
                         help='Type of forward operator / corruption model')
     parser.add_argument('--corruption_noise_level', type=float, default=0.01,
                         help='Observation noise sigma_y. For gaussian_noise this IS the corruption level.')
+    parser.add_argument(
+        '--align_irregular_gaussian_baseline', action=argparse.BooleanOptionalAction, default=True,
+        help='For gaussian_noise / ts_gaussian_noise with missing_rate=0 on CSV datasets: build corruption '
+             'via utils_data.real_data_loading (same TS noise as run_irregular_gaussian_baseline). '
+             'Use --no_align_irregular_gaussian_baseline for legacy image-space or per-window TS noise.')
+    parser.add_argument(
+        '--gaussian_ts_init', type=str, default='img_to_ts',
+        choices=['img_to_ts', 'stl_residual_denoise', 'temporal_smooth'],
+        help='Initial reconstruction for gaussian_noise / ts_gaussian_noise / gaussian_blur '
+             '(image-space corruptions): plain img_to_ts(y), STL residual attenuation, '
+             'or temporal moving average.')
+    parser.add_argument(
+        '--mmps_freqgate_decomp_gaussian', action='store_true', default=False,
+        help='For gaussian_noise / ts_gaussian_noise: freq-gate MMPS residual + TS decomp '
+             'projection (A=I). Disabled if use_ppca_posterior is set.')
+    parser.add_argument('--freqgate_projection_strength', type=float, default=0.5,
+                        help='Strength of decomposition projection in freq-gate Gaussian MMPS')
+    parser.add_argument('--freqgate_sigma_threshold_frac', type=float, default=0.5,
+                        help='Sigma ratio threshold for projection blending')
+    parser.add_argument('--freqgate_schedule', type=str, default='linear',
+                        choices=['linear', 'cosine'],
+                        help='Frequency gate schedule vs diffusion sigma')
+    parser.add_argument(
+        '--use_ambient_tweedie_mstep', action='store_true', default=False,
+        help='Add Ambient DSM auxiliary loss in M-step (ICML 2024; prototype)')
+    parser.add_argument('--ambient_tweedie_loss_weight', type=float, default=0.1,
+                        help='Weight for Ambient DSM term in M-step')
+    parser.add_argument('--ambient_tweedie_consistency_weight', type=float, default=0.0,
+                        help='Weight for lightweight consistency stub in M-step')
     parser.add_argument('--blur_sigma', type=float, default=2.0,
                         help='Std of Gaussian blur kernel (for gaussian_blur corruption)')
     parser.add_argument('--blur_kernel_size', type=int, default=None,
@@ -162,8 +214,72 @@ def parse_args_irregular():
     # MMPS (run_diffem_mmps.py)
     parser.add_argument('--mmps_sigma_y', type=float, default=0.01,
                         help='Observation noise std for MMPS likelihood')
-    parser.add_argument('--mmps_cg_iters', type=int, default=1,
+    parser.add_argument('--mmps_cg_iters', type=int, default=5,
                         help='Number of conjugate gradient iterations (1 typical for inpainting)')
+    # Co-Evolving EM constraints (run_co_evolving_em.py, paper Sections 5.1–5.7)
+    # Section 5.3: adaptive σ_y
+    parser.add_argument('--sigma_y_ratio', type=float, default=0.1,
+                        help='Ratio c in σ_y = c · σ_t (Prop 2)')
+    parser.add_argument('--adaptive_sigma_y', action='store_true', default=True,
+                        help='Use σ_y = c · σ_t instead of fixed σ_y')
+    parser.add_argument('--no_adaptive_sigma_y', action='store_false', dest='adaptive_sigma_y',
+                        help='Disable adaptive σ_y')
+    parser.add_argument('--sigma_y_floor', type=float, default=0.01,
+                        help='Minimum σ_y: σ_y = max(c·σ_t, floor)')
+    # Section 5.4: manifold projection
+    parser.add_argument('--consistency_projection', action='store_true', default=True,
+                        help='Project onto delay-embedding manifold (Prop 1)')
+    parser.add_argument('--no_consistency_projection', action='store_false', dest='consistency_projection',
+                        help='Disable manifold projection')
+    # Section 5.2: observation-space CG
+    parser.add_argument('--obs_space_cg', action='store_true', default=True,
+                        help='Run CG in observation (TS) space instead of image space (Prop 4)')
+    parser.add_argument('--no_obs_space_cg', action='store_false', dest='obs_space_cg',
+                        help='Disable observation-space CG (use image-space CG)')
+    # Section 5.7: warm-started CG
+    parser.add_argument('--warm_start_cg', action='store_true', default=False,
+                        help='Initialize CG from previous reverse step solution')
+    parser.add_argument('--no_warm_start_cg', action='store_false', dest='warm_start_cg',
+                        help='Disable warm-started CG')
+    # Section 5.6: L_obs
+    parser.add_argument('--lambda_obs', type=float, default=0.0,
+                        help='Weight for L_obs (observation grounding, Prop 3)')
+    parser.add_argument('--no_snr_gate', action='store_true', default=False,
+                        help='Disable SNR gating on L_obs/L_rep')
+    parser.add_argument('--lobs_use_sm_weight', action='store_true', default=False,
+                        help='Apply score-matching weight to L_obs')
+    parser.add_argument('--snr_gate_sigma_d', type=float, default=None,
+                        help='Override σ_d in SNR gate (default: model sigma_data=0.5)')
+    # Section 5.5: L_rep
+    parser.add_argument('--lambda_rep', type=float, default=0.0,
+                        help='Weight for L_rep (manifold penalty in M-step)')
+    # Phase 3
+    parser.add_argument('--phase3', action='store_true', default=True,
+                        help='Run Phase 3: fresh model on final completions')
+    parser.add_argument('--no_phase3', action='store_false', dest='phase3',
+                        help='Skip Phase 3')
+    parser.add_argument('--eval_all_metrics', action='store_true', default=False,
+                        help='Compute all metrics at final EM iteration')
+    parser.add_argument('--gmrf_lambda', type=float, default=0.1,
+                        help='GMRF smoothness prior strength (discrete Laplacian in TS space, 0 = disabled)')
+    parser.add_argument('--spectral_filter_order', type=int, default=2,
+                        help='Butterworth order for spectral MMPS variants '
+                             '(run_diffem_mmps_spectral_post.py, run_diffem_mmps_spectral_cg.py)')
+    parser.add_argument('--bootstrap_method', type=str, default='irregular',
+                        choices=['irregular', 'gaussian'],
+                        help='Bootstrap strategy before MMPS EM in run_diffem_mmps.py')
+    parser.add_argument('--bootstrap_pretrain_epochs', type=int, default=None,
+                        help='Observed-only TST pretrain epochs for the irregular MMPS bootstrap '
+                             '(default: reuse first_epoch)')
+    parser.add_argument('--bootstrap_diffusion_epochs', type=int, default=None,
+                        help='Masked diffusion warm-start epochs for the irregular MMPS bootstrap '
+                             '(default: reuse epochs, else m_step_epochs)')
+    parser.add_argument(
+        '--eval_bootstrap',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Evaluate the bootstrap model before the first EM iteration to track disc_mean trajectory',
+    )
     # Decomposition-enhanced variant (run_diffem_mmps_decomposed.py)
     parser.add_argument('--stl_period', type=int, default=None,
                         help='Period for STL decomposition (auto-detected if None)')
@@ -194,6 +310,14 @@ def parse_args_irregular():
                         help='Enforce observation consistency after E-step sampling')
     parser.add_argument('--e_step_sample_steps', type=int, default=64,
                         help='Number of diffusion steps for E-step sampling')
+    parser.add_argument('--cond_em_iters', type=int, default=None,
+                        help='Number of conditional EM iterations (run_diffem_cond_mmps_init.py)')
+    parser.add_argument('--cond_m_step_epochs', type=int, default=None,
+                        help='Epochs per conditional M-step (run_diffem_cond_mmps_init.py)')
+    parser.add_argument('--mmps_bootstrap_iters', type=int, default=None,
+                        help='Number of MMPS bootstrap EM iterations')
+    parser.add_argument('--mmps_bootstrap_epochs', type=int, default=None,
+                        help='Epochs per MMPS bootstrap M-step')
     parser.add_argument('--ppca_rank', type=int, default=32,
                         help='Rank for PPCA initialisation')
     parser.add_argument('--ppca_iters', type=int, default=8,
@@ -247,6 +371,42 @@ def parse_args_irregular():
     parser.add_argument('--estep_n_samples', type=int, default=3,
                         help='Number of MMPS samples to average per E-step (variance reduction)')
 
+    # --- Spectral MMPS (Proposals A/B/C) ---
+    parser.add_argument('--spectral_n_probes', type=int, default=1,
+                        help='Number of Hutchinson probes for PSD estimation in spectral MMPS')
+    parser.add_argument('--spectral_cg_fallback', action='store_true', default=False,
+                        help='Use standard CG instead of FFT solve in spectral Gaussian MMPS (ablation)')
+    parser.add_argument('--spectral_no_precond', action='store_true', default=False,
+                        help='Disable spectral preconditioner in preconditioned CG MMPS (ablation)')
+    parser.add_argument('--bandlimited_snr_threshold', type=float, default=1.0,
+                        help='SNR threshold for adaptive frequency mask in band-limited MMPS')
+    parser.add_argument('--bandlimited_min_cutoff', type=float, default=0.1,
+                        help='Minimum frequency cutoff fraction in band-limited MMPS')
+    parser.add_argument('--warmstart_epochs', type=int, default=200,
+                        help='Number of warmstart training epochs before EM loop')
+    parser.add_argument('--phase3_epochs', type=int, default=200,
+                        help='Number of Phase 3 continued training epochs after EM')
+
+    # --- Agentic EM (v3) ---
+    parser.add_argument('--agentic_em', action='store_true', default=False,
+                        help='Enable agentic EM loop (adaptive spectral filter, uniform M-step, early stopping)')
+    parser.add_argument('--adaptive_f_cutoff_init', type=float, default=0.5,
+                        help='Initial f_cutoff_base before any spectral diagnosis')
+    parser.add_argument('--spectral_diag_threshold', type=float, default=0.3,
+                        help='Raw CV threshold for determining reliable frequency bands')
+    parser.add_argument('--em_patience', type=int, default=2,
+                        help='Early stopping patience: stop EM if disc_mean does not improve for this many evals')
+
+    # --- Initialization method ---
+    parser.add_argument('--init_method', type=str, default='stl',
+                        choices=['stl', 'kalman', 'linear', 'random'],
+                        help='Initialization method for EM: stl (iterative STL decomposition), '
+                             'kalman (Kalman filter), linear (linear interpolation), '
+                             'random (Gaussian fill from observed stats)')
+    parser.add_argument('--stl_n_iters', type=int, default=5,
+                        help='Number of decompose-impute iterations for iterative STL init '
+                             '(only used when --init_method stl)')
+
     # --- Curriculum and scaling ---
     parser.add_argument('--curriculum_reveal_max', type=float, default=0.3,
                         help='Max fraction of missing positions revealed in curriculum (increase for high missing rates)')
@@ -287,6 +447,32 @@ def parse_args_irregular():
         help='Concatenate further-corruption mask as an extra UNet channel (Ambient Diffusion paper). '
              'Ambient M-step run scripts force this True; enable manually for custom runs.',
     )
+    parser.add_argument('--temporal_block_prob', type=float, default=0.1,
+                        help='Probability that an observed timestep becomes a temporal-block center')
+    parser.add_argument('--temporal_block_width', type=int, default=4,
+                        help='Width of temporal block corruption for block-ambient experiments')
+    parser.add_argument('--trust_schedule', type=str, default='linear',
+                        choices=['linear', 'cosine'],
+                        help='Interpolation schedule for trust-related start/end hyperparameters')
+    parser.add_argument('--trust_mstep_mode', type=str, default='soft_loss',
+                        choices=['soft_loss', 'input_dropout', 'two_branch'],
+                        help='Trust-aware M-step variant for hidden-distribution experiments')
+    parser.add_argument('--imputed_loss_weight_start', type=float, default=0.0,
+                        help='Initial supervision weight on imputed pixels during trust-aware M-step')
+    parser.add_argument('--imputed_loss_weight_end', type=float, default=0.1,
+                        help='Final supervision weight on imputed pixels during trust-aware M-step')
+    parser.add_argument('--imputed_keep_ratio_start', type=float, default=1.0,
+                        help='Initial probability of keeping imputed pixels visible in the UNet input')
+    parser.add_argument('--imputed_keep_ratio_end', type=float, default=1.0,
+                        help='Final probability of keeping imputed pixels visible in the UNet input')
+    parser.add_argument('--observed_keep_ratio_start', type=float, default=1.0,
+                        help='Initial probability of keeping observed pixels visible in conservative trust branches')
+    parser.add_argument('--observed_keep_ratio_end', type=float, default=1.0,
+                        help='Final probability of keeping observed pixels visible in conservative trust branches')
+    parser.add_argument('--full_context_prob_start', type=float, default=0.2,
+                        help='Initial probability of using the full-context branch in two-branch trust training')
+    parser.add_argument('--full_context_prob_end', type=float, default=0.8,
+                        help='Final probability of using the full-context branch in two-branch trust training')
 
     # --- Fast mode (overrides multiple settings for quicker iteration) ---
     parser.add_argument('--fast_mode', action='store_true', default=False,
@@ -325,5 +511,12 @@ def parse_args_irregular():
             if k not in [a.lstrip('-') for a in sys.argv]:
                 setattr(parsed_args, k, v)
         print(f"[fast_mode] overrides applied: {fast_overrides}")
+
+    # TF32: optional only (--allow_tf32). Unconditional TF32 caused CUDA "illegal instruction"
+    # in cudnn conv2d on some cluster RTX 6000 nodes (see run_diffem_ambient_mmps Phase 0).
+    if torch.cuda.is_available():
+        use_tf32 = getattr(parsed_args, 'allow_tf32', False)
+        torch.backends.cuda.matmul.allow_tf32 = use_tf32
+        torch.backends.cudnn.allow_tf32 = use_tf32
 
     return parsed_args

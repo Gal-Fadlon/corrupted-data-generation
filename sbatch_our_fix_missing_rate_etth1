@@ -31,8 +31,8 @@ mkdir -p "$RECON_CACHE_DIR"
 chmod 777 "$RECON_CACHE_DIR"
 export WANDB_API_KEY="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"
 
-#python run_diffem_trajectory_correction.py --config ./configs/seq_len_24/etth1.yaml --missing_rate 0.3 --recon_cache_dir "$RECON_CACHE_DIR" --wandb true --tags "tcps" "ETTh1" "30_missing_rate" "fix_missing_rates" "seq_len=24" 2>&1
-#python run_diffem_trajectory_correction.py --config ./configs/seq_len_24/etth1.yaml --missing_rate 0.5 --recon_cache_dir "$RECON_CACHE_DIR" --wandb true --tags "tcps" "ETTh1" "50_missing_rate" "fix_missing_rates" "seq_len=24" 2>&1
-python run_diffem_trajectory_correction.py --config ./configs/seq_len_24/etth1.yaml --missing_rate 0.7 --recon_cache_dir "$RECON_CACHE_DIR" --wandb true --tags "tcps" "ETTh1" "70_missing_rate" "fix_missing_rates" "seq_len=24" 2>&1
+#python run_co_evolving_em.py --config ./configs/seq_len_24/etth1.yaml --missing_rate 0.3 --recon_cache_dir "$RECON_CACHE_DIR" --wandb true --tags "our" "ETTh1" "30_missing_rate" "fix_missing_rates" "seq_len=24" 2>&1
+#python run_co_evolving_em.py --config ./configs/seq_len_24/etth1.yaml --missing_rate 0.5 --recon_cache_dir "$RECON_CACHE_DIR" --wandb true --tags "our" "ETTh1" "50_missing_rate" "fix_missing_rates" "seq_len=24" 2>&1
+python run_co_evolving_em.py --config ./configs/seq_len_24/etth1.yaml --missing_rate 0.7 --recon_cache_dir "$RECON_CACHE_DIR" --wandb true --tags "our" "ETTh1" "70_missing_rate" "fix_missing_rates" "seq_len=24" 2>&1
 
 chmod 666 /home/galfad/corrupted-data-generation/slurm_logs/$SLURM_JOBID.out /home/galfad/corrupted-data-generation/slurm_logs/$SLURM_JOBID.err

@@ -115,7 +115,7 @@ class CrossCorrelLoss(Loss):
         return loss / 10.
 
 def calculate_pearson_correlation(real_sig, gen_sig):
-    iterations = 1
+    iterations = 5
 
     x_real = torch.from_numpy(real_sig)
     x_fake = torch.from_numpy(gen_sig)

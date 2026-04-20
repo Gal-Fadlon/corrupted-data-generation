@@ -1,3 +1,4 @@
+import os
 import pickle
 import random
 from datetime import datetime
@@ -652,10 +653,13 @@ def calculate_fid_score(act1, act2):
     fid = ssdiff + np.trace(sigma1 + sigma2 - 2.0 * covmean)
     return fid
 
-def Context_FID(ori_data, generated_data):
-    model = TS2Vec(input_dims=ori_data.shape[-1], device=0, batch_size=8, lr=0.001, output_dims=320,
-                   max_train_length=3000)
-    model.fit(ori_data, verbose=False)
+def Context_FID(ori_data, generated_data, cached_model=None):
+    if cached_model is not None:
+        model = cached_model
+    else:
+        model = TS2Vec(input_dims=ori_data.shape[-1], device=0, batch_size=8, lr=0.001, output_dims=320,
+                       max_train_length=3000)
+        model.fit(ori_data, verbose=False)
     ori_represenation = model.encode(ori_data, encoding_window='full_series')
     gen_represenation = model.encode(generated_data, encoding_window='full_series')
     idx = np.random.permutation(ori_data.shape[0])
@@ -671,12 +675,68 @@ def display_scores(results):
     conf_interval = sem * scipy.stats.t.ppf((1 + 0.95) / 2., len(results) - 1)  # 95% confidence interval
     return round(mean, 4), round(std, 4), round(conf_interval, 4)
 
-def calculate_fid(real_sig, gen_sig):
+
+def _chmod_777(path):
+    try:
+        os.chmod(path, 0o777)
+    except Exception:
+        pass
+
+
+def _get_or_train_ts2vec_models(ori_data, cache_dir, dataset, seq_len, n_models=5, device=0):
+    """Return a list of `n_models` TS2Vec encoders.
+
+    Layout: {cache_dir}/{dataset}/seq_len_{seq_len}/seed{0..n_models-1}.ckpt.
+    Loads if all checkpoints exist; otherwise trains from scratch with np.random seeds
+    0..n_models-1, saves each checkpoint (files + parent dirs get mode 0o777).
+    """
+    sub_dir = os.path.join(cache_dir, str(dataset), f"seq_len_{seq_len}")
+    ckpt_paths = [os.path.join(sub_dir, f"seed{i}.ckpt") for i in range(n_models)]
+    all_exist = os.path.isdir(sub_dir) and all(os.path.isfile(p) for p in ckpt_paths)
+
+    models = []
+    if all_exist:
+        print(f"[context-FID] Loading {n_models} cached TS2Vec encoders from {sub_dir}")
+        for p in ckpt_paths:
+            m = TS2Vec(input_dims=ori_data.shape[-1], device=device, batch_size=8, lr=0.001,
+                       output_dims=320, max_train_length=3000)
+            m.load(p)
+            models.append(m)
+    else:
+        print(f"[context-FID] Cache miss at {sub_dir}. Training {n_models} TS2Vec encoders "
+              f"(this happens once per dataset+seq_len, ~2-5 min total).")
+        os.makedirs(sub_dir, exist_ok=True)
+        # Force 0o777 on each dir in the chain (mkdir may have been subject to umask).
+        _chmod_777(cache_dir)
+        _chmod_777(os.path.join(cache_dir, str(dataset)))
+        _chmod_777(sub_dir)
+        for i, p in enumerate(ckpt_paths):
+            np.random.seed(i)
+            torch.manual_seed(i)
+            m = TS2Vec(input_dims=ori_data.shape[-1], device=device, batch_size=8, lr=0.001,
+                       output_dims=320, max_train_length=3000)
+            m.fit(ori_data, verbose=False)
+            m.save(p)
+            _chmod_777(p)
+            models.append(m)
+        print(f"[context-FID] Saved {n_models} TS2Vec encoders to {sub_dir}")
+
+    return models
+
+
+def calculate_fid(real_sig, gen_sig, cache_dir=None, dataset=None, seq_len=None):
     context_fid_score = []
-    iterations = 1
+    iterations = 5
+
+    cached_models = None
+    if cache_dir and dataset and seq_len:
+        cached_models = _get_or_train_ts2vec_models(
+            real_sig, cache_dir, dataset, seq_len, n_models=iterations
+        )
 
     for i in range(iterations):
-        context_fid = Context_FID(real_sig[:], gen_sig[:real_sig.shape[0]])
+        cm = cached_models[i] if cached_models is not None else None
+        context_fid = Context_FID(real_sig[:], gen_sig[:real_sig.shape[0]], cached_model=cm)
         context_fid_score.append(context_fid)
         print(f'Iter {i}: ', 'context-fid =', context_fid, '\n')
 
