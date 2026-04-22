@@ -17,10 +17,31 @@ Note: Use Post-hoc RNN to predict one-step ahead (last feature)
 """
 
 # Necessary Packages
+import os
+import warnings
+
+# Silence TF1 compat deprecation noise (tf.nn.rnn_cell.GRUCell, dynamic_rnn, tf.layers.dense,
+# tf.all_variables, etc.) that otherwise floods the log every eval. Must be set BEFORE
+# `import tensorflow`.
+os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
+
 import tensorflow as tf
 import numpy as np
 from sklearn.metrics import mean_absolute_error
 from utils.utils import extract_time
+
+# Python-level UserWarning / DeprecationWarning / FutureWarning from tf compat shims.
+warnings.filterwarnings('ignore', category=UserWarning, module=r'tensorflow.*')
+warnings.filterwarnings('ignore', category=DeprecationWarning, module=r'tensorflow.*')
+warnings.filterwarnings('ignore', category=FutureWarning, module=r'tensorflow.*')
+warnings.filterwarnings('ignore', message=r'.*rnn_cell.*')
+warnings.filterwarnings('ignore', message=r'.*dynamic_rnn.*')
+warnings.filterwarnings('ignore', message=r'.*layers\.dense.*')
+warnings.filterwarnings('ignore', message=r'.*all_variables.*')
+
+# TF's own Python logger (for "WARNING:tensorflow: ..." lines).
+tf.get_logger().setLevel('ERROR')
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
 tf.compat.v1.disable_eager_execution()
 

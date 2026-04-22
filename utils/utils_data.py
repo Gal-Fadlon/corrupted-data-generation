@@ -75,22 +75,33 @@ class MujocoDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.samples)
 
-def sine_data_generation(no, seq_len, dim, missing_rate):
+def sine_data_generation(no, seq_len, dim, missing_rate,
+                         corruption_type='missing_observation',
+                         missing_type='fix_missing_rates',
+                         gaussian_noise_level=0.0):
     """Sine data generation.
 
     Args:
       - no: the number of samples
       - seq_len: sequence length of the time-series
       - dim: feature dimensions
+      - missing_rate: fraction of time steps to drop per sample
+      - corruption_type: 'missing_observation', 'noisy_observations', or 'combined_missing_noise'
+      - missing_type: 'fix_missing_rates' (random per sample, legacy), 'block_start',
+                      'block_end', or 'block_random'
+      - gaussian_noise_level: noise level applied before masking when corruption_type includes noise
 
     Returns:
       - data: generated data
     """
-    # Initialize the output
-    # data = list()
     irregular_dataset = list()
     ori_data = list()
     generator = torch.Generator().manual_seed(56789)
+    block_rng = np.random.RandomState(56789)
+
+    apply_missing = corruption_type in ('missing_observation', 'combined_missing_noise')
+    apply_noise = corruption_type in ('noisy_observations', 'combined_missing_noise')
+
     # Generate sine data
     for i in range(no):
         # Initialize each time-series
@@ -112,9 +123,30 @@ def sine_data_generation(no, seq_len, dim, missing_rate):
         # Stack the generated data
         ori_data.append(temp.copy())
 
-        # Create irregular data
-        removed_points = torch.randperm(temp.shape[0], generator=generator)[:int(temp.shape[0] * missing_rate)].sort().values
-        temp[removed_points] = float('nan')
+        # Apply noise (before masking) if requested
+        if apply_noise and gaussian_noise_level > 0:
+            temp = add_gaussian_noise(temp, gaussian_noise_level)
+
+        # Apply missing pattern
+        if apply_missing and missing_rate > 0:
+            if missing_type == 'fix_missing_rates':
+                removed_points = torch.randperm(temp.shape[0], generator=generator)[
+                                 :int(temp.shape[0] * missing_rate)].sort().values
+                temp[removed_points] = float('nan')
+            else:
+                block_size = int(missing_rate * seq_len)
+                if block_size > 0:
+                    if missing_type == 'block_start':
+                        start = 0
+                    elif missing_type == 'block_end':
+                        start = seq_len - block_size
+                    elif missing_type == 'block_random':
+                        start = int(block_rng.randint(0, seq_len - block_size + 1))
+                    else:
+                        start = None
+                    if start is not None:
+                        temp[start:start + block_size] = float('nan')
+
         idx = np.array(range(seq_len)).reshape(-1, 1)
         temp = np.concatenate((temp, idx), axis=1)
         irregular_dataset.append(temp)
@@ -160,7 +192,28 @@ def add_gaussian_noise(data, noise_level=0.1):
     return noisy_data
 
 
-def real_data_loading(data_name, seq_len, missing_rate, gaussian_noise_level=0, noise_timestep=None):
+def _apply_block_missing_to_window(window, block_size, pattern, rng):
+    """In-place: set feature columns of `window` (a seq_len x (features+1) array
+    with a trailing time-index column) to NaN according to block pattern.
+
+    Only the feature columns (all but the last) are masked; the time index is preserved.
+    """
+    if block_size <= 0:
+        return
+    seq_len = window.shape[0]
+    if pattern == 'block_start':
+        start = 0
+    elif pattern == 'block_end':
+        start = seq_len - block_size
+    elif pattern == 'block_random':
+        start = int(rng.randint(0, seq_len - block_size + 1))
+    else:
+        return
+    window[start:start + block_size, :-1] = np.nan
+
+
+def real_data_loading(data_name, seq_len, missing_rate, gaussian_noise_level=0, noise_timestep=None,
+                      corruption_type='missing_observation', missing_type='fix_missing_rates'):
     """Load and preprocess real-world data.
 
     Args:
@@ -169,6 +222,10 @@ def real_data_loading(data_name, seq_len, missing_rate, gaussian_noise_level=0, 
       - missing_rate: fraction of data points to remove
       - gaussian_noise_level: standard deviation of Gaussian noise to add
       - noise_timestep: if provided, compute noise level from diffusion schedule (overrides gaussian_noise_level)
+      - corruption_type: 'missing_observation' (missing only), 'noisy_observations' (noise only),
+                         or 'combined_missing_noise' (both).
+      - missing_type: 'fix_missing_rates' (global random, current behavior), 'block_start', 'block_end',
+                      or 'block_random' (per-window block patterns).
 
     Returns:
       - data: preprocessed data.
@@ -198,19 +255,26 @@ def real_data_loading(data_name, seq_len, missing_rate, gaussian_noise_level=0, 
     ori_data = MinMaxScaler(ori_data)
 
     irregular_dataset = ori_data.copy()
-    
+
     # Compute noise level from diffusion schedule if noise_timestep is provided
     if noise_timestep is not None:
         gaussian_noise_level = compute_sigma_from_schedule(noise_timestep)
         print(f"Using diffusion schedule noise: timestep={noise_timestep}, sigma={gaussian_noise_level:.6f}")
-    
-    if gaussian_noise_level > 0:
+
+    apply_missing = corruption_type in ('missing_observation', 'combined_missing_noise')
+    apply_noise = corruption_type in ('noisy_observations', 'combined_missing_noise')
+
+    if apply_noise and gaussian_noise_level > 0:
         irregular_dataset = add_gaussian_noise(ori_data, gaussian_noise_level)
+
     generator = torch.Generator().manual_seed(56789)
 
-    removed_points = torch.randperm(ori_data.shape[0], generator=generator)[
-                     :int(ori_data.shape[0] * missing_rate)].sort().values
-    irregular_dataset[removed_points] = float('nan')
+    if apply_missing and missing_type == 'fix_missing_rates':
+        # Global random missing applied BEFORE windowing (legacy behavior)
+        removed_points = torch.randperm(ori_data.shape[0], generator=generator)[
+                         :int(ori_data.shape[0] * missing_rate)].sort().values
+        irregular_dataset[removed_points] = float('nan')
+
     total_length = len(ori_data)
     index = np.array(range(total_length)).reshape(-1, 1)
 
@@ -234,6 +298,13 @@ def real_data_loading(data_name, seq_len, missing_rate, gaussian_noise_level=0, 
     for i in range(0, len(irregular_dataset) - seq_len):
         _x = irregular_dataset[i:i + seq_len]
         irregular_temp_data.append(_x)
+
+    # Apply block patterns PER WINDOW (after slicing)
+    if apply_missing and missing_type in ('block_start', 'block_end', 'block_random'):
+        block_size = int(missing_rate * seq_len)
+        block_rng = np.random.RandomState(56789)
+        for w in irregular_temp_data:
+            _apply_block_missing_to_window(w, block_size, missing_type, block_rng)
 
     # Mix the data (to make it similar to i.i.d)
     irregular_data = []
@@ -663,7 +734,12 @@ def load_reconstructions(save_path, em_iter):
 def gen_dataloader(args):
     if args.dataset == 'sine':
         args.dataset_size = 10000
-        ori_data, irregular_data = sine_data_generation(args.dataset_size, args.seq_len, args.input_channels, args.missing_rate)
+        ori_data, irregular_data = sine_data_generation(
+            args.dataset_size, args.seq_len, args.input_channels, args.missing_rate,
+            corruption_type=getattr(args, 'corruption_type', 'missing_observation'),
+            missing_type=getattr(args, 'missing_type', 'fix_missing_rates'),
+            gaussian_noise_level=getattr(args, 'gaussian_noise_level', 0.0),
+        )
         ori_data = torch.Tensor(np.array(ori_data))
         ori_train_set = Data.TensorDataset(ori_data)
         irregular_data = torch.Tensor(np.array(irregular_data))
@@ -674,7 +750,14 @@ def gen_dataloader(args):
         if hasattr(args, 'mix_missing_rates') and args.mix_missing_rates:
             ori_data, irregular_data_np = real_data_loading_with_mix_missing_rates(args.dataset, args.seq_len, gaussian_noise_level=args.gaussian_noise_level, noise_timestep=noise_timestep)
         else:
-            ori_data, irregular_data_np = real_data_loading(args.dataset, args.seq_len, missing_rate=args.missing_rate, gaussian_noise_level=args.gaussian_noise_level, noise_timestep=noise_timestep)
+            ori_data, irregular_data_np = real_data_loading(
+                args.dataset, args.seq_len,
+                missing_rate=args.missing_rate,
+                gaussian_noise_level=args.gaussian_noise_level,
+                noise_timestep=noise_timestep,
+                corruption_type=getattr(args, 'corruption_type', 'missing_observation'),
+                missing_type=getattr(args, 'missing_type', 'fix_missing_rates'),
+            )
             
         ori_data = torch.Tensor(np.array(ori_data))
         ori_train_set = Data.TensorDataset(ori_data)

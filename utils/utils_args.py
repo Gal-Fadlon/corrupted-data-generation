@@ -149,13 +149,30 @@ def parse_args_irregular():
                         help='Number of epochs to train unconditional model per EM iteration (default: same as m_step_epochs)')
     parser.add_argument('--em_eval_interval', type=int, default=1,
                         help='Evaluate metrics every N EM iterations')
+    parser.add_argument('--m_eval_every_epochs', type=int, default=10,
+                        help='Inside each M-step, evaluate disc (and save if improved) every N training '
+                             'epochs. Set to 0 to disable mid-M-step evaluation (one eval per EM iter).')
 
     # --- General corruption (run_diffem_mmps_general_corruption.py) ---
-    parser.add_argument('--corruption_type', type=str, default='missing',
-                        choices=['missing', 'gaussian_noise', 'gaussian_blur', 'random_projection',
-                                 'ts_gaussian_noise', 'ts_temporal_smoothing', 'ts_missing_noise',
-                                 'temporal_smoothing', 'combined_missing_noise'],
-                        help='Type of forward operator / corruption model')
+    parser.add_argument('--corruption_type', type=str, default='missing_observation',
+                        choices=['missing_observation', 'noisy_observations', 'combined_missing_noise'],
+                        help='Type of corruption: missing_observation (missing only), '
+                             'noisy_observations (Gaussian noise only), or combined_missing_noise (both).')
+    parser.add_argument('--missing_type', type=str, default='fix_missing_rates',
+                        choices=['fix_missing_rates', 'block_start', 'block_end', 'block_random'],
+                        help='Missing pattern. Only applies when corruption_type involves missing. '
+                             'fix_missing_rates: global random missing before windowing. '
+                             'block_start/block_end: contiguous block at the start/end of each window. '
+                             'block_random: random-position contiguous block per window.')
+    parser.add_argument('--method', type=str, default='our',
+                        help='Name used as top-level dir under saved_models/ '
+                             '(e.g., our, diffusion_ts, imagentime).')
+    parser.add_argument('--save_models_root', type=str,
+                        default='/cs/azencot_fsas/gal_and_idan/corrupted-data-generation/saved_models',
+                        help='Root dir for trained model checkpoints. '
+                             'Layout: {root}/{method}/{corruption}/[{missing_type}/]{dataset}/'
+                             'seq_len_{N}/{config}/{run_name}/. '
+                             'Pass "" to disable saving.')
     parser.add_argument('--corruption_noise_level', type=float, default=0.01,
                         help='Observation noise sigma_y. For gaussian_noise this IS the corruption level.')
     parser.add_argument(
@@ -254,7 +271,7 @@ def parse_args_irregular():
     parser.add_argument('--lambda_rep', type=float, default=0.0,
                         help='Weight for L_rep (manifold penalty in M-step)')
     # Phase 3
-    parser.add_argument('--phase3', action='store_true', default=True,
+    parser.add_argument('--phase3', action='store_true', default=False,
                         help='Run Phase 3: fresh model on final completions')
     parser.add_argument('--no_phase3', action='store_false', dest='phase3',
                         help='Skip Phase 3')

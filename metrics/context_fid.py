@@ -690,6 +690,12 @@ def _get_or_train_ts2vec_models(ori_data, cache_dir, dataset, seq_len, n_models=
     Loads if all checkpoints exist; otherwise trains from scratch with np.random seeds
     0..n_models-1, saves each checkpoint (files + parent dirs get mode 0o777).
     """
+    # Resolve an int device into a device-string so torch.load(map_location=...) gets
+    # a form it accepts in all PyTorch versions (raw int is treated as a callable by
+    # torch 2.x's fallback and crashes with "'int' object is not callable").
+    if isinstance(device, int):
+        device = f"cuda:{device}" if torch.cuda.is_available() else "cpu"
+
     sub_dir = os.path.join(cache_dir, str(dataset), f"seq_len_{seq_len}")
     ckpt_paths = [os.path.join(sub_dir, f"seed{i}.ckpt") for i in range(n_models)]
     all_exist = os.path.isdir(sub_dir) and all(os.path.isfile(p) for p in ckpt_paths)

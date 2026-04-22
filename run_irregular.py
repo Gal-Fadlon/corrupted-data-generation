@@ -4,6 +4,7 @@ from torch import optim
 import torch.nn.functional as F
 import os, sys
 import glob
+import time
 import numpy as np
 import logging
 from tqdm import tqdm
@@ -15,6 +16,7 @@ from utils.loggers import WandbLogger, PrintLogger, CompositeLogger
 from utils.utils import restore_state, create_model_name_and_dir, print_model_params, log_config_and_tags
 from utils.utils_data import gen_dataloader
 from utils.utils_args import parse_args_irregular
+from utils.utils_save import maybe_save_if_improved
 from models.our import TS2img_Karras
 from models.sampler import DiffusionProcess
 from models.decoder import TST_Decoder
@@ -170,6 +172,9 @@ def main(args):
         best_disc_score = float('inf')
 
         print('logging_iter', args.logging_iter)
+
+        # ---- Phase 1: TST pretraining (ImageI2R "init") ----
+        init_start_time = time.time()
         for step in range(1, args.first_epoch + 1):
             for i, data in enumerate(train_loader, 1):
                 x = data[0].to(args.device)
@@ -199,9 +204,22 @@ def main(args):
                 + str(np.round(np.sqrt(loss_e_t0.item()), 4))
             )
 
+        init_seconds = time.time() - init_start_time
+        init_minutes = init_seconds / 60.0
+        if logger is not None:
+            logger.log('time/init_minutes', init_minutes, 0)
+        print(f"  Phase 1 (TST pretraining) took {init_minutes:.2f} min")
+
+        # ---- Phase 2: joint diffusion + TST recovery training ----
+        metrics_history = []
+        cumulative_training_seconds = 0.0
+        best_disc_value = None
+        best_disc_epoch = None
+        cum_at_best_seconds = None
 
         for epoch in range(init_epoch, args.epochs):
             print("Starting epoch %d." % (epoch,))
+            epoch_train_start = time.time()
 
             model.train()
             model.epoch = epoch
@@ -244,6 +262,13 @@ def main(args):
                 optimizer_er.step()
                 torch.cuda.empty_cache()
 
+            # End of pure training for this epoch — measure before eval.
+            epoch_train_seconds = time.time() - epoch_train_start
+            cumulative_training_seconds += epoch_train_seconds
+            if logger is not None:
+                logger.log('time/epoch_minutes', epoch_train_seconds / 60.0, epoch)
+                logger.log('time/cumulative_training_minutes', cumulative_training_seconds / 60.0, epoch)
+
             # --- evaluation loop ---
             if epoch % args.logging_iter == 0:
                 gen_sig = []
@@ -268,6 +293,27 @@ def main(args):
                 scores = evaluate_model_irregular(real_sig, gen_sig, args)
                 for key, value in scores.items():
                     logger.log(f'test/{key}', value, epoch)
+
+                metrics_history.append({'epoch': epoch, **scores})
+
+                current_disc = scores.get('disc_mean', float('inf'))
+                if best_disc_value is None or current_disc < best_disc_value:
+                    best_disc_value = current_disc
+                    best_disc_epoch = epoch
+                    cum_at_best_seconds = cumulative_training_seconds
+
+                # Save-if-improved. ImageI2R checkpoint also carries TST encoder/decoder/optimizer.
+                maybe_save_if_improved(
+                    args, model, optimizer,
+                    real_sig, gen_sig, last_recon=None,
+                    metrics_history=metrics_history, em_iter=epoch, logger=logger,
+                    current_disc=current_disc, log_step=epoch,
+                    extra_state={
+                        'tst_encoder': embedder.state_dict(),
+                        'tst_decoder': decoder.state_dict(),
+                        'tst_optimizer': optimizer_er.state_dict(),
+                    },
+                )
 
                 # --- Memorization Check ---
                 # We use a subset of real data to match the generated size if needed, or full real data
@@ -298,6 +344,20 @@ def main(args):
                     except Exception as e:
                         print(f"Failed to delete temporary plot file {mem_plot_path}: {e}")
 
+        # --- Convergence summary (time/epochs to best disc) ---
+        if cum_at_best_seconds is not None:
+            time_to_best_exc_init_minutes = cum_at_best_seconds / 60.0
+            time_to_best_inc_init_minutes = (init_seconds + cum_at_best_seconds) / 60.0
+            print(f"\nConvergence summary:")
+            print(f"  Best disc: {best_disc_value:.4f} at epoch={best_disc_epoch}")
+            print(f"  Time to best disc (inc init): {time_to_best_inc_init_minutes:.2f} min")
+            print(f"  Time to best disc (exc init): {time_to_best_exc_init_minutes:.2f} min")
+            if logger is not None:
+                logger.log('time/time_to_best_disc_inc_init_minutes', time_to_best_inc_init_minutes, 0)
+                logger.log('time/time_to_best_disc_exc_init_minutes', time_to_best_exc_init_minutes, 0)
+                logger.log('time/epochs_to_best_disc', best_disc_epoch, 0)
+                logger.log('time/best_disc_value', best_disc_value, 0)
+
         logging.info("Training is complete")
 
 
@@ -306,15 +366,4 @@ if __name__ == '__main__':
     torch.random.manual_seed(args.seed)
     np.random.default_rng(args.seed)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    
-    # Check if DiffEM mode is enabled
-    if getattr(args, 'pure_diffem', False):
-        print("Pure DiffEM mode enabled. Redirecting to run_diffem_pure.py...")
-        from run_diffem_pure import main as pure_diffem_main
-        pure_diffem_main(args)
-    elif getattr(args, 'use_diffem', False):
-        print("DiffEM mode enabled (with TST). Redirecting to run_diffem.py...")
-        from run_diffem import main as diffem_main
-        diffem_main(args)
-    else:
-        main(args)
+    main(args)

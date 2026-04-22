@@ -39,6 +39,7 @@ from models.our import TS2img_Karras
 from models.sampler import DiffusionProcess
 from utils.train_unconditional import train_unconditional_regular
 from utils.utils_stl import initialize_with_iterative_stl, initialize_with_kalman
+from utils.utils_save import maybe_save_if_improved
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -507,13 +508,19 @@ def e_step(args, uncond_model, corrupted_data, obs_masks, em_iter, device, logge
 # =============================================================================
 
 def m_step(args, uncond_model, optimizer, reconstructions,
-           corrupted_data, obs_masks, em_iter, device, logger=None):
+           corrupted_data, obs_masks, em_iter, device, logger=None,
+           eval_callback=None, eval_every_epochs=None):
     """
     M-step: L = L_SM + λ_obs · L_obs + λ_rep · L_rep
 
     L_SM  — standard denoising score matching in image space
     L_obs — Section 5.6: SNR-gated observation grounding in TS space (Prop 3)
     L_rep — Section 5.5: SNR-gated manifold penalty in image space (Prop 1 at training time)
+
+    If `eval_callback` is provided and `eval_every_epochs` > 0, `eval_callback(epoch)` is
+    invoked after every `eval_every_epochs` training epochs (and always after the final
+    epoch). The callback is responsible for its own evaluation/save/logging; its elapsed
+    time is returned in the second position so the caller can exclude it from training time.
     """
     print(f"\n=== M-Step (EM iter {em_iter}) ===")
     print(f"  Training for {args.m_step_epochs} epochs...")
@@ -541,6 +548,8 @@ def m_step(args, uncond_model, optimizer, reconstructions,
     )
 
     uncond_model.train()
+
+    total_eval_time_in_mstep = 0.0
 
     for epoch in range(args.m_step_epochs):
         epoch_loss_sm = 0.0
@@ -626,8 +635,14 @@ def m_step(args, uncond_model, optimizer, reconstructions,
                         avg_sm + lambda_obs * avg_obs + lambda_rep * avg_rep,
                         global_step)
 
+        # Mid-M-step evaluation (disc + save), excluded from training time.
+        if eval_callback is not None and eval_every_epochs and (epoch + 1) % eval_every_epochs == 0:
+            _eval_start = time.time()
+            eval_callback(epoch)
+            total_eval_time_in_mstep += time.time() - _eval_start
+
     print(f"  M-step complete for EM iteration {em_iter}.")
-    return uncond_model
+    return uncond_model, total_eval_time_in_mstep
 
 
 def m_step_bootstrap(args, uncond_model, optimizer, reconstructions, em_iter, device, logger=None):
@@ -682,8 +697,13 @@ def m_step_bootstrap(args, uncond_model, optimizer, reconstructions, em_iter, de
 # Evaluation
 # =============================================================================
 
-def evaluate_uncond(args, uncond_model, test_loader, em_iter, device, logger=None):
-    """Evaluate via unconditional sampling."""
+def evaluate_uncond(args, uncond_model, test_loader, em_iter, device, logger=None,
+                    m_epoch=None):
+    """Evaluate via unconditional sampling.
+
+    `m_epoch` is the 0-based epoch within the current M-step (for mid-M-step evals).
+    If None, defaults to args.m_step_epochs - 1 (post-M-step position).
+    """
     print(f"\n=== Evaluation (EM iter {em_iter}) ===")
 
     uncond_model.eval()
@@ -709,14 +729,19 @@ def evaluate_uncond(args, uncond_model, test_loader, em_iter, device, logger=Non
 
     scores = evaluate_model_irregular(real_sig, gen_sig, args)
 
-    print(f"  EM iter {em_iter} metrics:")
+    if m_epoch is None:
+        m_epoch_for_step = args.m_step_epochs - 1
+    else:
+        m_epoch_for_step = m_epoch
+    eval_step = em_iter * args.m_step_epochs + m_epoch_for_step
+
+    print(f"  EM iter {em_iter}, m_epoch {m_epoch_for_step} metrics:")
     for key, value in scores.items():
         print(f"    {key}: {value:.4f}")
         if logger is not None:
-            eval_step = (em_iter + 2) * args.m_step_epochs - 1
             logger.log(f'test/{key}', value, eval_step)
 
-    return scores
+    return scores, real_sig, gen_sig
 
 
 # =============================================================================
@@ -770,6 +795,8 @@ def main(args):
         print(f"Section 5.1: Warm Start ({init_method})")
         print(f"{'='*60}")
 
+        init_start_time = time.time()
+
         if init_method == 'kalman':
             initial_reconstructions = initialize_with_kalman(
                 corrupted_data, obs_masks, seed=args.seed,
@@ -813,6 +840,12 @@ def main(args):
                 n_iters=getattr(args, 'stl_n_iters', 5),
             )
 
+        init_seconds = time.time() - init_start_time
+        init_minutes = init_seconds / 60.0
+        if logger is not None:
+            logger.log('time/init_minutes', init_minutes, 0)
+        print(f"  Init ({init_method}) took {init_minutes:.2f} min")
+
         if getattr(args, 'embedder', 'delay') == 'stft':
             print(f"\n{'='*60}")
             print("Caching STFT min/max stats on warm-start completions")
@@ -827,10 +860,16 @@ def main(args):
         print("Section 5.1: Bootstrap M-Step on warm-start completions")
         print(f"{'='*60}")
 
+        bootstrap_start_time = time.time()
         uncond_model = m_step_bootstrap(
             args, uncond_model, optimizer,
             initial_reconstructions, em_iter=-1, device=args.device, logger=logger
         )
+        bootstrap_seconds = time.time() - bootstrap_start_time
+        bootstrap_minutes = bootstrap_seconds / 60.0
+        if logger is not None:
+            logger.log('time/bootstrap_minutes', bootstrap_minutes, 0)
+        print(f"  Bootstrap M-step took {bootstrap_minutes:.2f} min")
 
         # === Configuration summary ===
         sigma_y_ratio = getattr(args, 'sigma_y_ratio', 0.1)
@@ -860,10 +899,65 @@ def main(args):
         print(f"{'='*60}")
 
         best_metrics = None
+        metrics_history = []
         last_recon = initial_reconstructions
         em_start_time = time.time()
 
+        # Convergence tracking: snapshots whenever disc strictly improves.
+        cumulative_em_seconds = 0.0
+        best_disc_value = None
+        best_disc_em_iter = None
+        best_disc_m_epoch = None
+        cum_em_at_best_seconds = None
+
+        current_em_iter = [0]  # mutable so the closure sees updates
+
+        def run_eval_and_save(m_epoch_in_step):
+            """Eval + best-disc tracking + save. Called inside or after M-step.
+
+            m_epoch_in_step is the 0-based epoch index within the current M-step, or
+            (args.m_step_epochs - 1) to denote 'end of M-step' when called explicitly.
+            """
+            em = current_em_iter[0]
+            metrics, real_sig, gen_sig = evaluate_uncond(
+                args, uncond_model, test_loader, em, args.device, logger,
+                m_epoch=m_epoch_in_step,
+            )
+
+            metrics_history.append({
+                'em_iter': em,
+                'm_epoch': m_epoch_in_step,
+                **metrics,
+            })
+
+            current_disc = metrics.get('disc_mean', float('inf'))
+            nonlocal best_disc_value, best_disc_em_iter, best_disc_m_epoch, cum_em_at_best_seconds
+            if best_disc_value is None or current_disc < best_disc_value:
+                best_disc_value = current_disc
+                best_disc_em_iter = em
+                best_disc_m_epoch = m_epoch_in_step
+                cum_em_at_best_seconds = cumulative_em_seconds
+
+            nonlocal best_metrics
+            if best_metrics is None or current_disc < best_metrics.get('disc_mean', float('inf')):
+                best_metrics = metrics
+
+            if logger is not None:
+                global_epoch = em * args.m_step_epochs + m_epoch_in_step
+                logger.log('time/em_iter_at_eval', em, global_epoch)
+                logger.log('time/m_epoch_at_eval', m_epoch_in_step, global_epoch)
+
+            maybe_save_if_improved(
+                args, uncond_model, optimizer,
+                real_sig, gen_sig, last_recon,
+                metrics_history, em, logger,
+                current_disc=current_disc, m_epoch=m_epoch_in_step,
+            )
+
+        m_eval_every = getattr(args, 'm_eval_every_epochs', 0) or 0
+
         for em_iter in range(args.em_iters):
+            current_em_iter[0] = em_iter
             iter_start_time = time.time()
 
             print(f"\n{'='*60}")
@@ -882,38 +976,46 @@ def main(args):
                 print(f"  Curriculum: +{n_revealed} positions (progress={progress:.2f})")
 
             # --- E-step (Sections 5.2–5.4, 5.7) ---
+            e_step_start = time.time()
             reconstructions = e_step(
                 args, uncond_model, curriculum_corrupted, curriculum_masks,
                 em_iter, args.device, logger
             )
+            e_step_seconds = time.time() - e_step_start
             last_recon = reconstructions
 
             uncond_model.reset_ema()
 
-            # --- M-step (Sections 5.5–5.6) ---
-            uncond_model = m_step(
+            # --- M-step (Sections 5.5–5.6) with optional mid-step eval ---
+            m_step_start = time.time()
+            uncond_model, eval_time_in_mstep = m_step(
                 args, uncond_model, optimizer,
                 reconstructions, corrupted_data, obs_masks,
-                em_iter, args.device, logger
+                em_iter, args.device, logger,
+                eval_callback=run_eval_and_save if m_eval_every > 0 else None,
+                eval_every_epochs=m_eval_every if m_eval_every > 0 else None,
             )
+            m_step_seconds_incl_eval = time.time() - m_step_start
+            m_step_seconds = m_step_seconds_incl_eval - eval_time_in_mstep
 
             iter_elapsed = time.time() - iter_start_time
             total_elapsed = time.time() - em_start_time
-            print(f"  Wall-clock: {iter_elapsed:.1f}s (total: {total_elapsed:.1f}s)")
+            cumulative_em_seconds += e_step_seconds + m_step_seconds
+            print(f"  Wall-clock: {iter_elapsed:.1f}s (total: {total_elapsed:.1f}s) "
+                  f"[E={e_step_seconds:.1f}s, M={m_step_seconds:.1f}s, "
+                  f"eval-in-M={eval_time_in_mstep:.1f}s]")
 
             if logger is not None:
                 logger.log('em/wall_clock_seconds', iter_elapsed, em_iter)
                 logger.log('em/total_wall_clock', total_elapsed, em_iter)
+                logger.log('time/e_step_minutes', e_step_seconds / 60.0, em_iter)
+                logger.log('time/m_step_minutes', m_step_seconds / 60.0, em_iter)
 
+            # If mid-M-step eval is disabled, fall back to one eval+save per EM iter.
             is_last = (em_iter == args.em_iters - 1)
-            if (em_iter + 1) % args.em_eval_interval == 0 or is_last:
-                metrics = evaluate_uncond(
-                    args, uncond_model, test_loader,
-                    em_iter, args.device, logger,
-                )
-
-                if best_metrics is None or metrics.get('disc_mean', float('inf')) < best_metrics.get('disc_mean', float('inf')):
-                    best_metrics = metrics
+            if m_eval_every <= 0:
+                if (em_iter + 1) % args.em_eval_interval == 0 or is_last:
+                    run_eval_and_save(args.m_step_epochs - 1)
 
             if logger is not None:
                 logger.log('em/iteration', em_iter, em_iter)
@@ -923,6 +1025,28 @@ def main(args):
               f"({total_em_time/3600:.2f}h)")
         if logger is not None:
             logger.log('em/total_em_wall_clock_hours', total_em_time / 3600, 0)
+
+        # --- Convergence timing (to best disc reached so far in EM) ---
+        if cum_em_at_best_seconds is not None:
+            time_to_best_exc_init_seconds = bootstrap_seconds + cum_em_at_best_seconds
+            time_to_best_inc_init_seconds = init_seconds + time_to_best_exc_init_seconds
+            global_epoch_at_best = (best_disc_em_iter * args.m_step_epochs
+                                     + (best_disc_m_epoch if best_disc_m_epoch is not None else 0))
+            print(f"\nConvergence summary (EM-only):")
+            print(f"  Best disc: {best_disc_value:.4f} at em_iter={best_disc_em_iter}, "
+                  f"m_epoch={best_disc_m_epoch}")
+            print(f"  Time to best disc (inc init): {time_to_best_inc_init_seconds/60.0:.2f} min")
+            print(f"  Time to best disc (exc init): {time_to_best_exc_init_seconds/60.0:.2f} min")
+            if logger is not None:
+                logger.log('time/time_to_best_disc_inc_init_minutes',
+                           time_to_best_inc_init_seconds / 60.0, 0)
+                logger.log('time/time_to_best_disc_exc_init_minutes',
+                           time_to_best_exc_init_seconds / 60.0, 0)
+                logger.log('time/em_iters_to_best_disc', best_disc_em_iter, 0)
+                logger.log('time/m_epoch_at_best_disc',
+                           best_disc_m_epoch if best_disc_m_epoch is not None else 0, 0)
+                logger.log('time/global_epoch_at_best_disc', global_epoch_at_best, 0)
+                logger.log('time/best_disc_value', best_disc_value, 0)
 
         # === Phase 3: Fresh model on final completions ===
         if do_phase3:
