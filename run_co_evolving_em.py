@@ -115,7 +115,9 @@ class DualSpaceMMPS:
                  ts_to_img_fn=None, img_to_ts_fn=None,
                  use_adaptive_sigma_y=True, use_consistency_projection=True,
                  use_obs_space_cg=True, use_warm_start_cg=True,
-                 sigma_y_floor=0.0):
+                 sigma_y_floor=0.0,
+                 img_to_ts_adjoint_fn=None, pad_mask=None,
+                 sampler='mmps', richardson_omega=1.0):
         self.args = args
         self.device = args.device
         self.shape = shape
@@ -139,6 +141,20 @@ class DualSpaceMMPS:
         # Section 5.4: manifold projection (Prop 1)
         self.ts_to_img_fn = ts_to_img_fn
         self.img_to_ts_fn = img_to_ts_fn
+        # Exact transpose of img_to_ts_fn, i.e. L^{-T}.  Used as the MMPS
+        # adjoint G^T(v_ts) = img_to_ts_adjoint(mask_ts * v_ts) in
+        # posterior_denoise_obs_space.  When None we fall back to ts_to_img_fn
+        # (L), which coincides with L^{-T} only when the lift is unitary —
+        # true for the delay embedder (up to a per-position scale absorbed
+        # by sigma_y_sq) but NOT for STFT with Hann window + per-bin scaling.
+        # STFT passes the autograd-VJP-based exact adjoint here so the CG
+        # operator matches the MMPS-derived sigma_y^2 I + sigma_t^2 G J^T G^T.
+        self.img_to_ts_adjoint_fn = img_to_ts_adjoint_fn
+        # Optional (1, C, H, W) mask of valid non-pad pixels, used at sampling
+        # time to zero out the structurally-padded image region after each
+        # reverse step so denoiser noise in those pixels does not contaminate
+        # the valid region.  None means no pad (delay embedder path).
+        self.pad_mask = pad_mask
 
         # Section 5.2 / 5.7: observation-space CG and warm start
         self.use_obs_space_cg = use_obs_space_cg
@@ -148,6 +164,35 @@ class DualSpaceMMPS:
         # Ablation flags
         self.use_adaptive_sigma_y = use_adaptive_sigma_y
         self.use_consistency_projection = use_consistency_projection
+
+        # E-step sampler choice:
+        #   'mmps'            -- L-MMPS (PSLR on MMPS): C1+C2+C3, obs-space CG.
+        #   'tmpd'            -- L-TMPD (PSLR on TMPD): C1+C2+C3, row-sum diag.
+        #   'tmpd_vanilla'    -- ablation: TMPD directly in image space,
+        #                         violates C1 and C3.  Forces the image-space
+        #                         path in mmps_sample regardless of --obs_space_cg.
+        #   'tmpd_richardson' -- L-TMPD + one Jacobi/Richardson refinement on
+        #                         top of the row-sum diagonal preconditioner.
+        #                         Costs 1 extra VJP per call (3 vs 2), still
+        #                         cheaper than L-MMPS CG (5).  Closes the
+        #                         approximation gap when the Jacobian is not
+        #                         diagonally dominant on the lifted operator.
+        if sampler not in ('mmps', 'tmpd', 'tmpd_vanilla', 'tmpd_richardson'):
+            raise ValueError(
+                f"Unknown E-step sampler '{sampler}'; expected one of "
+                "'mmps', 'tmpd', 'tmpd_vanilla', 'tmpd_richardson'."
+            )
+        self.sampler = sampler
+
+        # Damping factor ω for the Richardson refinement step.  ω=1 is pure
+        # Jacobi (guaranteed monotone only when all eigenvalues of D⁻¹A lie
+        # in (0, 2)); ω<1 is damped and more robust on non-diagonally-
+        # dominant operators typical of deep denoisers on lifted lifts.
+        if not (0.0 < richardson_omega <= 2.0):
+            raise ValueError(
+                f"richardson_omega must be in (0, 2]; got {richardson_omega}."
+            )
+        self.richardson_omega = richardson_omega
 
     def _get_sigma_y_sq(self, sigma):
         """Section 5.3: σ_y(σ_t) = c · σ_t gives κ bounded independently of σ_t."""
@@ -186,6 +231,63 @@ class DualSpaceMMPS:
 
         return denoised.detach() + sigma_sq * score.detach()
 
+    def posterior_denoise_tmpd_image_space(self, x_t, sigma, x_obs, mask):
+        """
+        Vanilla TMPD ablation (C1 and C3 violated).
+
+        This is a faithful port of TMPD (Boys et al. 2023, bb515/tmpdtorch) to
+        our setting but **without** PSLR's composed-operator correction: the
+        mask is applied directly in image space (A_img) instead of via the
+        composed G = A_ts . img_to_ts.  It is the symmetric ablation to
+        posterior_denoise_image_space (naive MMPS image-space baseline), and
+        is expected to underperform L-TMPD by the same mechanism that naive
+        image-space MMPS underperforms L-MMPS: the operator mismatch Delta
+        biases the posterior mean.
+
+        Update:
+            C_yy_img = mask * J^T(mask)  +  sigma_y^2 / sigma_t^2     (row-sum diag in img)
+            ls       = J^T ( mask * (x_obs - mask * d_theta) / C_yy_img )
+            x_0      = d_theta + ls
+        Because C_yy_img uses reg_ratio = sigma_y^2/sigma_t^2 (not sigma_y^2),
+        the sigma_t^2 factor that L-MMPS applies externally is already folded
+        into r/C_yy_img -- an outer `sigma_sq *` here would double-count it.
+        """
+        sigma_sq = sigma ** 2
+        sigma_y_sq = self._get_sigma_y_sq(sigma)
+        reg_ratio = sigma_y_sq / torch.clamp(sigma_sq, min=1e-12)
+
+        x_t_input = x_t.detach().requires_grad_(True)
+        denoised = self.net(x_t_input, sigma, None).to(torch.float64)
+
+        def vjp_fn(cotangent):
+            grad, = torch.autograd.grad(
+                denoised, x_t_input, grad_outputs=cotangent,
+                retain_graph=True
+            )
+            return grad
+
+        # Row-sum diagonal of mask * J^T * mask (A_img = mask, so G = mask here).
+        # mask arrives as [B, 1, H, W] (time-step-level mask, shared across all
+        # lift channels). We must explicitly broadcast to denoised.shape
+        # [B, C, H, W] before calling torch.autograd.grad, which (unlike `*`)
+        # does not broadcast grad_outputs.
+        mask_bcast = mask.expand_as(denoised).to(torch.float64).contiguous()
+        ones_img = mask_bcast
+        Jones_img = vjp_fn(ones_img)
+        C_yy_img = mask_bcast * Jones_img + reg_ratio
+        C_yy_img = torch.clamp(C_yy_img, min=reg_ratio)
+
+        # Residual and update, both in image space.
+        r = mask_bcast * (x_obs - mask_bcast * denoised)
+        update_img = vjp_fn(mask_bcast * (r / C_yy_img))
+
+        # NOTE: no outer sigma_sq scaling.  C_yy is in *relative* scale
+        # (reg_ratio = sigma_y^2/sigma_t^2), so r/C_yy already equals
+        # sigma_sq * r/(sigma_y^2 + sigma_sq * row_sum).  Multiplying by
+        # sigma_sq here would double-count the factor (was the original bug).
+        # This matches the reference TMPD formulation in bb515/tmpdtorch.
+        return denoised.detach() + update_img.detach()
+
     def posterior_denoise_obs_space(self, x_t, sigma, obs_ts, mask_ts):
         """
         Section 5.2: Observation-Space CG (Prop 4).
@@ -214,12 +316,26 @@ class DualSpaceMMPS:
         denoised_ts = self.img_to_ts_fn(denoised_img.float()).to(torch.float64)
         r_obs = mask_ts * (obs_ts - denoised_ts)
 
+        # G^T: TS -> image is the exact transpose of img_to_ts (= L^{-T}).
+        # For STFT with Hann window + per-bin scaling, L is strongly non-
+        # unitary so L^{-T} differs meaningfully from L (= ts_to_img), and
+        # using ts_to_img as G^T produces an SPD but mis-scaled system that
+        # converges to the wrong posterior mean.  For the delay embedder we
+        # keep the legacy behavior (fall back to ts_to_img_fn) since its
+        # lift is near-unitary and this has been extensively validated.
+        gt_fn = self.img_to_ts_adjoint_fn or self.ts_to_img_fn
+
         def cg_operator_obs(v_ts):
-            # G^T: masked TS → image
-            v_img = self.ts_to_img_fn(v_ts.float()).to(torch.float64)
-            # J^T: image → image (single VJP)
+            # G^T: TS -> image via the exact adjoint of img_to_ts.
+            # Pre-mask v_ts because G = mask_ts · img_to_ts so
+            # G^T(v) = img_to_ts^T(mask_ts · v).  CG preserves the mask
+            # support, so this is a no-op after the first iteration, but
+            # we apply it defensively.
+            v_img = gt_fn((mask_ts * v_ts).float()).to(torch.float64)
+            # J^T: image -> image (single VJP of the denoiser)
             Jv_img = vjp_fn(v_img)
-            # G: image → masked TS
+            # G forward: image -> TS via img_to_ts, then re-mask to land
+            # on the observation space.
             Jv_ts = self.img_to_ts_fn(Jv_img.float()).to(torch.float64)
             Jv_obs = mask_ts * Jv_ts
             return sigma_y_sq * v_ts + sigma_sq * Jv_obs
@@ -238,11 +354,166 @@ class DualSpaceMMPS:
         if self.use_warm_start_cg:
             self.v_prev = v_ts.detach()
 
-        # Posterior score correction back in image space
-        v_img = self.ts_to_img_fn(v_ts.float()).to(torch.float64)
+        # Posterior score correction back in image space.  The MMPS update
+        # is D + sigma_t^2 J^T G^T v_ts, so here too we use the exact
+        # G^T = img_to_ts_adjoint for STFT and fall back to ts_to_img for
+        # delay.  Pre-masking v_ts mirrors the CG operator and is a no-op
+        # when CG has converged on the observed support.
+        v_img = gt_fn((mask_ts * v_ts).float()).to(torch.float64)
         score_img = vjp_fn(v_img)
 
         return denoised_img.detach() + sigma_sq * score_img.detach()
+
+    def posterior_denoise_tmpd_obs_space(self, x_t, sigma, obs_ts, mask_ts):
+        """
+        L-TMPD: PSLR applied to TMPD (Boys et al. 2023).
+
+        Replaces the MMPS CG solve with TMPD's row-sum diagonal approximation
+        of G J^T G^T.  The composed operator G = A_ts . img_to_ts (C1) and the
+        manifold projection (C3) are unchanged from L-MMPS.
+
+        Reference: bb515/tmpdtorch, class TweedieMomentProjection --
+        C_yy = op.forward(vjp(op.forward(ones))) + noise_std^2 / r
+        ls   = vjp(diff / C_yy)
+
+        Under adaptive sigma_y = c * sigma_t, the regularizer
+        sigma_y^2 / sigma_t^2 collapses to the constant c^2 (no CG
+        conditioning to worry about -- this is the "M2 equivalent" for
+        L-TMPD).  Cost per call: exactly 2 VJPs of the denoiser.
+        """
+        sigma_sq = sigma ** 2
+        sigma_y_sq = self._get_sigma_y_sq(sigma)
+        # TMPD's noise_std^2 / r.  In adaptive mode this is c^2.  Guard
+        # against pathological early-step sigma_sq with a tiny floor.
+        reg_ratio = sigma_y_sq / torch.clamp(sigma_sq, min=1e-12)
+
+        x_t_input = x_t.detach().requires_grad_(True)
+        denoised_img = self.net(x_t_input, sigma, None).to(torch.float64)
+
+        def vjp_fn(cotangent_img):
+            grad, = torch.autograd.grad(
+                denoised_img, x_t_input, grad_outputs=cotangent_img,
+                retain_graph=True
+            )
+            return grad
+
+        gt_fn = self.img_to_ts_adjoint_fn or self.ts_to_img_fn
+
+        # h(x_t) = G . d_theta(x_t):  image -> TS, then masked to obs support.
+        denoised_ts = self.img_to_ts_fn(denoised_img.float()).to(torch.float64)
+        r_obs = mask_ts * (obs_ts - denoised_ts)
+
+        # Row-sum diagonal of G J^T G^T on the observation support (C2):
+        #   ones_ts  -- vector of ones on observed positions
+        #   ones_img = G^T ones_ts
+        #   Jones    = J^T ones_img
+        #   C_yy_ts  = G Jones + reg_ratio
+        # The mask_ts multiplication restricts the row-sum to the actual
+        # observation support; non-observed entries have no row to sum.
+        ones_ts = mask_ts.to(torch.float64)
+        ones_img = gt_fn(ones_ts.float()).to(torch.float64)
+        Jones_img = vjp_fn(ones_img)
+        C_yy_ts = (
+            mask_ts * self.img_to_ts_fn(Jones_img.float()).to(torch.float64)
+            + reg_ratio
+        )
+        # Numerical floor so r_obs / C_yy_ts is bounded on non-observed
+        # positions and on near-zero row sums.  reg_ratio is already the
+        # physically correct floor on the observed support.
+        C_yy_ts = torch.clamp(C_yy_ts, min=reg_ratio)
+
+        # Posterior-score update:  x_0 = d_theta + J^T G^T ( r / C_yy )
+        # C_yy is in *relative* scale (reg_ratio = sigma_y^2/sigma_t^2 and
+        # row_sum has no sigma_t factor), so
+        #     r / C_yy = sigma_sq * r / (sigma_y^2 + sigma_sq * row_sum)
+        # already carries the sigma_sq factor that L-MMPS applies externally.
+        # An additional `sigma_sq *` here would double-count the factor --
+        # at sigma_t=80 that is a 6400x blowup, at sigma_t=0.002 a 1e-6
+        # shrink of the correction (was the original L-TMPD bug).
+        update_ts = mask_ts * (r_obs / C_yy_ts)
+        update_img_pre = gt_fn(update_ts.float()).to(torch.float64)
+        update_img = vjp_fn(update_img_pre)
+
+        return denoised_img.detach() + update_img.detach()
+
+    def posterior_denoise_tmpd_richardson_obs_space(
+            self, x_t, sigma, obs_ts, mask_ts):
+        """
+        L-TMPD + one Jacobi / Richardson refinement step on the row-sum diagonal.
+
+        TMPD's row-sum diagonal D ≈ diag(G J^T G^T) + reg_ratio is only a
+        first-order preconditioner for the exact operator
+            A = reg_ratio · I + G J^T G^T
+        where reg_ratio = σ_y² / σ_t² and G = mask_ts · img_to_ts.  When A is
+        far from diagonally dominant — typical for deep denoisers on the
+        lifted (delay / STFT) operator — the pure diagonal solve
+        v0 = D^{-1} r_obs biases the posterior enough to trigger EM
+        feedback-loop divergence (memorization collapse at iter 1, M-step
+        loss blow-up at iter 2, as observed on Energy 50%).
+
+        One Richardson iteration on D:
+            v0 = D^{-1} r_obs                 (vanilla L-TMPD)
+            v1 = v0 + D^{-1} (r_obs - A v0)   (this method)
+        corrects first-order off-diagonal coupling.  Cost: +1 VJP vs L-TMPD
+        (3 total), still cheaper than L-MMPS CG (≥5).
+
+        Reference: standard Jacobi-preconditioned Richardson iteration;
+        identical in spirit to the "one step of residual correction" used
+        in iterative sparse solvers.
+        """
+        sigma_sq = sigma ** 2
+        sigma_y_sq = self._get_sigma_y_sq(sigma)
+        reg_ratio = sigma_y_sq / torch.clamp(sigma_sq, min=1e-12)
+
+        x_t_input = x_t.detach().requires_grad_(True)
+        denoised_img = self.net(x_t_input, sigma, None).to(torch.float64)
+
+        def vjp_fn(cotangent_img):
+            grad, = torch.autograd.grad(
+                denoised_img, x_t_input, grad_outputs=cotangent_img,
+                retain_graph=True
+            )
+            return grad
+
+        gt_fn = self.img_to_ts_adjoint_fn or self.ts_to_img_fn
+
+        # Residual in observation space.
+        denoised_ts = self.img_to_ts_fn(denoised_img.float()).to(torch.float64)
+        r_obs = mask_ts * (obs_ts - denoised_ts)
+
+        # D = diag(G J^T G^T) + reg_ratio  (TMPD preconditioner).
+        ones_ts = mask_ts.to(torch.float64)
+        ones_img = gt_fn(ones_ts.float()).to(torch.float64)
+        Jones_img = vjp_fn(ones_img)  # VJP #1
+        D = (
+            mask_ts * self.img_to_ts_fn(Jones_img.float()).to(torch.float64)
+            + reg_ratio
+        )
+        D = torch.clamp(D, min=reg_ratio)
+
+        # Initial diagonal (Jacobi) solve.
+        v0 = mask_ts * (r_obs / D)
+
+        # Apply A to v0:  A v0 = reg_ratio · v0 + G J^T G^T v0.
+        Gt_v0_img = gt_fn((mask_ts * v0).float()).to(torch.float64)
+        JGt_v0_img = vjp_fn(Gt_v0_img)  # VJP #2
+        GJGt_v0_ts = mask_ts * self.img_to_ts_fn(
+            JGt_v0_img.float()
+        ).to(torch.float64)
+        Av0 = reg_ratio * v0 + GJGt_v0_ts
+
+        # Damped Richardson update: v1 = v0 + ω · (r - A v0) / D.
+        # ω=1 is pure Jacobi; ω<1 is damped (guaranteed monotone for
+        # ω ≤ 2/λ_max(D⁻¹A) on SPD A).
+        residual = mask_ts * (r_obs - Av0)
+        omega = self.richardson_omega
+        v1 = v0 + omega * mask_ts * (residual / D)
+
+        # Posterior-score update uses v1 (vs v0 in vanilla L-TMPD).
+        update_img_pre = gt_fn((mask_ts * v1).float()).to(torch.float64)
+        update_img = vjp_fn(update_img_pre)  # VJP #3
+
+        return denoised_img.detach() + update_img.detach()
 
     def _consistency_project(self, x_img, obs_ts, mask_ts):
         """
@@ -299,6 +570,10 @@ class DualSpaceMMPS:
             mask_ts_d = mask_ts.to(torch.float64)
 
         x_next = latents.to(torch.float64) * t_steps[0]
+        pad_mask_d = None
+        if self.pad_mask is not None:
+            pad_mask_d = self.pad_mask.to(device=x_next.device, dtype=torch.float64)
+            x_next = x_next * pad_mask_d
 
         for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
             x_cur = x_next
@@ -306,25 +581,45 @@ class DualSpaceMMPS:
             gamma = min(self.S_churn / self.num_steps, np.sqrt(2) - 1) if self.S_min <= t_cur <= self.S_max else 0
             t_hat = self.net.round_sigma(t_cur + gamma * t_cur)
             x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * self.S_noise * torch.randn_like(x_cur)
+            if pad_mask_d is not None:
+                x_hat = x_hat * pad_mask_d
 
-            if can_use_obs_space:
+            if self.sampler == 'tmpd_vanilla':
+                denoised = self.posterior_denoise_tmpd_image_space(x_hat, t_hat, x_obs, mask)
+            elif can_use_obs_space and self.sampler == 'tmpd':
+                denoised = self.posterior_denoise_tmpd_obs_space(x_hat, t_hat, obs_ts_d, mask_ts_d)
+            elif can_use_obs_space and self.sampler == 'tmpd_richardson':
+                denoised = self.posterior_denoise_tmpd_richardson_obs_space(x_hat, t_hat, obs_ts_d, mask_ts_d)
+            elif can_use_obs_space:
                 denoised = self.posterior_denoise_obs_space(x_hat, t_hat, obs_ts_d, mask_ts_d)
             else:
                 denoised = self.posterior_denoise_image_space(x_hat, t_hat, x_obs, mask)
 
             d_cur = (x_hat - denoised) / t_hat
             x_next = x_hat + (t_next - t_hat) * d_cur
+            if pad_mask_d is not None:
+                x_next = x_next * pad_mask_d
 
             if i < self.num_steps - 1:
-                if can_use_obs_space:
+                if self.sampler == 'tmpd_vanilla':
+                    denoised_2 = self.posterior_denoise_tmpd_image_space(x_next, t_next, x_obs, mask)
+                elif can_use_obs_space and self.sampler == 'tmpd':
+                    denoised_2 = self.posterior_denoise_tmpd_obs_space(x_next, t_next, obs_ts_d, mask_ts_d)
+                elif can_use_obs_space and self.sampler == 'tmpd_richardson':
+                    denoised_2 = self.posterior_denoise_tmpd_richardson_obs_space(x_next, t_next, obs_ts_d, mask_ts_d)
+                elif can_use_obs_space:
                     denoised_2 = self.posterior_denoise_obs_space(x_next, t_next, obs_ts_d, mask_ts_d)
                 else:
                     denoised_2 = self.posterior_denoise_image_space(x_next, t_next, x_obs, mask)
                 d_prime = (x_next - denoised_2) / t_next
                 x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
+                if pad_mask_d is not None:
+                    x_next = x_next * pad_mask_d
 
         if do_project:
             x_next = self._consistency_project(x_next, obs_ts_d, mask_ts_d)
+            if pad_mask_d is not None:
+                x_next = x_next * pad_mask_d
 
         return x_next
 
@@ -346,22 +641,34 @@ class DualSpaceMMPS:
                     sigma_min ** (1 / self.rho) - sigma_max ** (1 / self.rho))) ** self.rho
         t_steps = torch.cat([self.net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])])
 
+        pad_mask_d = None
+        if self.pad_mask is not None:
+            pad_mask_d = self.pad_mask.to(device=latents.device, dtype=torch.float64)
+
         x_next = latents.to(torch.float64) * t_steps[0]
+        if pad_mask_d is not None:
+            x_next = x_next * pad_mask_d
         for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
             x_cur = x_next
 
             gamma = min(self.S_churn / self.num_steps, np.sqrt(2) - 1) if self.S_min <= t_cur <= self.S_max else 0
             t_hat = self.net.round_sigma(t_cur + gamma * t_cur)
             x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * self.S_noise * torch.randn_like(x_cur)
+            if pad_mask_d is not None:
+                x_hat = x_hat * pad_mask_d
 
             denoised = self.net(x_hat, t_hat, None).to(torch.float64)
             d_cur = (x_hat - denoised) / t_hat
             x_next = x_hat + (t_next - t_hat) * d_cur
+            if pad_mask_d is not None:
+                x_next = x_next * pad_mask_d
 
             if i < self.num_steps - 1:
                 denoised = self.net(x_next, t_next, None).to(torch.float64)
                 d_prime = (x_next - denoised) / t_next
                 x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
+                if pad_mask_d is not None:
+                    x_next = x_next * pad_mask_d
 
         return x_next
 
@@ -387,6 +694,61 @@ def get_corrupted_data_from_loader(train_loader, device):
     obs_masks = np.vstack(all_masks)
 
     return corrupted_data, obs_masks
+
+
+def _cache_embedder_stats_if_needed(uncond_model, ts_array, tag='pre_em', logger=None, em_iter=0):
+    """Cache STFT per-bin scales on a concrete TS tensor (no-op for delay).
+
+    The plan (Fix 1) calls out the failure mode: caching on STL warm-starts
+    biases the per-bin abs-max away from the real training distribution, so
+    the denoiser is trained on coefficients in one scale and img_to_ts de-
+    scales with stale factors at test time, producing disc_mean near 0.5.
+
+    We solve this by caching on the best available estimate of the real
+    training TS at each invocation:
+      * First call (pre-EM): use the warm-start completions. This is still
+        biased but is the best we have before any M-step.
+      * Subsequent calls (post-E-step): use the co-evolving reconstructions,
+        which track the true training distribution as EM converges.
+
+    For the delay embedder cache_min_max_params is not implemented and this
+    call is a no-op (guarded on hasattr), so the delay code path is
+    untouched.
+    """
+    if not hasattr(uncond_model.ts_img, 'cache_min_max_params'):
+        return
+
+    with torch.no_grad():
+        if isinstance(ts_array, np.ndarray):
+            ts_tensor = torch.as_tensor(ts_array, dtype=torch.float32)
+        else:
+            ts_tensor = ts_array.detach().cpu().float()
+        uncond_model.cache_embedder_stats(ts_tensor)
+
+    scale_real = getattr(uncond_model.ts_img, 'scale_real', None)
+    scale_imag = getattr(uncond_model.ts_img, 'scale_imag', None)
+    if scale_real is None or scale_imag is None:
+        return
+
+    sr = scale_real.detach().float()
+    si = scale_imag.detach().float()
+    summary = (
+        f"[embedder-stats:{tag}] scale_real "
+        f"min={sr.min().item():.4e} mean={sr.mean().item():.4e} max={sr.max().item():.4e} | "
+        f"scale_imag min={si.min().item():.4e} mean={si.mean().item():.4e} max={si.max().item():.4e}"
+    )
+    print(summary)
+    logging.info(summary)
+    if logger is not None:
+        try:
+            logger.log(f'stft_scale/{tag}/real_min', sr.min().item(), em_iter)
+            logger.log(f'stft_scale/{tag}/real_mean', sr.mean().item(), em_iter)
+            logger.log(f'stft_scale/{tag}/real_max', sr.max().item(), em_iter)
+            logger.log(f'stft_scale/{tag}/imag_min', si.min().item(), em_iter)
+            logger.log(f'stft_scale/{tag}/imag_mean', si.mean().item(), em_iter)
+            logger.log(f'stft_scale/{tag}/imag_max', si.max().item(), em_iter)
+        except Exception:
+            pass
 
 
 def off_manifold_energy_batch(x_img, img_to_ts_fn, ts_to_img_fn):
@@ -429,8 +791,39 @@ def e_step(args, uncond_model, corrupted_data, obs_masks, em_iter, device, logge
     use_warm_cg = getattr(args, 'warm_start_cg', True)
     sigma_y_floor = getattr(args, 'sigma_y_floor', 0.0)
 
+    # STFT integration: observation-space CG is the only mathematically well-
+    # posed regime for a non-local lift (STFT). Image-space CG would require
+    # the observation mask to lift to a valid image-space mask, which is
+    # false for STFT (STFT of a zero-filled TS != mask applied to STFT).
+    # STFT + image-space CG is mathematically ill-posed for a non-local lift
+    # (STFT of a zero-filled masked TS is NOT the image-space mask applied to
+    # the STFT). We keep this path enabled on purpose so it can serve as the
+    # "without our dual-space correction" arm of the STFT ablation — it SHOULD
+    # produce bad disc_mean; that is the evidence the paper needs.
+    is_stft = (getattr(args, 'embedder', 'delay') == 'stft')
+    if is_stft and not use_obs_cg:
+        print(
+            "[ABLATION] WARNING: --embedder stft with image-space CG. "
+            "This configuration is mathematically ill-posed (non-local lift + "
+            "image-space pixel mask). Expect poor disc_mean; this is the "
+            "intended dual-space ablation, not a bug.",
+            flush=True,
+        )
+
     total_off_energy = 0.0
     n_off_samples = 0
+
+    # Exact transpose of img_to_ts (= L^{-T}) via autograd VJP.  This is
+    # the mathematically correct G^T used by MMPS obs-space CG, where
+    # G(D) = mask_ts · img_to_ts(D), so G^T(v_ts) = img_to_ts^T(mask_ts·v_ts).
+    # For the delay embedder L is near-unitary and we keep the historical
+    # fallback (None -> ts_to_img inside the CG op) to avoid any regression
+    # on a thoroughly-validated path.  For STFT with Hann window + per-bin
+    # scaling L is strongly non-unitary and this exact adjoint is required.
+    img_to_ts_adjoint_fn = (
+        uncond_model.img_to_ts_adjoint if is_stft else None
+    )
+    pad_mask = uncond_model.pad_mask if is_stft else None
 
     with uncond_model.ema_scope():
         process = DualSpaceMMPS(
@@ -444,6 +837,10 @@ def e_step(args, uncond_model, corrupted_data, obs_masks, em_iter, device, logge
             use_obs_space_cg=use_obs_cg,
             use_warm_start_cg=use_warm_cg,
             sigma_y_floor=sigma_y_floor,
+            img_to_ts_adjoint_fn=img_to_ts_adjoint_fn,
+            pad_mask=pad_mask,
+            sampler=getattr(args, 'e_step_sampler', 'mmps'),
+            richardson_omega=getattr(args, 'richardson_omega', 1.0),
         )
 
         for start_idx in tqdm(range(0, N, batch_size), desc="E-step"):
@@ -457,14 +854,36 @@ def e_step(args, uncond_model, corrupted_data, obs_masks, em_iter, device, logge
             mask_ts = torch.tensor(mask_batch, dtype=torch.float32, device=device)
 
             obs_ts = torch.nan_to_num(corrupted_ts, nan=0.0)
-
-            x_obs_img = uncond_model.ts_to_img(obs_ts)
-
-            mask_ts_expanded = mask_ts.unsqueeze(-1).expand(-1, -1, corrupted_ts.shape[-1])
-            mask_img = uncond_model.ts_to_img(mask_ts_expanded)
-            mask_img = mask_img[:, :1, :, :]
-
             mask_ts_proj = mask_ts.unsqueeze(-1).expand(-1, -1, corrupted_ts.shape[-1])
+
+            if is_stft and use_obs_cg:
+                # STFT + obs-space CG (Regime A, our full method): x_obs_img
+                # and mask_img are unused by the obs-space CG path, so pass
+                # placeholders. Residuals and CG operate in TS space directly.
+                x_obs_img = torch.zeros(
+                    (cur_batch_size, *target_shape), dtype=torch.float32, device=device,
+                )
+                mask_img = torch.zeros(
+                    (cur_batch_size, 1, target_shape[1], target_shape[2]),
+                    dtype=torch.float32, device=device,
+                )
+            elif is_stft and not use_obs_cg:
+                # STFT + image-space CG (Regimes B/C, ablation arm):
+                # construct the "naive" image-space observation the way a
+                # vanilla MMPS user would — STFT of the zero-filled TS, and a
+                # binarized STFT of the TS mask. This is mathematically
+                # ill-posed for a non-local lift (that's the whole point of
+                # the ablation), and we expect disc_mean to be poor.
+                x_obs_img = uncond_model.ts_to_img(obs_ts)
+                mask_ts_expanded = mask_ts.unsqueeze(-1).expand(-1, -1, corrupted_ts.shape[-1])
+                mask_img_raw = uncond_model.ts_to_img(mask_ts_expanded)
+                mask_img = (mask_img_raw.abs() > 1e-6).to(mask_img_raw.dtype)
+                mask_img = mask_img[:, :1, :, :]
+            else:
+                x_obs_img = uncond_model.ts_to_img(obs_ts)
+                mask_ts_expanded = mask_ts.unsqueeze(-1).expand(-1, -1, corrupted_ts.shape[-1])
+                mask_img = uncond_model.ts_to_img(mask_ts_expanded)
+                mask_img = mask_img[:, :1, :, :]
 
             x_img_imputed = process.sampling_mmps(
                 x_obs_img, mask_img,
@@ -565,7 +984,15 @@ def m_step(args, uncond_model, optimizer, reconstructions,
             # --- L_SM: score matching in image space ---
             x_unpad = uncond_model.unpad(x_img, x_img.shape)
             denoised_unpad = uncond_model.unpad(denoised, x_img.shape)
-            loss_sm = (weight * (denoised_unpad - x_unpad).square()).mean()
+            sq_err_sm = (denoised_unpad - x_unpad).square()
+            _pad_mask = uncond_model.pad_mask
+            if _pad_mask is not None:
+                _pm = _pad_mask.to(device=sq_err_sm.device, dtype=sq_err_sm.dtype)
+                _num = (weight * sq_err_sm * _pm).sum()
+                _den = (weight * torch.ones_like(sq_err_sm) * _pm).sum().clamp_min(1e-8)
+                loss_sm = _num / _den
+            else:
+                loss_sm = (weight * sq_err_sm).mean()
 
             # --- SNR gate (shared by L_obs and L_rep) ---
             if use_snr_gate:
@@ -694,9 +1121,12 @@ def evaluate_uncond(args, uncond_model, test_loader, em_iter, device,
 
     with torch.no_grad():
         with uncond_model.ema_scope():
+            is_stft = (getattr(args, 'embedder', 'delay') == 'stft')
+            pad_mask = uncond_model.pad_mask if is_stft else None
             process = DiffusionProcess(
                 args, uncond_model.net,
-                (uncond_model.num_features, args.img_resolution, args.img_resolution)
+                (uncond_model.num_features, args.img_resolution, args.img_resolution),
+                pad_mask=pad_mask,
             )
 
             for data in tqdm(test_loader, desc="Evaluating"):
@@ -723,34 +1153,35 @@ def evaluate_uncond(args, uncond_model, test_loader, em_iter, device,
         if logger is not None:
             logger.log(f'test/{key}', value, em_iter)
 
-    mem_plot_path = f"memorization_hist_em_iter_{em_iter}.png"
-    mem_stats = compute_memorization_metric(
-        real_data=real_sig,
-        generated_data=gen_sig,
-        device=device,
-        plot_path=mem_plot_path
-    )
+    if getattr(args, 'eval_memorization', False):
+        mem_plot_path = f"memorization_hist_em_iter_{em_iter}.png"
+        mem_stats = compute_memorization_metric(
+            real_data=real_sig,
+            generated_data=gen_sig,
+            device=device,
+            plot_path=mem_plot_path
+        )
 
-    print(f"  Memorization metrics:")
-    for k, v in mem_stats.items():
-        print(f"    {k}: {v:.4f}" if isinstance(v, float) else f"    {k}: {v}")
+        print(f"  Memorization metrics:")
+        for k, v in mem_stats.items():
+            print(f"    {k}: {v:.4f}" if isinstance(v, float) else f"    {k}: {v}")
+            if logger is not None:
+                logger.log(f'test/memorization/{k}', v, em_iter)
+
         if logger is not None:
-            logger.log(f'test/memorization/{k}', v, em_iter)
-
-    if logger is not None:
-        upload_successful = False
-        try:
-            logger.log_file('test/memorization/histogram', mem_plot_path, em_iter)
-            upload_successful = True
-        except Exception as e:
-            print(f"  Failed to upload memorization plot: {e}")
-
-        if upload_successful:
+            upload_successful = False
             try:
-                if os.path.exists(mem_plot_path):
-                    os.remove(mem_plot_path)
-            except Exception:
-                pass
+                logger.log_file('test/memorization/histogram', mem_plot_path, em_iter)
+                upload_successful = True
+            except Exception as e:
+                print(f"  Failed to upload memorization plot: {e}")
+
+            if upload_successful:
+                try:
+                    if os.path.exists(mem_plot_path):
+                        os.remove(mem_plot_path)
+                except Exception:
+                    pass
 
     return scores
 
@@ -848,15 +1279,69 @@ def main(args):
                 corrupted_data, obs_masks, seed=args.seed
             )
 
-        if getattr(args, 'embedder', 'delay') == 'stft':
+        is_stft = (getattr(args, 'embedder', 'delay') == 'stft')
+        scale_real_warmstart_max = None
+        if is_stft:
             print(f"\n{'='*60}")
             print("Caching STFT min/max stats on warm-start completions")
             print(f"{'='*60}")
-            with torch.no_grad():
-                stats_tensor = torch.as_tensor(
-                    initial_reconstructions, dtype=torch.float32
+            _cache_embedder_stats_if_needed(
+                uncond_model, initial_reconstructions,
+                tag='warm_start', logger=logger, em_iter=-1,
+            )
+            # Fix 1 runaway guard: record the warm-start scale_real max so we
+            # can abort if a subsequent recache (or any scale mutation) blows
+            # it up by >10x.
+            _sr = getattr(uncond_model.ts_img, 'scale_real', None)
+            if _sr is not None:
+                scale_real_warmstart_max = float(_sr.detach().abs().max().item())
+            try:
+                from utils.stft_preflight import run as _stft_preflight_run
+                _stft_preflight_run(
+                    uncond_model,
+                    feat_dim=args.input_channels,
+                    device=args.device,
+                    logger=logger,
+                    train_data=torch.as_tensor(
+                        initial_reconstructions[:256], dtype=torch.float32,
+                    ),
+                    hard_gate_train_pixel_std=getattr(
+                        args, 'stft_hard_gate_train_pixel_std', False,
+                    ),
                 )
-                uncond_model.cache_embedder_stats(stats_tensor)
+            except Exception as e:
+                print(f"[stft_preflight] failed: {e}")
+                raise
+
+            # Fix 6 - Oracle disc sanity: run the discriminator on a single
+            # test batch vs its lift-roundtrip  img_to_ts(ts_to_img(x)). This
+            # gives an honest upper bound on what EM can achieve: if the lift
+            # itself is lossy, no amount of training can make disc_mean go to
+            # 0. Keep entirely separate from test/disc_mean.
+            try:
+                oracle_reals = []
+                oracle_rt = []
+                with torch.no_grad():
+                    for data in test_loader:
+                        xb = data[0].to(args.device)
+                        img = uncond_model.ts_to_img(xb)
+                        xb_rt = uncond_model.img_to_ts(img)
+                        oracle_reals.append(xb.detach().cpu().numpy())
+                        oracle_rt.append(xb_rt.detach().cpu().numpy())
+                        if sum(r.shape[0] for r in oracle_reals) >= 512:
+                            break
+                oracle_reals = np.vstack(oracle_reals)
+                oracle_rt = np.vstack(oracle_rt)
+                oracle_scores = evaluate_model_irregular(
+                    oracle_reals, oracle_rt, args, calc_other_metrics=False,
+                )
+                oracle_disc = float(oracle_scores.get('disc_mean', float('nan')))
+                print(f"[oracle] disc_mean(real, img_to_ts(ts_to_img(real)))"
+                      f" = {oracle_disc:.4f}")
+                if logger is not None:
+                    logger.log('test/disc_oracle', oracle_disc, 0)
+            except Exception as e:
+                print(f"[disc_oracle] skipped: {e}")
 
         print(f"\n{'='*60}")
         print("Section 5.1: Bootstrap M-Step on warm-start completions")
@@ -923,6 +1408,33 @@ def main(args):
                 em_iter, args.device, logger
             )
             last_recon = reconstructions
+
+            # Re-cache STFT per-bin scales on the co-evolving reconstructions
+            # so the denoiser trains on coefficients in the same distribution
+            # used at sampling time. No-op for delay embedder.
+            if is_stft and getattr(args, 'stft_recache_each_em', True):
+                _cache_embedder_stats_if_needed(
+                    uncond_model, reconstructions,
+                    tag='em_recache', logger=logger, em_iter=em_iter,
+                )
+
+            # Fix 1 runaway guard: abort if scale_real_max blows up >10x the
+            # warm-start value. This catches the positive-feedback loop
+            # (~5e9x growth over 10 EM iters) that produced disc_mean near
+            # 0.5 in the previous STFT runs.
+            if is_stft and scale_real_warmstart_max is not None:
+                _sr = getattr(uncond_model.ts_img, 'scale_real', None)
+                if _sr is not None:
+                    _cur = float(_sr.detach().abs().max().item())
+                    if _cur > 10.0 * scale_real_warmstart_max:
+                        raise RuntimeError(
+                            f"STFT scale runaway detected at em_iter={em_iter}: "
+                            f"scale_real.max()={_cur:.3e} exceeds "
+                            f"10x warm-start value "
+                            f"{scale_real_warmstart_max:.3e}. "
+                            f"Re-run with --no_stft_recache_each_em or "
+                            f"--stft_dead_bin_quantile > 0."
+                        )
 
             uncond_model.reset_ema()
 

@@ -1,0 +1,51 @@
+#!/bin/bash
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name stft_etth1_lmmps
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### STFT lift -- ETTh1 L=24 -- L-MMPS (regime a) + Fixes 1-5  [HEADLINE]
+### All Prop 1/2/4/5.7 corrections ON:
+###   - adaptive sigma_y = c * sigma_t (Prop 2)
+###   - consistency projection onto the lift manifold (Prop 1)
+###   - observation-space CG with exact adjoint (Prop 4)
+###   - warm-started CG across reverse steps (Sec 5.7)
+### Plus STFT-EM Fixes 1-5: frozen embedder stats, global pixel-std rescale,
+### quantile dead-bin floor, chunk-size fallback, COLA-perfect tile.
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em.py \
+    --config ./configs/seq_len_24/etth1.yaml \
+    --missing_rate 0.5 \
+    --allow_tf32 \
+    --embedder stft \
+    --wandb true \
+    --tags "stft_validation" "etth1" "50_missing_rate" "lmmps" "regime_a" "fixes_1_5" \
+    --adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --sigma_y_floor 0.01 \
+    --mmps_cg_iters 5 \
+    --consistency_projection \
+    --obs_space_cg \
+    --warm_start_cg \
+    --lambda_obs 0.0 \
+    --lambda_rep 0.0 \
+    --stft_n_fft 8 \
+    --stft_hop_length 4 \
+    --stft_scale_mode zscore \
+    --stft_pad_mode reflect \
+    --no_stft_recache_each_em \
+    --stft_global_rescale \
+    --stft_target_pixel_std 0.5 \
+    --stft_dead_bin_quantile 0.1 \
+    --stft_hard_gate_train_pixel_std \
+    --no_phase3

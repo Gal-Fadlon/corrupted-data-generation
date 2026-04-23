@@ -1,0 +1,46 @@
+#!/bin/bash
+#SBATCH --partition rtx6000
+#SBATCH --qos azencot
+#SBATCH --time 0-02:00:00
+#SBATCH --job-name stft_e768_smk
+#SBATCH --output stft_e768_smk-%J.out
+#SBATCH --gpus=1
+#SBATCH --mem=64G
+#SBATCH --cpus-per-task=8
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### SMOKE TEST: STFT @ L=768, Energy, regime-A
+### Purpose: verify preflight passes, (32,31) STFT shape, pad-to-(32,32), no OOM,
+### M-step starts. Ultra-short budget (em_iters=1, m_step_epochs=3, bootstrap=3).
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em.py \
+    --config ./configs/seq_len_768/energy.yaml \
+    --missing_rate 0.5 \
+    --allow_tf32 \
+    --embedder stft \
+    --wandb true \
+    --tags "stft_smoke" "energy" "seq_len_768" "50_missing_rate" "obs_space_cg" "regime_a" \
+    --adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --sigma_y_floor 0.01 \
+    --mmps_cg_iters 3 \
+    --consistency_projection \
+    --obs_space_cg \
+    --warm_start_cg \
+    --lambda_obs 0.0 \
+    --lambda_rep 0.0 \
+    --stft_n_fft 63 \
+    --stft_hop_length 25 \
+    --stft_scale_mode zscore \
+    --stft_pad_mode reflect \
+    --em_iters 1 \
+    --m_step_epochs 3 \
+    --init_method linear \
+    --no_phase3

@@ -98,10 +98,13 @@ def train_unconditional_regular(args, reconstructions, test_loader, device,
             model.eval()
             with torch.no_grad():
                 with model.ema_scope():
+                    _is_stft = (getattr(args, 'embedder', 'delay') == 'stft')
+                    _pad_mask = model.pad_mask if _is_stft else None
                     process = DiffusionProcess(
                         args, model.net,
                         (model.num_features, args.img_resolution,
                          args.img_resolution),
+                        pad_mask=_pad_mask,
                     )
                     for data in tqdm(test_loader,
                                      desc=f"Eval epoch {epoch}"):

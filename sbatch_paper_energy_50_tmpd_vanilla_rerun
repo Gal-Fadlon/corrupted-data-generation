@@ -1,0 +1,39 @@
+#!/bin/bash
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name tmpd_van2
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### Vanilla TMPD ablation rerun.  Previous submission (hsws1hf8) failed after
+### ~2.8h (bootstrap completed, died during EM iter 0 E-step).  This run is
+### identical but kicked off after the full code sync so the shape-mismatch
+### fix (mask.expand_as(denoised) in posterior_denoise_tmpd_image_space) is
+### guaranteed to be present.  Expected outcome: disc_mean >> L-TMPD, showing
+### that violating C1 (composed G) and C3 (manifold projection) is fatal.
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --missing_rate 0.5 \
+    --allow_tf32 \
+    --wandb true \
+    --tags "delay" "energy" "50_missing_rate" "tmpd_vanilla" "ablation" "rerun" \
+    --e_step_sampler tmpd_vanilla \
+    --adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --sigma_y_floor 0.01 \
+    --mmps_cg_iters 5 \
+    --no_consistency_projection \
+    --no_obs_space_cg \
+    --lambda_obs 0.0 \
+    --lambda_rep 0.0 \
+    --no_phase3

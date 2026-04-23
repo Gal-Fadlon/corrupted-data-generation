@@ -1,0 +1,50 @@
+#!/bin/bash
+#SBATCH --partition rtx6000
+#SBATCH --qos azencot
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name paper_energy_noise_01
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### Gaussian-noise corruption on Energy (sigma_phys = 0.1)
+### - Observation-space CG (the correction our paper identifies as necessary
+###   in the dual-space setting)
+### - sigma_y^2 = sigma_phys^2 + (c * sigma_t)^2 (Section 5.3 extension)
+### - Manifold projection (Section 5.4 Prop 1, unchanged)
+### - Bayesian observation-enforcement blend instead of hard enforcement,
+###   so the final projection does not re-inject sigma_phys noise
+### - STL-residual denoising warm start (every position is observed but noisy)
+### - L_obs OFF in M-step (training on noisy y teaches the denoiser to
+###   reproduce the noise; the Gaussian-MLE variant is available behind
+###   --lobs_noise_mode gaussian_mle)
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em_noise.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --corruption_type gaussian_noise \
+    --sigma_y_phys 0.1 \
+    --noise_init stl_denoise \
+    --proj_prior_std 0.3 \
+    --lobs_noise_mode off \
+    --missing_rate 0.0 \
+    --wandb true \
+    --tags "paper" "energy" "gaussian_noise_010" "co_evolving_em" "tier2" \
+    --adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --sigma_y_floor 0.01 \
+    --mmps_cg_iters 5 \
+    --consistency_projection \
+    --obs_space_cg \
+    --no_warm_start_cg \
+    --lambda_obs 0 \
+    --lambda_rep 0 \
+    --em_iters 5 \
+    --phase3 \
+    --eval_all_metrics

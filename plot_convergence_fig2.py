@@ -2,7 +2,7 @@
 Figure 2: Convergence + EM Overfitting (Section 7.4)
 
 Plots disc_mean vs EM iteration for multiple methods:
-  - Vanilla MMPS-EM
+  - Naive MMPS-EM
   - Baseline (all corrections except obs-space CG)
   - Obs-space CG (ours — full corrections)
 
@@ -33,7 +33,7 @@ fig.subplots_adjust(wspace=0.3)
 
 # --- Left panel: full convergence trajectories ---
 ax1.plot(em_iters, vanilla_mmps, 'o-', color='#d62728', lw=2, markersize=7,
-         label='Vanilla MMPS', zorder=3)
+         label='Naive MMPS-EM', zorder=3)
 ax1.plot(em_iters, baseline_no_obs_cg, 's-', color='#ff7f0e', lw=2, markersize=7,
          label='Baseline (no obs-CG)', zorder=3)
 ax1.plot(em_iters, obs_space_cg, 'D-', color='#2ca02c', lw=2.5, markersize=8,
@@ -67,7 +67,7 @@ table_data = [
     ['Method', 'Peak', 'Iter 7', 'Ratio'],
     ['Obs-space CG (Ours)', '0.045 (i=3)', '0.060', '1.3×'],
     ['Baseline (no obs-CG)', '0.049 (i=3)', '0.055*', '1.1×*'],
-    ['Vanilla MMPS', '0.092 (i=4)', '0.107', '1.2×'],
+    ['Naive MMPS-EM', '0.092 (i=4)', '0.107', '1.2×'],
 ]
 
 colors_row = [['#e6e6e6']*4, ['#d4edda']*4, ['#fff3cd']*4, ['#f8d7da']*4]

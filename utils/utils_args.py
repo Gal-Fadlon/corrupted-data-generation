@@ -61,6 +61,43 @@ def parse_args_regular():
                         help='FFT size for the STFT embedder (ignored when --embedder=delay)')
     parser.add_argument('--stft_hop_length', type=int, default=4,
                         help='Hop length for the STFT embedder (ignored when --embedder=delay)')
+    parser.add_argument('--stft_scale_mode', type=str, default='zscore',
+                        choices=['zscore', 'absmax'],
+                        help='STFT per-bin normalization. zscore (default) divides '
+                             'by per-bin RMS so image pixel std matches EDM sigma_data=0.5. '
+                             'absmax (legacy) divides by per-bin max abs value, which '
+                             'compresses std to ~0.15 and collapses the denoiser.')
+    parser.add_argument('--stft_pad_mode', type=str, default='reflect',
+                        choices=['reflect', 'zero'],
+                        help='Padding of native STFT image to img_resolution square. '
+                             'reflect (default) keeps every pixel data-bearing via linear '
+                             'reflection. zero (legacy) pads with 0, producing a large '
+                             'dead-zone that biases the denoiser toward zero output.')
+    # Fix 2 (STFT-EM plan): scalar global pixel-std rescale.
+    parser.add_argument('--stft_global_rescale', action='store_true', default=False,
+                        help='After per-bin zscore, fold a scalar '
+                             'global_scale = measured_pixel_std / target_pixel_std '
+                             'into scale_real/scale_imag so the training image has '
+                             'pixel std ~= target_pixel_std (EDM sigma_data=0.5). '
+                             'Commutes through inner products; preserves adjoint.')
+    parser.add_argument('--no_stft_global_rescale', action='store_false',
+                        dest='stft_global_rescale',
+                        help='Disable the Fix 2 global pixel-std rescale.')
+    parser.add_argument('--stft_target_pixel_std', type=float, default=0.5,
+                        help='Target aggregated pixel std when --stft_global_rescale is on. '
+                             'Default 0.5 matches EDM sigma_data.')
+    # Fix 3: quantile dead-bin floor.
+    parser.add_argument('--stft_dead_bin_quantile', type=float, default=0.0,
+                        help='0.0 = legacy hard rms<1e-5 floor (default). '
+                             '>0 = raise any rms below `q * median(rms)` to that floor, '
+                             'capping the CG condition number from per-bin scaling.')
+    # Fix 2 preflight hard-gate.
+    parser.add_argument('--stft_hard_gate_train_pixel_std', action='store_true',
+                        default=False,
+                        help='Hard-fail the STFT preflight if the image pixel std '
+                             'measured on real training data is outside [0.3, 0.8]. '
+                             'EDM sigma_data=0.5 is only a meaningful noise schedule '
+                             'inside that band.')
 
     # --- model--- :
     parser.add_argument('--img_resolution', type=int, help='image resolution')
@@ -188,6 +225,43 @@ def parse_args_irregular():
                         help='FFT size for the STFT embedder (ignored when --embedder=delay)')
     parser.add_argument('--stft_hop_length', type=int, default=4,
                         help='Hop length for the STFT embedder (ignored when --embedder=delay)')
+    parser.add_argument('--stft_scale_mode', type=str, default='zscore',
+                        choices=['zscore', 'absmax'],
+                        help='STFT per-bin normalization. zscore (default) divides '
+                             'by per-bin RMS so image pixel std matches EDM sigma_data=0.5. '
+                             'absmax (legacy) divides by per-bin max abs value, which '
+                             'compresses std to ~0.15 and collapses the denoiser.')
+    parser.add_argument('--stft_pad_mode', type=str, default='reflect',
+                        choices=['reflect', 'zero'],
+                        help='Padding of native STFT image to img_resolution square. '
+                             'reflect (default) keeps every pixel data-bearing via linear '
+                             'reflection. zero (legacy) pads with 0, producing a large '
+                             'dead-zone that biases the denoiser toward zero output.')
+    # Fix 2 (STFT-EM plan): scalar global pixel-std rescale.
+    parser.add_argument('--stft_global_rescale', action='store_true', default=False,
+                        help='After per-bin zscore, fold a scalar '
+                             'global_scale = measured_pixel_std / target_pixel_std '
+                             'into scale_real/scale_imag so the training image has '
+                             'pixel std ~= target_pixel_std (EDM sigma_data=0.5). '
+                             'Commutes through inner products; preserves adjoint.')
+    parser.add_argument('--no_stft_global_rescale', action='store_false',
+                        dest='stft_global_rescale',
+                        help='Disable the Fix 2 global pixel-std rescale.')
+    parser.add_argument('--stft_target_pixel_std', type=float, default=0.5,
+                        help='Target aggregated pixel std when --stft_global_rescale is on. '
+                             'Default 0.5 matches EDM sigma_data.')
+    # Fix 3: quantile dead-bin floor.
+    parser.add_argument('--stft_dead_bin_quantile', type=float, default=0.0,
+                        help='0.0 = legacy hard rms<1e-5 floor (default). '
+                             '>0 = raise any rms below `q * median(rms)` to that floor, '
+                             'capping the CG condition number from per-bin scaling.')
+    # Fix 2 preflight hard-gate.
+    parser.add_argument('--stft_hard_gate_train_pixel_std', action='store_true',
+                        default=False,
+                        help='Hard-fail the STFT preflight if the image pixel std '
+                             'measured on real training data is outside [0.3, 0.8]. '
+                             'EDM sigma_data=0.5 is only a meaningful noise schedule '
+                             'inside that band.')
 
     # --- model--- :
     parser.add_argument('--img_resolution', type=int, help='image resolution')
@@ -338,6 +412,18 @@ def parse_args_irregular():
                         help='Observation noise std for MMPS likelihood')
     parser.add_argument('--mmps_cg_iters', type=int, default=1,
                         help='Number of conjugate gradient iterations (1 typical for inpainting)')
+    # E-step sampler choice (PSLR instantiation, run_co_evolving_em.py)
+    # L-MMPS: obs-space CG solve of (sigma_y^2 I + sigma_t^2 G J^T G^T) v = r.
+    # L-TMPD: row-sum diagonal of G J^T G^T with elementwise divide (Boys et al. 2023).
+    # Both satisfy C1 (composed G), C2 (Tweedie covariance), C3 (manifold projection).
+    parser.add_argument('--e_step_sampler', type=str, default='mmps',
+                        choices=['mmps', 'tmpd', 'tmpd_vanilla', 'tmpd_richardson'],
+                        help='Which Tweedie-moment base sampler to use inside the E-step: '
+                             'mmps (L-MMPS: C1+C2+C3, obs-space CG), '
+                             'tmpd (L-TMPD: C1+C2+C3, row-sum diag), '
+                             'or tmpd_vanilla (ablation: TMPD applied directly in image space, '
+                             'violates C1 and C3; expected to fail). '
+                             'For tmpd*, --mmps_cg_iters and --warm_start_cg are ignored.')
     # Co-Evolving EM constraints (run_co_evolving_em.py, paper Sections 5.1–5.7)
     # Section 5.3: adaptive σ_y
     parser.add_argument('--sigma_y_ratio', type=float, default=0.1,
@@ -348,6 +434,12 @@ def parse_args_irregular():
                         help='Disable adaptive σ_y')
     parser.add_argument('--sigma_y_floor', type=float, default=0.0,
                         help='Minimum σ_y: σ_y = max(c·σ_t, floor)')
+    parser.add_argument('--richardson_omega', type=float, default=1.0,
+                        help='Damping ω for --e_step_sampler tmpd_richardson: '
+                             'v1 = v0 + ω·(r - A v0)/D.  ω=1 is pure Jacobi '
+                             '(can diverge if λ_max(D⁻¹A) > 2); ω<1 is damped '
+                             'and more robust (guaranteed monotone for '
+                             'ω ≤ 2/λ_max). Ignored for other samplers.')
     # Section 5.4: manifold projection
     parser.add_argument('--consistency_projection', action='store_true', default=True,
                         help='Project onto delay-embedding manifold (Prop 1)')
@@ -358,6 +450,13 @@ def parse_args_irregular():
                         help='Run CG in observation (TS) space instead of image space (Prop 4)')
     parser.add_argument('--no_obs_space_cg', action='store_false', dest='obs_space_cg',
                         help='Disable observation-space CG (use image-space CG)')
+    # STFT: re-cache per-bin abs-max after each E-step so the scales track
+    # the co-evolving reconstruction distribution (Fix 1 of the STFT-EM plan).
+    parser.add_argument('--stft_recache_each_em', action='store_true', default=True,
+                        help='Re-cache STFT scales on E-step reconstructions each EM iter')
+    parser.add_argument('--no_stft_recache_each_em', action='store_false',
+                        dest='stft_recache_each_em',
+                        help='Keep STFT scales fixed after the warm-start cache')
     # Section 5.7: warm-started CG
     parser.add_argument('--warm_start_cg', action='store_true', default=True,
                         help='Initialize CG from previous reverse step solution')
@@ -382,6 +481,9 @@ def parse_args_irregular():
                         help='Skip Phase 3')
     parser.add_argument('--eval_all_metrics', action='store_true', default=False,
                         help='Compute all metrics at final EM iteration')
+    parser.add_argument('--eval_memorization', action='store_true', default=False,
+                        help='Compute train-set memorization metrics (opt-in; off by default '
+                             'for faster evals that only care about test/disc_mean)')
     parser.add_argument('--gmrf_lambda', type=float, default=0.1,
                         help='GMRF smoothness prior strength (discrete Laplacian in TS space, 0 = disabled)')
     parser.add_argument('--spectral_filter_order', type=int, default=2,
@@ -516,10 +618,12 @@ def parse_args_irregular():
 
     # --- Initialization method ---
     parser.add_argument('--init_method', type=str, default='stl',
-                        choices=['stl', 'kalman', 'linear', 'random'],
+                        choices=['stl', 'kalman', 'kalman_snap', 'linear', 'random'],
                         help='Initialization method for EM: stl (iterative STL decomposition), '
-                             'kalman (Kalman filter), linear (linear interpolation), '
-                             'random (Gaussian fill from observed stats)')
+                             'kalman (Kalman filter; continuous script: linear-interp then Kalman), '
+                             'kalman_snap (continuous script only: snap timestamps to integer grid '
+                             'and run NaN-masked UnobservedComponents), '
+                             'linear (linear interpolation), random (Gaussian fill from observed stats)')
 
     # --- Curriculum and scaling ---
     parser.add_argument('--curriculum_reveal_max', type=float, default=0.3,

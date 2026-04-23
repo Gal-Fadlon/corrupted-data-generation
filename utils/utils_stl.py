@@ -837,6 +837,189 @@ def initialize_with_kalman(corrupted_data, obs_masks, period=None, seed=None,
 
 
 # =============================================================================
+# Experiment 3b: Kalman Smoother for continuous-time irregular timestamps
+# =============================================================================
+
+
+def initialize_with_kalman_continuous(y_obs, timestamps, seq_len,
+                                       period=None, seed=None,
+                                       per_fit_timeout=None, max_seconds=None):
+    """
+    Kalman smoother init for continuous-time irregular time series.
+
+    Used by run_co_evolving_em_continuous.py.  For each sample:
+
+    1. Linear-interpolate (timestamps, y_obs) onto the regular grid
+       [0, seq_len-1] to produce a dense pseudo-observation sequence.
+    2. Run a local-linear-trend + seasonal UnobservedComponents model on that
+       dense sequence; the smoothed level + seasonal is the structural init.
+    3. On any Kalman failure (timeout / numerical) fall back to the
+       piecewise-linear interpolant alone (Section 5.1 warm start).
+
+    The difference from :func:`initialize_with_kalman` is that the input is
+    not a grid-aligned series with NaNs at unobserved positions -- it is a
+    pair (y_obs, timestamps) with timestamps in [0, seq_len - 1] floating
+    point.  We pre-project onto the grid via numpy.interp so the downstream
+    Kalman path is identical to the missing-data version.
+
+    Args:
+        y_obs:       (N, N_obs, C) float array of observations.
+        timestamps:  (N, N_obs) float array of sample times in [0, seq_len-1].
+        seq_len:     output grid length T.
+        period:      seasonal period (auto-detected if None).
+        seed:        random seed (used for the tiny residual jitter).
+        per_fit_timeout: seconds per model.fit() call (default 5).
+        max_seconds: global time budget in seconds (default 1800).
+
+    Returns:
+        initial_recon: (N, seq_len, C) float32, clipped to [0, 1].
+    """
+    from statsmodels.tsa.statespace.structural import UnobservedComponents
+
+    if seed is not None:
+        np.random.seed(seed)
+
+    if y_obs.ndim != 3 or timestamps.ndim != 2:
+        raise ValueError(
+            f"initialize_with_kalman_continuous expects y_obs [N, N_obs, C] and "
+            f"timestamps [N, N_obs]; got y_obs {y_obs.shape}, "
+            f"timestamps {timestamps.shape}"
+        )
+
+    N, N_obs, C = y_obs.shape
+    T = int(seq_len)
+    if period is None:
+        period = auto_detect_period(T)
+
+    grid = np.arange(T, dtype=np.float64)
+
+    # Step 1: dense linear-interpolation init.  This is the fallback when
+    # Kalman fails and the starting point for the Kalman smoother.
+    x_interp = np.zeros((N, T, C), dtype=np.float64)
+    for i in range(N):
+        order = np.argsort(timestamps[i])
+        t_sorted = timestamps[i, order].astype(np.float64)
+        y_sorted = y_obs[i, order, :].astype(np.float64)
+        if t_sorted.size > 1:
+            keep = np.concatenate([[True], np.diff(t_sorted) > 0])
+            t_sorted = t_sorted[keep]
+            y_sorted = y_sorted[keep, :]
+        if t_sorted.size == 0:
+            x_interp[i, :, :] = 0.5
+            continue
+        for c in range(C):
+            x_interp[i, :, c] = np.interp(grid, t_sorted, y_sorted[:, c])
+
+    initial_recon = np.clip(x_interp, 0.0, 1.0).astype(np.float32)
+
+    MAX_KALMAN_SECONDS = max_seconds if max_seconds is not None else 1800
+    PER_FIT_TIMEOUT = per_fit_timeout if per_fit_timeout is not None else 5
+    start_time = time.time()
+    budget_exceeded = False
+    n_kalman_ok = 0
+    n_fallback = 0
+    n_timeout = 0
+
+    prev_alarm_handler = signal.signal(signal.SIGALRM, _kalman_timeout_handler)
+
+    try:
+        for i in range(N):
+            if (i + 1) % 200 == 0 or i == 0:
+                elapsed = time.time() - start_time
+                rate = (i + 1) / max(elapsed, 1e-6)
+                print(f"  Kalman continuous init: {i+1}/{N} sequences "
+                      f"({elapsed:.0f}s, {rate:.1f} seq/s, "
+                      f"kalman={n_kalman_ok}, fallback={n_fallback}, "
+                      f"timeout={n_timeout})")
+
+            if not budget_exceeded and time.time() - start_time > MAX_KALMAN_SECONDS:
+                budget_exceeded = True
+                remaining = N - i
+                print(f"  Global time budget ({MAX_KALMAN_SECONDS}s) exceeded "
+                      f"at sequence {i}/{N}. Falling back to linear interp "
+                      f"init for remaining {remaining} sequences.")
+
+            if budget_exceeded:
+                n_fallback += 1
+                continue
+
+            for c in range(C):
+                series = x_interp[i, :, c].astype(np.float64)
+                if not np.isfinite(series).all():
+                    continue
+
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        model = UnobservedComponents(
+                            series, level='local linear trend',
+                            seasonal=period, stochastic_seasonal=True,
+                        )
+                        signal.alarm(PER_FIT_TIMEOUT)
+                        result = model.fit(disp=False, maxiter=30)
+                        signal.alarm(0)
+
+                    smoothed_state = result.smoothed_state
+                    smoothed = smoothed_state[0, :]
+                    if model.k_states > 2:
+                        smoothed = smoothed + smoothed_state[2, :]
+
+                    if np.isnan(smoothed).any():
+                        raise ValueError("Kalman smoother produced NaN")
+
+                    # Add small residual noise (matched to std of observation
+                    # residuals) to avoid an over-smoothed init collapsing the
+                    # denoiser to near-constant sequences.
+                    residuals = series - smoothed
+                    residuals = residuals[np.isfinite(residuals)]
+                    if residuals.size > 1:
+                        std_r = max(np.std(residuals), 1e-4)
+                        smoothed = smoothed + np.random.normal(
+                            0, std_r * 0.5, size=T,
+                        )
+
+                    initial_recon[i, :, c] = smoothed.astype(np.float32)
+                    n_kalman_ok += 1
+
+                    del model, result, smoothed_state, smoothed
+                    gc.collect()
+
+                except TimeoutError:
+                    signal.alarm(0)
+                    n_timeout += 1
+                    n_fallback += 1
+                    try:
+                        del model, result
+                    except NameError:
+                        pass
+                    gc.collect()
+
+                except Exception:
+                    signal.alarm(0)
+                    n_fallback += 1
+                    try:
+                        del model, result
+                    except NameError:
+                        pass
+                    gc.collect()
+
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, prev_alarm_handler)
+
+    initial_recon = np.clip(initial_recon, 0.0, 1.0)
+
+    elapsed_total = time.time() - start_time
+    avg_obs_per_sample = float(y_obs.shape[1])
+    print(f"Kalman continuous init complete in {elapsed_total:.0f}s. "
+          f"{N} sequences, {avg_obs_per_sample:.1f} obs/sample on a grid of T={T}, "
+          f"period={period}")
+    print(f"  Kalman OK (channel-level): {n_kalman_ok}, "
+          f"Fallback: {n_fallback}, Timeouts: {n_timeout}")
+    return initial_recon
+
+
+# =============================================================================
 # Experiment 4: Seasonal-Aware Interpolation (Deseasonalize-Interpolate-Reseasonalize)
 # =============================================================================
 

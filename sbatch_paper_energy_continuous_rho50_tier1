@@ -1,0 +1,50 @@
+#!/bin/bash
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name paper_energy_continuous_rho50_tier1
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### Tier-1 improvements on top of rho50 baseline (best so far = 0.1546):
+###   1. --continuous_curriculum  : reveal pi(k)*T extra timestamps per EM iter,
+###                                 evaluated at the previous reconstruction,
+###                                 annealing 0.3 -> 0 over the first 60% of EM.
+###   2. --init_method kalman_snap : snap continuous timestamps onto the integer
+###                                 grid and run the NaN-masked UnobservedComponents
+###                                 Kalman smoother (same path as PointMask), so
+###                                 the init is not pre-smoothed by linear interp.
+### Everything else mirrors sbatch_paper_energy_continuous_rho50 (obs-space CG,
+### c = sigma_y_ratio * sigma_t, consistency projection, L_obs = 0.5, etc.).
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em_continuous.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --corruption_type continuous \
+    --n_obs_ratio 0.5 \
+    --t_distribution uniform \
+    --interp_kernel linear \
+    --missing_rate 0.0 \
+    --init_method kalman_snap \
+    --continuous_curriculum \
+    --wandb true \
+    --tags "paper" "energy" "continuous_rho50" "tier1" "curriculum" "kalman_snap" "co_evolving_em" \
+    --adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --sigma_y_floor 0.01 \
+    --mmps_cg_iters 5 \
+    --consistency_projection \
+    --obs_space_cg \
+    --no_warm_start_cg \
+    --lambda_obs 0.5 \
+    --lambda_rep 0 \
+    --em_iters 5 \
+    --phase3 \
+    --eval_all_metrics

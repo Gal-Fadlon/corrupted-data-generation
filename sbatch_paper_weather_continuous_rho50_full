@@ -1,0 +1,42 @@
+#!/bin/bash
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name paper_w_cont_s24_r50_f
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### Paper continuous-time resampling matrix:
+###   dataset=weather, seq_len=24, rho=0.5, variant=full
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em_continuous.py \
+    --config ./configs/seq_len_24/weather.yaml \
+    --corruption_type continuous \
+    --n_obs_ratio 0.5 \
+    --t_distribution uniform \
+    --interp_kernel linear \
+    --missing_rate 0.0 \
+    --wandb true \
+    --tags "paper" "weather" "seq24" "continuous_rho50" "variant_full" "continuous_matrix" \
+    --adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --sigma_y_floor 0.01 \
+    --mmps_cg_iters 5 \
+    --obs_space_cg \
+    --consistency_projection \
+    --init_method kalman \
+    --no_warm_start_cg \
+    --lambda_obs 0.5 \
+    --lambda_rep 0 \
+    --em_iters 12 \
+    --em_patience 2 \
+    --phase3 \
+    --eval_all_metrics

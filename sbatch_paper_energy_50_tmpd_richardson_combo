@@ -1,0 +1,51 @@
+#!/bin/bash
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name ltmpd_rc
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### L-TMPD + *damped* Richardson + boosted σ_y (safe combo).
+###
+### Hedges against two theoretical risks of the plain Richardson run:
+###   1. Un-damped (ω=1) Richardson is only guaranteed monotone when all
+###      eigenvalues of D⁻¹A lie in (0, 2).  For our operator
+###      A = reg_ratio·I + G J^T G^T with a non-symmetric U-Net Jacobian,
+###      this may fail and one Richardson step can AMPLIFY error in the
+###      bad eigenspaces.  ω=0.5 damps this risk (monotone for λ_max ≤ 4).
+###   2. σ_y_ratio=0.1 may under-regularize the posterior covariance even
+###      with a better diagonal approximation.  σ_y_ratio=0.3 brings the
+###      constant-in-σ_t reg_ratio from 0.01 to 0.09 — a 9× boost that
+###      previously seemed to help plain L-TMPD in the sigma sweep.
+###
+### This is the "both at once" shot.  If plain Richardson (ω=1, σ_y=0.1)
+### fails but this succeeds, the diagnosis is clear: TMPD's diagonal approx
+### on lifted operators requires BOTH refinement AND regularization boost.
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --missing_rate 0.5 \
+    --allow_tf32 \
+    --wandb true \
+    --tags "delay" "energy" "50_missing_rate" "ltmpd_richardson" "richardson" "combo" "damped" \
+    --e_step_sampler tmpd_richardson \
+    --richardson_omega 0.5 \
+    --adaptive_sigma_y \
+    --sigma_y_ratio 0.3 \
+    --sigma_y_floor 0.05 \
+    --mmps_cg_iters 5 \
+    --consistency_projection \
+    --obs_space_cg \
+    --warm_start_cg \
+    --lambda_obs 0.0 \
+    --lambda_rep 0.0 \
+    --no_phase3

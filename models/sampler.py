@@ -6,13 +6,18 @@ from utils.mmps_denoise import slice_denoised_to_data_channels
 
 
 class DiffusionProcess():
-    def __init__(self, args, diffusion_fn, shape):
+    def __init__(self, args, diffusion_fn, shape, pad_mask=None):
         '''
         beta_1        : beta_1 of diffusion process
         beta_T        : beta_T of diffusion process
         T             : step of diffusion process
         diffusion_fn  : trained diffusion network
         shape         : data shape
+        pad_mask      : optional (1, C, H, W) binary mask of valid non-pad
+                        pixels.  When provided, the sampler zeroes out the
+                        structurally-padded image region after each reverse
+                        step so denoiser noise in those pixels does not
+                        contaminate the valid region (needed for STFT).
         '''
         self.args = args
         self.device = args.device
@@ -36,6 +41,7 @@ class DiffusionProcess():
             getattr(args, 'ambient_concat_further_mask', False)
         )
         self._data_c = shape[0]
+        self.pad_mask = pad_mask
 
     def sample(self, latents, class_labels=None):
 
@@ -49,8 +55,14 @@ class DiffusionProcess():
                     sigma_min ** (1 / self.rho) - sigma_max ** (1 / self.rho))) ** self.rho
         t_steps = torch.cat([self.net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])])  # t_N = 0
 
+        pad_mask_d = None
+        if self.pad_mask is not None:
+            pad_mask_d = self.pad_mask.to(device=latents.device, dtype=torch.float64)
+
         # Main sampling loop.
         x_next = latents.to(torch.float64) * t_steps[0]
+        if pad_mask_d is not None:
+            x_next = x_next * pad_mask_d
         for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):  # 0, ..., N-1
             x_cur = x_next
 
@@ -58,6 +70,8 @@ class DiffusionProcess():
             gamma = min(self.S_churn / self.num_steps, np.sqrt(2) - 1) if self.S_min <= t_cur <= self.S_max else 0
             t_hat = self.net.round_sigma(t_cur + gamma * t_cur)
             x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * self.S_noise * torch.randn_like(x_cur)
+            if pad_mask_d is not None:
+                x_hat = x_hat * pad_mask_d
 
             # Euler step.
             x_in = concat_ones_mask(x_hat, self._ambient_concat)
@@ -66,6 +80,8 @@ class DiffusionProcess():
             )
             d_cur = (x_hat - denoised) / t_hat
             x_next = x_hat + (t_next - t_hat) * d_cur
+            if pad_mask_d is not None:
+                x_next = x_next * pad_mask_d
 
             # Apply 2nd order correction.
             if i < self.num_steps - 1:
@@ -75,6 +91,8 @@ class DiffusionProcess():
                 )
                 d_prime = (x_next - denoised) / t_next
                 x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
+                if pad_mask_d is not None:
+                    x_next = x_next * pad_mask_d
 
         return x_next
 

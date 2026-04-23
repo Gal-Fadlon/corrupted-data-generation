@@ -1,0 +1,41 @@
+#!/bin/bash
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name ltmpd_rich
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### L-TMPD + one Richardson refinement on the row-sum diagonal preconditioner.
+### Baseline L-TMPD's diagonal approximation of G J^T G^T is too coarse for the
+### delay-embedding operator (off-diagonal coupling dominates), so the E-step
+### under-regularizes and EM diverges at iter 2.  One Jacobi/Richardson step
+### corrects the first-order off-diagonal error and costs only +1 VJP/call
+### (3 vs 2 for plain L-TMPD; still cheaper than L-MMPS CG with 5 iters).
+### Shares all other PSLR corrections (C1, C2-adaptive, C3 projection).
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --missing_rate 0.5 \
+    --allow_tf32 \
+    --wandb true \
+    --tags "delay" "energy" "50_missing_rate" "ltmpd_richardson" "richardson" \
+    --e_step_sampler tmpd_richardson \
+    --adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --sigma_y_floor 0.01 \
+    --mmps_cg_iters 5 \
+    --consistency_projection \
+    --obs_space_cg \
+    --warm_start_cg \
+    --lambda_obs 0.0 \
+    --lambda_rep 0.0 \
+    --no_phase3

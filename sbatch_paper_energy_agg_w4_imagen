@@ -1,0 +1,28 @@
+#!/bin/bash
+#SBATCH --partition rtx6000
+#SBATCH --qos azencot
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name paper_energy_agg_w4_imagen
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### ImagenI2R baseline on temporal block-mean aggregation, w=4, Energy.
+### Identical to sbatch_paper_energy_agg_w2_imagen except agg_window=4.
+### At w=4 the representative-point NaN encoding leaves only 25% of
+### positions observed (3 of 4 are NaN within each window) -- a stress test
+### for the baseline's NaN-aware masked loss.
+module load anaconda
+source activate idan2_env
+python run_irregular_aggregate.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --agg_window 4 \
+    --missing_rate 0.0 \
+    --wandb true \
+    --tags "paper" "energy" "aggregate_w4" "imagen_i2r" "baseline"

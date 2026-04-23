@@ -1,0 +1,47 @@
+#!/bin/bash
+#SBATCH --partition rtx6000
+#SBATCH --qos azencot
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name paper_energy_noise_02_noenf
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### Gaussian-noise corruption on Energy (sigma_phys = 0.2, HIGH noise)
+### Rescue R1 (theory-first): drop the post-hoc Bayesian blend entirely.
+### Paper alignment: Prop 1 (manifold projection) stays; Prop 2 (adaptive
+### sigma_y) now carries sigma_phys via sigma_y^2 = sigma_phys^2 + (c sigma_t)^2,
+### so the MMPS CG posterior already performs the optimal prior/observation
+### trade-off.  No separate enforcement step -> no double-counting of the
+### likelihood.  Algorithm 1 lines 11-12 are skipped when sigma_phys > 0.
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em_noise.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --corruption_type gaussian_noise \
+    --sigma_y_phys 0.2 \
+    --noise_init stl_denoise \
+    --proj_prior_std 0.3 \
+    --lobs_noise_mode off \
+    --no_enforce_observations \
+    --missing_rate 0.0 \
+    --wandb true \
+    --tags "paper" "energy" "gaussian_noise_020" "co_evolving_em" "tier2" "rescue_noenf" \
+    --adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --sigma_y_floor 0.01 \
+    --mmps_cg_iters 5 \
+    --consistency_projection \
+    --obs_space_cg \
+    --no_warm_start_cg \
+    --lambda_obs 0 \
+    --lambda_rep 0 \
+    --em_iters 5 \
+    --phase3 \
+    --eval_all_metrics

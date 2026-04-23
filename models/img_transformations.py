@@ -38,6 +38,44 @@ class TsImgEmbedder(ABC):
         """
         pass
 
+    def ts_to_img_adjoint(self, x_img):
+        """Exact transpose of ts_to_img.
+
+        Default: fall back to img_to_ts (correct up to a scalar for delay
+        embedders since their img_to_ts averages over duplicate positions,
+        which is proportional to the transpose). Subclasses with a non-local
+        linear lift (e.g. STFTEmbedder) override this with an autograd-based
+        VJP that is the exact transpose.
+        """
+        return self.img_to_ts(x_img)
+
+    def img_to_ts_adjoint(self, v_ts):
+        """Exact transpose of img_to_ts.
+
+        For a linear lift L, img_to_ts is L^{-1} (left-inverse). Its adjoint
+        L^{-T} is DIFFERENT from L (= ts_to_img) whenever L is non-unitary,
+        which is true for STFT with Hann window + per-bin scaling. For the
+        delay embedder L is approximately unitary (orthogonal placements +
+        average pooling), so ts_to_img is an acceptable approximation and
+        this method falls back to it by default.
+
+        Subclasses with a strongly non-unitary lift (STFTEmbedder) should
+        override with an exact autograd-based VJP of img_to_ts.
+        """
+        return self.ts_to_img(v_ts)
+
+    @property
+    def pad_mask(self):
+        """Binary mask marking valid (non-pad) pixels in ts_to_img output.
+
+        Shape: (1, C, H, W) with 1 inside the native image region and 0
+        in the zero-padded border. Default None means no padding is applied
+        (or the entire image is structurally valid), which is the case for
+        the delay embedder. Subclasses with structural padding (STFT) override
+        this to return an explicit mask.
+        """
+        return None
+
 
 class DelayEmbedder(TsImgEmbedder):
     """
@@ -290,24 +328,60 @@ class STFTEmbedder(TsImgEmbedder):
     Output: (B, 2F, freq_bins, n_frames) -- real and imag channels stacked
     """
 
-    def __init__(self, device, seq_len, n_fft, hop_length, img_resolution=None):
+    def __init__(self, device, seq_len, n_fft, hop_length, img_resolution=None,
+                 scale_mode='zscore', pad_mode='reflect',
+                 global_rescale_enabled=False, target_pixel_std=0.5,
+                 dead_bin_quantile=0.0):
         super().__init__(device, seq_len)
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.img_resolution = img_resolution
-        # Per-bin absolute-max scales for PURE-MULTIPLICATIVE normalization.
-        # Stored so that ts_to_img is a strictly linear operator L: y = L x,
-        # satisfying L(0)=0 and L(ax+by)=aL(x)+bL(y).  Any affine shift (e.g.
-        # the "-1" in min-max rescale to [-1, 1]) would break the CG adjoint
-        # identity <Gx, y> = <x, G^T y>, causing obs-space CG divergence
-        # (Section 5.2 of paper v3). See _stft_audit.py for verification.
+        # scale_mode: 'zscore' (per-bin std) or 'absmax' (per-bin max abs).
+        # Both are strictly multiplicative (y = x / scale), preserving linearity
+        # of L and the CG adjoint identity <Gx, y> = <x, G^T y>. zscore makes
+        # the image have pixel std ~= sigma_data = 0.5, matching EDM's noise
+        # schedule. absmax compresses std to ~0.15, which causes the denoiser
+        # to collapse to the trivial zero function (Section 7.10 analysis).
+        self.scale_mode = scale_mode
+        # pad_mode: 'reflect' (native 7x7 -> 8x8 reflection padding, all
+        # pixels data-bearing) or 'zero' (native 5x7 -> 8x8 with deterministic
+        # zeros in 45% of the image, kept for backward-compat). Both are
+        # linear and have exact autograd-VJP adjoints.
+        self.pad_mode = pad_mode
+        # Cached per-bin scales (std under zscore, abs-max under absmax).
         self.scale_real = None
         self.scale_imag = None
         self.img_shape = None
+        self._pad_mask_cache = None
+        self._pad_mask_shape = None
+
+        # Fix 2: scalar global rescale. After the per-bin zscore, the aggregate
+        # pixel std on TRAINING data can still be ~0.9 (short L) to ~53 (long L)
+        # because a few high-energy bins dominate the mix. A single scalar
+        # folded INTO scale_real/scale_imag commutes through every inner
+        # product, preserving linearity and the adjoint identity exactly, and
+        # lands pixel_std at `target_pixel_std` (EDM's sigma_data=0.5).
+        self.global_rescale_enabled = global_rescale_enabled
+        self.target_pixel_std = target_pixel_std
+        self.global_scale = 1.0
+        # Fix 3: replace the hard rms<1e-5 dead-bin floor with a quantile floor
+        # so CG condition number stays <1e4 instead of drifting to >1e8 at
+        # long sequences. Value 0.0 preserves the legacy hard-floor behaviour.
+        self.dead_bin_quantile = float(dead_bin_quantile)
 
     @staticmethod
-    def pad_to_square(x, target_side, mask=0):
-        """Pad (B, C, H, W) to (B, C, target_side, target_side) with `mask`.
+    def pad_to_square(x, target_side, pad_mode='zero', mask=0):
+        """Pad (B, C, H, W) to (B, C, target_side, target_side).
+
+        pad_mode:
+            'zero'    -> constant padding with value `mask` (default 0).
+                         Deterministic zeros; breaks when the pad fraction is
+                         large (~45% for 5x7 -> 8x8) because the U-Net learns
+                         to predict zero in the pad region and the bias leaks
+                         into the live region.
+            'reflect' -> reflection padding, which is linear and keeps every
+                         pixel data-bearing. Requires h >= 2 and w >= 2 along
+                         each padded axis (always true here).
 
         H and W must both be <= target_side.
         """
@@ -319,6 +393,10 @@ class STFTEmbedder(TsImgEmbedder):
                 f"STFT output ({h}x{w}) exceeds img_resolution={target_side}; "
                 "increase img_resolution or adjust stft_n_fft / stft_hop_length."
             )
+        if pad_mode == 'reflect':
+            return torch.nn.functional.pad(
+                x, (0, pad_w, 0, pad_h), mode='reflect',
+            )
         return torch.nn.functional.pad(
             x, (0, pad_w, 0, pad_h), mode='constant', value=mask,
         )
@@ -329,25 +407,29 @@ class STFTEmbedder(TsImgEmbedder):
         return x[:, :, :orig_h, :orig_w]
 
     def cache_min_max_params(self, train_data, chunk_size=512):
-        """Compute and cache per-bin ABS-MAX scaling factors.
+        """Cache per-bin scales for ts_to_img / img_to_ts.
 
-        We deliberately use purely multiplicative (linear) scaling:
-            y = x / abs_max     (forward)
-            x = y * abs_max     (inverse)
-        instead of min-max rescaling to [-1, 1] (which is affine and breaks
-        the CG adjoint identity used in Section 5.2 obs-space CG).
+        Dispatches on `self.scale_mode`:
+          - 'zscore' -> per-bin standard deviation (see cache_zscore_params);
+                         produces image pixel std close to 1, so with
+                         `sigma_data = 0.5` EDM's noise schedule is balanced.
+          - 'absmax' -> per-bin abs-max (legacy behaviour used by the original
+                         STFT validation runs; image std ~= 0.15 which causes
+                         the denoiser to collapse to zero).
 
-        With per-bin `abs_max_bin = max(|real|, |imag|)` over the training
-        set, the normalized output lies in [-1, 1] exactly when the test
-        sample has coefficients bounded by the training-set extremes, and
-        is at most a small multiple of 1 otherwise - well-suited for EDM.
+        All downstream code uses `self.scale_real` / `self.scale_imag`
+        identically regardless of mode, so the lift remains strictly linear
+        in both cases.
+        """
+        if self.scale_mode == 'zscore':
+            return self.cache_zscore_params(train_data, chunk_size=chunk_size)
+        return self._cache_absmax_params(train_data, chunk_size=chunk_size)
 
-        Args:
-            train_data: (B, T, F) training time series tensor.
-                        Call once before the training loop starts.
-            chunk_size: process the input in chunks of this many sequences
-                        to avoid `CUDA error: invalid configuration argument`
-                        from torch.stft / F.pad on very large batches.
+    def _cache_absmax_params(self, train_data, chunk_size=512):
+        """Legacy per-bin ABS-MAX scaling (kept for backward compatibility).
+
+        See cache_min_max_params' docstring for why this collapses the
+        denoiser when used with sigma_data = 0.5.
         """
         train_data = train_data.detach().cpu()
 
@@ -364,12 +446,8 @@ class STFTEmbedder(TsImgEmbedder):
                 abs_max_r = torch.maximum(abs_max_r, cur_abs_r)
                 abs_max_i = torch.maximum(abs_max_i, cur_abs_i)
 
-        # For "dead" bins where the STFT coefficient is structurally zero
-        # across the training set (e.g. imag parts of DC and Nyquist for real
-        # input signals), naively clamping `abs_max` to a small floor like
-        # 1e-6 would make y = x / 1e-6 amplify fp32 noise (~1e-7) to ~0.1,
-        # breaking linearity in practice.  Use identity scale (= 1.0) for
-        # dead bins so they stay numerically at ~1e-7 through ts_to_img.
+        # Dead bins (structurally zero: imag of DC/Nyquist for real input)
+        # get scale=1.0 so y = x / 1.0 doesn't amplify fp32 noise.
         dead_r = abs_max_r < 1e-5
         dead_i = abs_max_i < 1e-5
         abs_max_r = torch.where(dead_r, torch.ones_like(abs_max_r), abs_max_r)
@@ -377,6 +455,124 @@ class STFTEmbedder(TsImgEmbedder):
 
         self.scale_real = abs_max_r.to(self.device)
         self.scale_imag = abs_max_i.to(self.device)
+
+    def cache_zscore_params(self, train_data, chunk_size=512):
+        """Cache per-bin ROOT-MEAN-SQUARE (RMS) scaling factors.
+
+        Linear scaling:
+            y = x / rms      (forward)
+            x = y * rms      (inverse)
+        where rms = sqrt(E[x^2]) over the training set per (feature, freq_bin,
+        frame). For STFT of zero-mean time series, RMS equals std; we use the
+        second-moment form to avoid a mean subtraction and keep the lift L(0)=0
+        strictly linear so the CG adjoint identity holds exactly.
+
+        The resulting normalized image has per-bin std ~= 1 on train data,
+        and aggregated pixel std ~= 0.5-0.7 across the image - matching EDM's
+        `sigma_data = 0.5` so the denoising objective is non-trivial.
+
+        When `self.global_rescale_enabled` (Fix 2 in the STFT-EM plan) is on,
+        a single scalar `global_scale = measured_pixel_std / target_pixel_std`
+        is folded INTO scale_real / scale_imag so that the image pixel std
+        measured on the actual training data (not a random probe) matches
+        EDM's `sigma_data = 0.5`. Because it's a scalar multiplier on both
+        forward and adjoint paths, it commutes through every inner product
+        and preserves the CG adjoint identity exactly.
+
+        When `self.dead_bin_quantile > 0` (Fix 3) we floor tiny RMS values
+        at `q * median(rms)` instead of the hard `1e-5` threshold, keeping
+        the CG condition number bounded for long-L/high-resolution tiles.
+
+        Args:
+            train_data: (B, T, F) training time series tensor.
+                        Call once before the training loop starts.
+            chunk_size: process the input in chunks of this many sequences
+                        to avoid `CUDA error: invalid configuration argument`
+                        from torch.stft on very large batches. On such a
+                        CUDA error we halve the chunk size and retry (Fix 4).
+        """
+        train_data = train_data.detach().cpu()
+
+        n = train_data.shape[0]
+        sum_sq_r = sum_sq_i = None
+        count = 0
+        # Fix 4: wrap the STFT loop with a halving retry so we never crash
+        # the whole EM run on a CUDA kernel launch configuration error.
+        min_chunk = 4
+        cur_chunk = int(chunk_size)
+        start = 0
+        while start < n:
+            chunk = train_data[start:start + cur_chunk]
+            try:
+                real, imag = self._stft_transform(chunk)
+            except RuntimeError as exc:
+                msg = str(exc)
+                if ('CUDA error' in msg or 'invalid configuration' in msg or
+                        'out of memory' in msg.lower()) and cur_chunk > min_chunk:
+                    cur_chunk = max(min_chunk, cur_chunk // 2)
+                    print(f'[STFT.cache] CUDA/STFT error ({msg.splitlines()[0]!r}); '
+                          f'halving chunk_size -> {cur_chunk} and retrying.')
+                    continue
+                raise
+            sq_r = (real * real).sum(dim=0, keepdim=True)
+            sq_i = (imag * imag).sum(dim=0, keepdim=True)
+            if sum_sq_r is None:
+                sum_sq_r, sum_sq_i = sq_r, sq_i
+            else:
+                sum_sq_r = sum_sq_r + sq_r
+                sum_sq_i = sum_sq_i + sq_i
+            count += chunk.shape[0]
+            start += cur_chunk
+
+        rms_r = torch.sqrt(sum_sq_r / max(count, 1))
+        rms_i = torch.sqrt(sum_sq_i / max(count, 1))
+
+        # Fix 3: quantile floor. Structurally-dead bins (imag of DC/Nyquist)
+        # still hit the hard 1e-5 floor, but any "nearly dead" bin whose
+        # rms is far below the median of live bins is raised to
+        # `q * median(rms_live)` to cap the CG condition number.
+        hard_dead_r = rms_r < 1e-5
+        hard_dead_i = rms_i < 1e-5
+        rms_r = torch.where(hard_dead_r, torch.ones_like(rms_r), rms_r)
+        rms_i = torch.where(hard_dead_i, torch.ones_like(rms_i), rms_i)
+        if self.dead_bin_quantile > 0.0:
+            live_r = rms_r[~hard_dead_r]
+            live_i = rms_i[~hard_dead_i]
+            if live_r.numel() > 0:
+                floor_r = self.dead_bin_quantile * live_r.median()
+                rms_r = torch.where(rms_r < floor_r,
+                                    torch.full_like(rms_r, float(floor_r)),
+                                    rms_r)
+            if live_i.numel() > 0:
+                floor_i = self.dead_bin_quantile * live_i.median()
+                rms_i = torch.where(rms_i < floor_i,
+                                    torch.full_like(rms_i, float(floor_i)),
+                                    rms_i)
+
+        self.scale_real = rms_r.to(self.device)
+        self.scale_imag = rms_i.to(self.device)
+        # Reset the global scale so the measurement below is the post-per-bin,
+        # pre-global value. Without this line, subsequent re-calls would
+        # compound the scalar.
+        self.global_scale = 1.0
+
+        # Fix 2: measure the aggregate pixel std on training data (capped
+        # subsample for speed), then fold `pixel_std / target_pixel_std` into
+        # the per-bin scales. `ts_to_img` divides by `scale_real*global_scale`
+        # so the output pixel std becomes exactly `target_pixel_std`.
+        if self.global_rescale_enabled:
+            probe_n = min(n, 256)
+            probe = train_data[:probe_n].to(self.device)
+            with torch.no_grad():
+                img_probe = self.ts_to_img(probe)
+                measured = img_probe.std().item()
+            if measured > 1e-8 and self.target_pixel_std > 1e-8:
+                self.global_scale = float(measured / self.target_pixel_std)
+                self.scale_real = self.scale_real * self.global_scale
+                self.scale_imag = self.scale_imag * self.global_scale
+                print(f'[STFT.cache] global_rescale: pixel_std {measured:.4f} '
+                      f'-> target {self.target_pixel_std:.4f}, '
+                      f'global_scale={self.global_scale:.4f}')
 
     def _stft_transform(self, data):
         """Raw complex STFT, returning real and imaginary tensors.
@@ -410,7 +606,8 @@ class STFTEmbedder(TsImgEmbedder):
         Args:
             signal: (B, T, F)
             pad:    if True and img_resolution is set, pad to a square image
-            mask:   fill value for padding (default 0)
+            mask:   fill value for constant padding (only used when
+                    self.pad_mode == 'zero'). Default 0.
         Returns:
             (B, 2F, H, W) -- real and imag channels concatenated.
             If pad=True and img_resolution is set, H = W = img_resolution.
@@ -426,7 +623,10 @@ class STFTEmbedder(TsImgEmbedder):
         self.img_shape = tuple(stft_out.shape)
 
         if pad and self.img_resolution is not None:
-            stft_out = self.pad_to_square(stft_out, self.img_resolution, mask=mask)
+            stft_out = self.pad_to_square(
+                stft_out, self.img_resolution,
+                pad_mode=self.pad_mode, mask=mask,
+            )
 
         return stft_out
 
@@ -463,6 +663,108 @@ class STFTEmbedder(TsImgEmbedder):
         ).to(x_image.device)
         x_ts = ispec(complex_spec, self.seq_len)  # (B, F, T)
         return x_ts.permute(0, 2, 1)  # (B, T, F)
+
+    def ts_to_img_adjoint(self, x_img):
+        """Exact transpose of ts_to_img computed via an autograd VJP.
+
+        For any linear forward pipeline (stft -> per-bin scale -> zero-pad),
+        `torch.autograd.grad(ts_to_img(x_ts_zero), x_ts_zero, x_img)` returns
+        `(ts_to_img)^T @ x_img`. This is the true adjoint — unlike istft, which
+        is the left-inverse under COLA but not the matrix transpose — and is
+        what observation-space CG requires for an SPD operator.
+        """
+        assert self.scale_real is not None, (
+            "Call cache_min_max_params(train_data) before using ts_to_img_adjoint"
+        )
+        B = x_img.shape[0]
+        F_feat = int(self.scale_real.shape[1])
+
+        was_training = torch.is_grad_enabled()
+        with torch.enable_grad():
+            x_ts_probe = torch.zeros(
+                B, self.seq_len, F_feat,
+                device=x_img.device, dtype=torch.float32, requires_grad=True,
+            )
+            img = self.ts_to_img(x_ts_probe)
+            grad_ts, = torch.autograd.grad(
+                outputs=img, inputs=x_ts_probe,
+                grad_outputs=x_img.to(img.dtype),
+                create_graph=False, retain_graph=False,
+            )
+        if not was_training:
+            grad_ts = grad_ts.detach()
+        return grad_ts.to(x_img.dtype)
+
+    def img_to_ts_adjoint(self, v_ts):
+        """Exact transpose of img_to_ts computed via an autograd VJP.
+
+        For the linear inverse pipeline (crop -> per-bin unscale -> ISTFT),
+        `torch.autograd.grad(img_to_ts(probe_img), probe_img, v_ts)` returns
+        `(img_to_ts)^T @ v_ts`. This is the true adjoint L^{-T}.
+
+        MMPS obs-space CG requires the operator
+            sigma_y^2 I + sigma_t^2 G J^T G^T
+        where G(D) = mask_ts * img_to_ts(D) maps image -> TS. Thus
+            G^T(v_ts) = img_to_ts_adjoint(mask_ts * v_ts)
+        maps TS -> image. Using ts_to_img (= L) instead of L^{-T} is only
+        correct for unitary lifts, which STFT with Hann window + per-bin
+        scaling is not. See utils/stft_preflight.py for the adjoint audit.
+        """
+        assert self.scale_real is not None, (
+            "Call cache_min_max_params(train_data) before using img_to_ts_adjoint"
+        )
+        B = v_ts.shape[0]
+        F_feat = int(self.scale_real.shape[1])
+        freq_bins, n_frames = self._expected_spec_shape()
+        if self.img_resolution is not None:
+            H = W = self.img_resolution
+        else:
+            H, W = freq_bins, n_frames
+
+        was_training = torch.is_grad_enabled()
+        with torch.enable_grad():
+            probe_img = torch.zeros(
+                B, 2 * F_feat, H, W,
+                device=v_ts.device, dtype=torch.float32, requires_grad=True,
+            )
+            ts_out = self.img_to_ts(probe_img)
+            grad_img, = torch.autograd.grad(
+                outputs=ts_out, inputs=probe_img,
+                grad_outputs=v_ts.to(ts_out.dtype),
+                create_graph=False, retain_graph=False,
+            )
+        if not was_training:
+            grad_img = grad_img.detach()
+        return grad_img.to(v_ts.dtype)
+
+    @property
+    def pad_mask(self):
+        """(1, 2F, H, W) mask: 1 inside the native STFT crop, 0 in the pad.
+
+        Only meaningful for `pad_mode == 'zero'`, where the padded region
+        contains deterministic zeros that should be excluded from the M-step
+        loss to prevent the denoiser from latching onto them.
+
+        Returns None when:
+          - scale_real / img_resolution are not yet set, or
+          - `pad_mode == 'reflect'` (reflection-padded pixels are deterministic
+            functions of native pixels and thus data-bearing; excluding them
+            from the loss would break the lift's linear consistency).
+        """
+        if self.scale_real is None or self.img_resolution is None:
+            return None
+        if self.pad_mode == 'reflect':
+            return None
+        F_feat = int(self.scale_real.shape[1])
+        freq_bins, n_frames = self._expected_spec_shape()
+        target_shape = (1, 2 * F_feat, self.img_resolution, self.img_resolution)
+        crop = (freq_bins, n_frames)
+        if self._pad_mask_cache is None or self._pad_mask_shape != (target_shape, crop):
+            m = torch.zeros(*target_shape, device=self.device)
+            m[:, :, :freq_bins, :n_frames] = 1.0
+            self._pad_mask_cache = m
+            self._pad_mask_shape = (target_shape, crop)
+        return self._pad_mask_cache
 
 
 class GAFEmbedder(TsImgEmbedder):

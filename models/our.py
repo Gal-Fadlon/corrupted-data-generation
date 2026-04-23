@@ -245,6 +245,11 @@ class TS2img_Karras(nn.Module):
                 n_fft=getattr(args, 'stft_n_fft', 8),
                 hop_length=getattr(args, 'stft_hop_length', 4),
                 img_resolution=args.img_resolution,
+                scale_mode=getattr(args, 'stft_scale_mode', 'zscore'),
+                pad_mode=getattr(args, 'stft_pad_mode', 'reflect'),
+                global_rescale_enabled=getattr(args, 'stft_global_rescale', False),
+                target_pixel_std=getattr(args, 'stft_target_pixel_std', 0.5),
+                dead_bin_quantile=getattr(args, 'stft_dead_bin_quantile', 0.0),
             )
         else:
             self.ts_img = DelayEmbedder(self.device, args.seq_len, args.delay, args.embedding, self.batch_size, args.input_channels)
@@ -268,6 +273,25 @@ class TS2img_Karras(nn.Module):
     def img_to_ts(self, img):
         return self.ts_img.img_to_ts(img)
 
+    def ts_to_img_adjoint(self, x_img):
+        """Exact transpose of ts_to_img; delegates to the embedder."""
+        return self.ts_img.ts_to_img_adjoint(x_img)
+
+    def img_to_ts_adjoint(self, v_ts):
+        """Exact transpose of img_to_ts; delegates to the embedder.
+
+        Used by DualSpaceMMPS.posterior_denoise_obs_space to realise the
+        correct MMPS operator G^T(v_ts) = (img_to_ts)^T (mask_ts * v_ts) for
+        non-unitary lifts (STFT). The default embedder implementation falls
+        back to ts_to_img, preserving the historical delay-embedding path.
+        """
+        return self.ts_img.img_to_ts_adjoint(v_ts)
+
+    @property
+    def pad_mask(self):
+        """Optional (1, C, H, W) mask identifying valid (non-pad) pixels."""
+        return getattr(self.ts_img, 'pad_mask', None)
+
     def cache_embedder_stats(self, train_data_tensor):
         """Cache any one-time statistics the embedder needs (e.g. STFT min/max).
 
@@ -275,6 +299,22 @@ class TS2img_Karras(nn.Module):
         """
         if hasattr(self.ts_img, 'cache_min_max_params'):
             self.ts_img.cache_min_max_params(train_data_tensor)
+
+    def _apply_pad_mask_mean(self, sq_err, weight):
+        """Compute a padding-aware weighted mean of the squared error.
+
+        For embedders with a non-trivial pad region (STFT), we want to
+        restrict the denoising loss to the native (non-zero-pad) pixels.
+        Falls back to the unweighted mean when no pad_mask is defined
+        (delay embedder), preserving the existing behavior.
+        """
+        pm = self.pad_mask
+        if pm is None:
+            return (weight * sq_err).mean()
+        pm = pm.to(device=sq_err.device, dtype=sq_err.dtype)
+        num = (weight * sq_err * pm).sum()
+        den = (weight * torch.ones_like(sq_err) * pm).sum().clamp_min(1e-8)
+        return num / den
 
     def loss_fn_irregular(self, x, mask=None):
         '''
@@ -289,7 +329,8 @@ class TS2img_Karras(nn.Module):
         output, weight = self.forward_irregular(x, mask)
         x = self.unpad(x * mask, x.shape)
         output = self.unpad(output * mask, x.shape)
-        loss = (weight * (output - x).square()).mean()
+        sq_err = (output - x).square()
+        loss = self._apply_pad_mask_mean(sq_err, weight)
         to_log['karras loss'] = loss.detach().item()
         return loss, to_log
 
@@ -306,7 +347,8 @@ class TS2img_Karras(nn.Module):
         x_u = self.unpad(x, x.shape)
         out_u = self.unpad(output, x.shape)
         conf = self.unpad(confidence_weights, x.shape)
-        loss = (weight * conf * (out_u - x_u).square()).mean()
+        sq_err = conf * (out_u - x_u).square()
+        loss = self._apply_pad_mask_mean(sq_err, weight)
         to_log['karras loss'] = loss.detach().item()
         return loss, to_log
 

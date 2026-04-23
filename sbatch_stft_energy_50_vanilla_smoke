@@ -1,0 +1,45 @@
+#!/bin/bash
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --time 0-04:00:00
+#SBATCH --job-name stft_c_smk
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### STFT lift -- Regime (c), SMOKE variant (vanilla MMPS)
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --missing_rate 0.5 \
+    --allow_tf32 \
+    --embedder stft \
+    --wandb true \
+    --tags "stft_validation" "energy" "50_missing_rate" "vanilla_mmps" "regime_c" "smoke" \
+    --no_adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --mmps_cg_iters 5 \
+    --no_consistency_projection \
+    --no_obs_space_cg \
+    --no_warm_start_cg \
+    --lambda_obs 0.0 \
+    --lambda_rep 0.0 \
+    --stft_n_fft 12 \
+    --stft_hop_length 4 \
+    --stft_scale_mode zscore \
+    --stft_pad_mode reflect \
+    --warmstart_epochs 10 \
+    --warmstart_iters 1 \
+    --warmstart_cond_epochs 10 \
+    --uncond_epochs 10 \
+    --m_step_epochs 10 \
+    --em_iters 2 \
+    --uncond_eval_epochs 10 \
+    --no_phase3

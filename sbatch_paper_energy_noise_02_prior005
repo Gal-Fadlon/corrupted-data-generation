@@ -1,0 +1,46 @@
+#!/bin/bash
+#SBATCH --partition rtx6000
+#SBATCH --qos azencot
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name paper_energy_noise_02_prior005
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### Gaussian-noise corruption on Energy (sigma_phys = 0.2, HIGH noise)
+### Rescue R2 (belt-and-suspenders): keep the Bayesian blend but make the
+### prior std << sigma_phys so the blend no longer conflicts with the CG
+### posterior.  trust = 0.05^2 / (0.05^2 + 0.2^2) ~= 0.059, so the
+### enforcement step becomes a near-no-op and any residual effect is
+### conservative (shifts toward the MMPS posterior sample, not toward y).
+### Serves as a controlled comparison against R1 (no_enforce_observations).
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em_noise.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --corruption_type gaussian_noise \
+    --sigma_y_phys 0.2 \
+    --noise_init stl_denoise \
+    --proj_prior_std 0.05 \
+    --lobs_noise_mode off \
+    --missing_rate 0.0 \
+    --wandb true \
+    --tags "paper" "energy" "gaussian_noise_020" "co_evolving_em" "tier2" "rescue_prior005" \
+    --adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --sigma_y_floor 0.01 \
+    --mmps_cg_iters 5 \
+    --consistency_projection \
+    --obs_space_cg \
+    --no_warm_start_cg \
+    --lambda_obs 0 \
+    --lambda_rep 0 \
+    --em_iters 5 \
+    --phase3 \
+    --eval_all_metrics

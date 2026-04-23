@@ -1,0 +1,48 @@
+#!/bin/bash
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name stft_etth1_vmmps
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### STFT lift -- ETTh1 L=24 -- Vanilla MMPS (regime c) + Fixes 1-5
+### Isolates whether the STFT lift alone can close the disc_mean gap when
+### the E-step corrections are disabled (no adaptive sigma_y, no projection,
+### image-space CG, no warm-start). If V1 hits disc_mean < 0.1 the lift is
+### robust; if only V2 does, the L-MMPS corrections are carrying the result.
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em.py \
+    --config ./configs/seq_len_24/etth1.yaml \
+    --missing_rate 0.5 \
+    --allow_tf32 \
+    --embedder stft \
+    --wandb true \
+    --tags "stft_validation" "etth1" "50_missing_rate" "vanilla_mmps" "regime_c" "fixes_1_5" \
+    --no_adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --sigma_y_floor 0.01 \
+    --mmps_cg_iters 5 \
+    --no_consistency_projection \
+    --no_obs_space_cg \
+    --no_warm_start_cg \
+    --lambda_obs 0.0 \
+    --lambda_rep 0.0 \
+    --stft_n_fft 8 \
+    --stft_hop_length 4 \
+    --stft_scale_mode zscore \
+    --stft_pad_mode reflect \
+    --no_stft_recache_each_em \
+    --stft_global_rescale \
+    --stft_target_pixel_std 0.5 \
+    --stft_dead_bin_quantile 0.1 \
+    --stft_hard_gate_train_pixel_std \
+    --no_phase3

@@ -1,0 +1,52 @@
+#!/bin/bash
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name stft_etth1_partial
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### STFT lift -- ETTh1 L=24 -- Partial corrections (regime b) + Fixes 1-5
+### Full L-MMPS MINUS observation-space CG (matches paper definition:
+### line 616 "Baseline (no obs-CG, regime b)", line 590 regime b = init + sigma_y + projection).
+### Keeps: adaptive sigma_y, consistency projection, warm-started CG.
+### Drops:  observation-space CG (solves in image space, not Range(G)).
+### Expected behavior (Theorem 1, regime b): trajectory dips then diverges.
+### This is the diagnostic run that fills the "partial corrections + STFT" cell
+### in tab:stft (line 740) and app:stft (line 1454), confirming the three-regime
+### pattern is lift-agnostic.
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em.py \
+    --config ./configs/seq_len_24/etth1.yaml \
+    --missing_rate 0.5 \
+    --allow_tf32 \
+    --embedder stft \
+    --wandb true \
+    --tags "stft_validation" "etth1" "50_missing_rate" "partial_corrections" "regime_b" "fixes_1_5" \
+    --adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --sigma_y_floor 0.01 \
+    --mmps_cg_iters 5 \
+    --consistency_projection \
+    --no_obs_space_cg \
+    --warm_start_cg \
+    --lambda_obs 0.0 \
+    --lambda_rep 0.0 \
+    --stft_n_fft 8 \
+    --stft_hop_length 4 \
+    --stft_scale_mode zscore \
+    --stft_pad_mode reflect \
+    --no_stft_recache_each_em \
+    --stft_global_rescale \
+    --stft_target_pixel_std 0.5 \
+    --stft_dead_bin_quantile 0.1 \
+    --stft_hard_gate_train_pixel_std \
+    --no_phase3

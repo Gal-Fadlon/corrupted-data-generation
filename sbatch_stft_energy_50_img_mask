@@ -33,4 +33,8 @@ python run_co_evolving_em.py \
     --warm_start_cg \
     --lambda_obs 0.0 \
     --lambda_rep 0.0 \
+    --stft_n_fft 12 \
+    --stft_hop_length 4 \
+    --stft_scale_mode zscore \
+    --stft_pad_mode reflect \
     --no_phase3

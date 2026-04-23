@@ -1,0 +1,32 @@
+#!/bin/bash
+#SBATCH --partition rtx6000
+#SBATCH --qos azencot
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name paper_energy_agg_w2_imagen
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### ImagenI2R baseline on temporal block-mean aggregation, w=2, Energy.
+### The ImagenI2R method itself is UNCHANGED -- only the training loader is
+### wrapped so every batch's feature columns are replaced with the
+### representative-point NaN encoding of the aggregation:
+###   x[:, w*k,      :] = mean(x_clean[:, w*k:w*(k+1), :])     (y_k)
+###   x[:, w*k+1..w-1,:] = NaN
+### ImagenI2R trains its TST encoder-decoder + diffusion on this NaN-marked
+### input via its existing masked losses.  test_loader is left untouched so
+### real_sig (ground-truth reference for disc/pred/FID metrics) stays clean.
+module load anaconda
+source activate idan2_env
+python run_irregular_aggregate.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --agg_window 2 \
+    --missing_rate 0.0 \
+    --wandb true \
+    --tags "paper" "energy" "aggregate_w2" "imagen_i2r" "baseline"

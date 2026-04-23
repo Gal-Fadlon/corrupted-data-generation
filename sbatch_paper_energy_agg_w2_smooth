@@ -1,0 +1,53 @@
+#!/bin/bash
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name paper_energy_agg_w2_smooth
+#SBATCH --output train-%J.out
+#SBATCH --gpus=1
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+cd "${SLURM_SUBMIT_DIR}" || { echo "cd SLURM_SUBMIT_DIR failed"; exit 1; }
+export PYTHONUNBUFFERED=1
+
+### Operator-generality axis: temporal block-mean aggregation, w=2, Energy.
+### Variant: Gaussian-smoothed null-space noise in BlockMeanOperator.warm_start.
+###
+### Motivation (post-cerulean-disco-2325):
+###   The iid (white) null-space noise injected by the first fix produced
+###   disc_mean=0.49 flat at EM step 0 — the M-step learned the correct
+###   within-window means but with a WHITE-spectrum fine structure that the
+###   discriminator easily distinguishes from the colored spectrum of real
+###   Energy sequences.  This variant colours the null-space noise with a
+###   Gaussian low-pass filter (kernel sigma = 1.5 timesteps) to match the
+###   low-pass character of real time series, while keeping the Moore-
+###   Penrose A x = y invariant exact via per-window centering.
+###
+### All other settings identical to the paper-proven aggregate_w2 run.
+module load anaconda
+source activate idan2_env
+python run_co_evolving_em_aggregate.py \
+    --config ./configs/seq_len_24/energy.yaml \
+    --corruption_type aggregate \
+    --agg_window 2 \
+    --agg_noise_model smooth \
+    --agg_noise_sigma 0.1 \
+    --agg_smooth_kernel_sigma 1.5 \
+    --missing_rate 0.0 \
+    --wandb true \
+    --tags "paper" "energy" "aggregate_w2" "smooth_noise" "co_evolving_em" \
+    --adaptive_sigma_y \
+    --sigma_y_ratio 0.1 \
+    --sigma_y_floor 0.01 \
+    --mmps_cg_iters 5 \
+    --consistency_projection \
+    --obs_space_cg \
+    --no_warm_start_cg \
+    --lambda_obs 0 \
+    --lambda_rep 0 \
+    --em_iters 5 \
+    --phase3 \
+    --eval_all_metrics

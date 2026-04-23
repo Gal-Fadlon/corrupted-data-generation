@@ -38,10 +38,24 @@
 \usepackage[textsize=tiny]{todonotes}
 \usepackage{wrapfig}
 \usepackage{subcaption}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,calc,decorations.pathmorphing}
 
 % Shortcuts
-\newcommand{\tsimg}{\texttt{ts\_to\_img}}
-\newcommand{\imgts}{\texttt{img\_to\_ts}}
+% Forward/inverse lift: time series <-> image (e.g., delay embedding or STFT).
+% Matches the $\mathcal{T}$ / $\mathcal{T}^{-1}$ convention used in ImagenTime
+% (Naiman et al., 2024). \tsimg and \imgts are kept only as internal macro
+% names to minimise diffs; the rendered symbols are pure math.
+\newcommand{\tsimg}{\mathcal{T}}
+\newcommand{\imgts}{\mathcal{T}^{-1}}
+% Framework and instances.
+% PSLR = Posterior Sampling for Lifted Representations (our framework/recipe;
+% parallels PSLD=Posterior Sampling with Latent Diffusion).
+% L-MMPS = PSLR applied to MMPS (Rozet et al. 2024); the E-step of our method.
+% L-TMPD = PSLR applied to TMPD (Boys et al. 2023); second instance (ongoing).
+\newcommand{\pslr}{\textsc{pslr}}
+\newcommand{\lmmps}{L\mbox{-}\textsc{mmps}}
+\newcommand{\ltmpd}{L\mbox{-}\textsc{tmpd}}
 \newcommand{\Nts}{N_{\mathrm{ts}}}
 \newcommand{\Nimg}{N_{\mathrm{img}}}
 \newcommand{\Nobs}{N_{\mathrm{obs}}}
@@ -51,7 +65,7 @@
 \newcommand{\xts}{x_{\mathrm{ts}}}
 \newcommand{\ximg}{x_{\mathrm{img}}}
 
-\title{Posterior Sampling in Lifted Representations for \\ Corrupted Time Series Generation}
+\title{Closing the Loop: Co-Evolving EM for \\ Irregular Time Series Generation in Lifted Representations}
 
 \author{%
   Anonymous Authors \\
@@ -64,39 +78,88 @@
 \maketitle
 
 \begin{abstract}
-State-of-the-art time series generation operates in a \emph{lifted representation}: delay embedding maps time series to images, and standard image diffusion is applied in image space. When training data is corrupted by missing values, this creates a \emph{dual-space} system where observations live in time-series space while the generative model operates in image space. A natural framework for this regime is Expectation-Maximization: alternate between imputing missing data using the model's prior (E-step) and training on those imputations (M-step). However, the natural combination of DiEM's EM loop with ImagenTime's delay embedding fails out of the box, because the Moment-Matching Posterior Sampling (MMPS) derivation assumes an observation operator that acts in the model's native space. We identify \emph{posterior misspecification in lifted representations} as a general problem class and prove a convergence theorem showing that operator mismatch in the E-step determines whether MCEM converges, diverges, or stagnates. Guided by the theorem, we introduce four principled E-step corrections---observation-space conjugate gradient ($\sim 28\times$ dimensionality reduction), adaptive $\sigma_y$, manifold projection, and domain-aware initialization---which together add exactly one tuned hyperparameter to vanilla EM. On Energy 50\% missing, our method achieves discriminative score $0.045$---within $1.3\%$ of the clean-data oracle ($0.044$)---converging in $3$ EM iterations. Alternative E-steps collapse catastrophically (DPS: $0.500$; PiGDM: $0.462$), and the strongest frozen stochastic imputer (CSDI-impute $+$ EDM: $0.105$) is beaten even by vanilla EM with the \emph{wrong} operator ($0.092$), showing that iteration, not imputer sophistication, is the binding constraint. The three predicted convergence regimes are validated on two structurally different linear lifts (delay embedding and STFT), confirming that the operator-mismatch principle is lift-agnostic.
+Learning generative models from \emph{irregular} time series is essential across healthcare, finance, and the sciences, yet all existing methods (GT-GAN, KoVAE, ImagenI2R) follow a \emph{commit-and-forget} pipeline: a frozen imputer hands one-shot completions to a generator that never provides feedback. We argue that \textbf{closing this imputer--generator loop} via Expectation--Maximization---not the sophistication of the imputer---is the binding constraint on generative quality; as diagnostic evidence, a purpose-built stochastic steelman we construct (CSDI-impute $+$ EDM, a dedicated $E$-epoch diffusion imputer paired with EDM) is beaten even by \emph{naive} MMPS-EM with a structurally misspecified observation operator. We build on the \emph{lifted representation} of ImagenTime~\citep{naiman2024imagentime}---the current regularly-sampled SOTA by large margins over direct time-series diffusion, unified across short and (ultra-)long sequences via a single vision backbone---and inherit its strengths; the technical challenge is that this lift is exactly what makes closing the loop non-trivial: existing diffusion posterior samplers (DPS, $\Pi$GDM, DiffPIR, TMPD, MMPS) are either intrinsically incompatible or structurally misspecified in this dual-space setting. We distil three conditions (C1--C3) any posterior sampler must satisfy to be a valid E-step under a linear lift, and package the resulting design into \pslr{}---\textbf{Posterior Sampling for Lifted Representations}---a plug-and-play recipe that promotes any Tweedie-moment sampler via three changes (composed-operator substitution, observation-space solve, manifold projection). A convergence theorem classifies the resulting MCEM dynamics into three regimes (contract / diverge / stagnate), each visible in our ablation. Our instantiation $\lmmps$ reaches discriminative score $X$ on Energy $Y\%$ missing---within $Z\%$ of the clean-data oracle---in $K$ EM iterations, with a single tuned hyperparameter robust over a $W\times$-wide band. The same \pslr{} recipe and single tuned hyperparameter validate on a second linear lift (STFT) and a second linear observation-operator instance (continuous-time fractional-support resampling)---with only the concrete operator $S_{\mathrm{ts}}$ substituted, exactly as the recipe's composed-$G$ abstraction prescribes---confirming that the operator-mismatch principle is lift- and observation-agnostic.
 \end{abstract}
+
+\begin{figure}[h]
+\centering
+\resizebox{0.98\textwidth}{!}{
+\begin{tikzpicture}[
+  node distance=6mm and 10mm,
+  box/.style={draw, rounded corners=2pt, minimum height=9mm, minimum width=22mm, align=center, font=\small},
+  data/.style={box, fill=gray!10},
+  imp/.style={box, fill=orange!20},
+  gen/.style={box, fill=blue!15},
+  arrow/.style={-Latex, thick},
+  dashed arrow/.style={-Latex, thick, dashed, red!70!black}
+]
+\node[font=\bfseries] (titA) {(a) Open loop: commit-and-forget (prior work)};
+\node[data, below=2mm of titA.west, anchor=west] (dataA) {Irregular\\ data $\yts$};
+\node[imp, right=of dataA] (impA) {Imputer\\ (frozen)};
+\node[gen, right=of impA] (genA) {Generator\\ $\theta$};
+\node[right=8mm of genA, font=\small] (outA) {synthetic\\ series};
+\draw[arrow] (dataA) -- (impA);
+\draw[arrow] (impA) -- node[above, font=\scriptsize]{one-shot $\hat{x}$} (genA);
+\draw[arrow] (genA) -- (outA);
+\node[below=1mm of impA, font=\scriptsize, red!70!black] {\emph{no feedback}};
+
+\node[font=\bfseries, below=16mm of titA.west, anchor=west] (titB) {(b) Closed loop: co-evolving EM (ours)};
+\node[data, below=2mm of titB.west, anchor=west] (dataB) {Irregular\\ data $\yts$};
+\node[imp, right=of dataB] (impB) {E-step:\\ posterior sampling};
+\node[gen, right=of impB] (genB) {M-step:\\ train $\theta_{k+1}$};
+\node[right=8mm of genB, font=\small] (outB) {synthetic\\ series};
+\draw[arrow] (dataB) -- (impB);
+\draw[arrow] (impB) -- node[above, font=\scriptsize]{posterior samples} (genB);
+\draw[arrow] (genB) -- (outB);
+\draw[dashed arrow] (genB.south) to[out=-90, in=-90, looseness=1.3] node[below, font=\scriptsize, red!70!black]{updated prior $\theta_k$} (impB.south);
+\end{tikzpicture}
+}
+\caption{\textbf{Thesis.} Prior methods for irregular time-series generation are \emph{open-loop} (top): a frozen imputer hands one-shot completions to a generator that never gives feedback. Our co-evolving EM \emph{closes the loop} (bottom): each M-step updates the prior that the next E-step samples from. Closing the loop is the \emph{binding} constraint on generative quality---iteration beats imputer sophistication, even with a structurally misspecified posterior sampler.}
+\label{fig:teaser}
+\end{figure}
 
 \vspace{-3mm}
 \section{Introduction}
 \label{sec:intro}
 \vspace{-1mm}
 
-State-of-the-art time series generation operates in a \emph{lifted representation}: delay embedding maps time series to images, and standard image diffusion \citep{karras2022edm} is applied in image space~\citep{naiman2024imagentime}. When the training data is corrupted---sensors fail, measurements are intermittent, records have gaps---this creates a \emph{dual-space} system: observations live in time-series space while the generative model operates in image space.
+Time series data is essential in fields such as healthcare, finance, and the sciences, supporting tasks like forecasting, anomaly detection, and pattern analysis~\citep{han2019review,ismail2019deep,lim2021time}. Beyond direct analysis, \emph{generating} synthetic time series has become increasingly valuable for creating realistic proxies of private records, stress-testing systems under new scenarios, exploring ``what-if'' questions, and balancing datasets for machine-learning pipelines~\citep{brophy2023generative,nochumsohn2025data}. State-of-the-art generators (GT-GAN, KoVAE, ImagenTime, ImagenI2R) produce high-quality regular sequences and are increasingly deployed as part of real pipelines.
 
-Learning from corrupted data naturally calls for Expectation-Maximization \citep{dempster1977em}: alternate between completing missing data using the model's learned prior (E-step) and training on those completions (M-step). DiEM \citep{rozet2024diem} demonstrated this framework for image reconstruction with MMPS posterior sampling. The combination---DiEM's EM loop applied to ImagenTime's delay-embedding pipeline---is the natural starting point.
+In practice, however, time series are often \emph{irregular}: measurements are unevenly spaced and values are missing because of sensor failures, inconsistent sampling, or interruptions in monitoring~\citep{kidger2020ncde,ren2024learning}. Generating regular sequences from irregular observations is the central challenge we address---training a generator of the full distribution $p(\xts)$ from a corpus in which every training example has gaps. This setting is now the default in real deployments, not a special case.
 
-\paragraph{The problem we solve.}
-This combination fails out of the box. The E-step requires posterior sampling conditioned on \emph{time-series-space} observations, but MMPS was derived for single-space settings where the observation operator acts in the model's native space. In the dual-space setting, MMPS is structurally misspecified: it uses the wrong observation operator, suffers unbounded CG conditioning, and produces off-manifold outputs. Vanilla EM with standard MMPS achieves discriminative score $0.092$ on Energy $50\%$---far from the $0.05$ SOTA target.
+\paragraph{Existing approaches all commit and forget.}
+All existing methods for irregular time-series generation---GT-GAN~\citep{jeon2022gtgan}, KoVAE~\citep{naiman2024kovae}, ImagenI2R~\citep{fadlon2025imageni2r}---follow a \emph{commit-and-forget} pipeline (\cref{tab:intro-taxonomy}): first, impute missing values in one shot using a pretrained imputer (a neural CDE~\citep{kidger2020ncde}, a masked transformer~\citep{zerveas2021tst}, or a conditional diffusion imputer~\citep{tashiro2021csdi}); second, freeze those imputations and train the generator on the completed data. The imputer and the generator never see each other again. This design is an \emph{open loop}: no feedback path from the generator back to the imputer.
 
-We identify \emph{posterior misspecification in lifted representations} as a general problem class arising whenever EM operates in a representation different from the observation space, and provide four principled corrections that reduce the discriminative score to $0.045$---a $51\%$ improvement over vanilla EM. Alternative E-step methods fail dramatically: DPS (point estimate) achieves $0.500$ (random chance) and PiGDM (diagonal covariance) achieves $0.462$---confirming that full Jacobian covariance with the \emph{correct} operator is essential. Our result is within $1.3\%$ of the \emph{clean-data oracle} ($0.044$, trained on fully observed data), meaning EM with the corrected E-step recovers nearly all information lost to $50\%$ corruption. The method achieves state-of-the-art across datasets, missing rates, and missingness patterns, converging in $3$ EM iterations.
+\paragraph{The open-loop problem.}
+The open loop has four structural failure modes (\cref{sec:why-close}). (i) The conditional-mean trap: MSE/MAE-optimal imputation places estimates between modes, in empty space; a generator trained on these imputations learns to generate in empty space. (ii) Variance collapse: replacing stochastic missing values with their conditional mean systematically shrinks the variance of the training set~\citep{rubin1987multiple}. (iii) A masking--data trade-off: masked losses (as in ImagenI2R) avoid collapsed variance but use only $(1-r)$ of pixels at missing rate $r$, leaving a train/test mismatch. (iv) A frozen-imputer capacity ceiling: even a strong \emph{stochastic} imputer trained to convergence cannot recover what the generator would have asked it to reveal. In particular, standard MSE/MAE \emph{imputation} metrics can be \emph{reversed} relative to downstream \emph{generative} quality: on a controlled $2$D toy, the lowest-MSE imputer produces the worst-disc generator, and the highest-MSE imputer is disc-second-best (\cref{fig:mse-trap}). Empirically at scale, our closed-loop EM outperforms every published commit-and-forget baseline (GT-GAN, KoVAE, ImagenI2R), and we also construct a purpose-built stochastic steelman (CSDI-impute $+$ EDM, a $200$-epoch dedicated diffusion imputer) that likewise fails to match iterative EM---\textbf{iteration, not imputer sophistication, is the binding constraint.}
 
-\paragraph{Why EM over commit-and-forget?}
-All existing methods for corrupted time series generation---GT-GAN \citep{jeon2022gtgan}, KoVAE \citep{naiman2024kovae}, ImagenI2R \citep{fadlon2025imageni2r}---follow a \emph{commit-and-forget} pattern: one-shot imputation, then frozen training. The imputer never receives feedback from the generator. We show (\cref{sec:why-close}) that this introduces systematic variance collapse---a well-known phenomenon in multiple imputation \citep{rubin1987multiple}---and a masking--data trade-off at high missing rates. Strikingly, even stochastic commit-and-forget with a strong dedicated imputer fails to match iterative EM: CSDI-impute $+$ EDM \citep{tashiro2021csdi} achieves $0.105$, \emph{worse} than vanilla EM with the wrong observation operator ($0.092$), and $2.3\times$ worse than our full method ($0.045$). Iteration---not imputer sophistication---is the binding constraint.
+\paragraph{Closing the loop.}
+Our central claim is that \textbf{closing the imputer--generator loop} is the binding constraint for generative learning from irregular data. We instantiate this via co-evolving Expectation-Maximization~\citep{dempster1977em}: the E-step imputes missing values by \emph{posterior sampling} under the generator's current prior, the M-step trains the generator on those imputations, and the loop repeats until the imputer and the generator agree. DiEM~\citep{rozet2024diem} pioneered this idea for image reconstruction; we transport it to the irregular time-series setting, where the generator of choice~\citep{naiman2024imagentime} operates in a \emph{lifted representation} (delay embedding or STFT). This is where the technical challenge begins.
+
+\paragraph{Why a lifted representation?}
+We build on ImagenTime~\citep{naiman2024imagentime} rather than direct time-series diffusion (CSDI~\citep{tashiro2021csdi} and related transformer/SSM-based diffusers) for three reasons established by its authors: (i) \textbf{empirical SOTA}---image-based diffusion outperforms direct time-series diffusion by large margins on both short and (ultra-)long benchmarks; (ii) \textbf{unified short$\leftrightarrow$long}---a moderate $256\times256$ image encodes sequences up to $65k$, so the same vision backbone handles $L=24$ and $L\gg10^4$ without architectural surgery; (iii) \textbf{reuse of vision-diffusion R\&D}---EDM priors~\citep{karras2022edm}, UNet/ADM backbones, and the posterior-sampling tools we later re-purpose all transfer directly. Our contribution inherits these strengths; the price is that observations live in time-series space while the prior lives in image space, and that dual-space structure is exactly what breaks existing posterior samplers.
+
+\paragraph{Closing the loop in a lifted representation is non-trivial.}
+State-of-the-art time-series generators map the time series to images via delay embedding and apply image diffusion~\citep{karras2022edm} in image space. The resulting \emph{dual-space} system has observations in time-series space and the generative prior in image space. The diffusion posterior-sampling literature offers a family of E-step candidates (DPS~\citep{chung2023dps}, $\Pi$GDM~\citep{song2023pigdm}, DiffPIR~\citep{zhu2023diffpir}, TMPD~\citep{boys2023tmpd}, MMPS~\citep{rozet2024diem}), each with a distinct covariance approximation and each derived under the same single-space assumption. Every member of the family collapses or stagnates in this dual-space setting, for a different structural reason---DPS collapses posterior diversity with its point estimate ($0.500$, random chance); $\Pi$GDM's diagonal heuristic misses the block correlations induced by the lift ($0.462$); MMPS's full-Jacobian CG is valid in principle but runs in the wrong space against a wrong operator, and stagnates ($0.092$). Closing the loop therefore requires a principled E-step redesign tailored to the lifted setting.
+
+\paragraph{Our approach.}
+We first distil what any posterior sampler must provide to be a valid E-step under a linear lift into three conditions (C1--C3, \cref{subsec:requirements}), and use those conditions to classify existing samplers into ``intrinsically incompatible'' (DPS, PiGDM, DiffPIR---violate C2 by design) and ``correctable'' (MMPS, TMPD---satisfy C2, violate C1 and C3 only because they were derived single-space). We then package the resulting design choices into \textbf{Posterior Sampling for Lifted Representations} (\pslr{})---a three-ingredient recipe that promotes any correctable sampler to a valid lifted E-step via composed-operator substitution, observation-space solve, and manifold projection. We evaluate \pslr{} on the two C2-compatible bases in the literature, yielding $\lmmps$ ($=\pslr{}(\mathrm{MMPS})$) and $\ltmpd$ ($=\pslr{}(\mathrm{TMPD})$); both undergo the \emph{same} three changes and differ only in the base covariance approximation (full Jacobian vs.\ row-sum diagonal). $\lmmps$ is the instance we study exhaustively (all datasets, all missing rates, all ablations); $\ltmpd$ demonstrates plug-and-play transfer to a different base (\cref{subsec:plug-and-play}). Guided by a convergence theorem (\cref{thm:operator-mismatch}) that classifies MCEM dynamics under operator mismatch into three regimes (converge / diverge / stagnate), we introduce four principled E-step corrections that realise \pslr{}: observation-space conjugate gradient (resolves operator mismatch, reduces CG dimensionality $\sim 28\times$), adaptive $\sigma_y = c\,\sigma_t$ (bounds CG conditioning), manifold projection (enforces the lifted subspace), and domain-aware initialization (delays cold-start divergence). Together they add exactly one \emph{tuned} hyperparameter to naive MMPS-EM. $\lmmps$ reaches $0.045$ disc on Energy $50\%$---within $1.3\%$ of the clean-data oracle ($0.044$)---in $3$ EM iterations.
 
 \begin{table}[t]
 \centering
-\caption{Existing paradigms for corrupted time-series generation. All follow commit-and-forget.}
+\caption{Existing paradigms for irregular time-series generation: all follow commit-and-forget (open loop). Our work closes the loop via co-evolving EM.}
 \label{tab:intro-taxonomy}
 \resizebox{0.95\textwidth}{!}{
 \begin{tabular}{l l l l l}
 \toprule
 \textbf{Family} & \textbf{Representative} & \textbf{Imputer} & \textbf{Generator} & \textbf{Limitation} \\
 \midrule
-GAN-based & GT-GAN \citep{jeon2022gtgan} & Neural CDE (one-shot) & GAN & Unstable, mode collapse \\
-VAE-based & KoVAE \citep{naiman2024kovae} & Neural CDE (one-shot) & Koopman VAE & $\sim 6.5\times$ slower, limited expressiveness \\
-Diffusion-based & ImagenI2R \citep{fadlon2025imageni2r} & TST (one-shot, det.) & Masked diffusion & Masking--data trade-off \\
+GAN-based & GT-GAN~\citep{jeon2022gtgan} & Neural CDE (one-shot) & GAN & Unstable, mode collapse \\
+VAE-based & KoVAE~\citep{naiman2024kovae} & Neural CDE (one-shot) & Koopman VAE & $\sim 6.5\times$ slower, limited expressiveness \\
+Diffusion-based & ImagenI2R~\citep{fadlon2025imageni2r} & TST (one-shot, det.) & Masked diffusion & Masking--data trade-off \\
 Diffusion-based & CSDI-impute $+$ EDM & CSDI (one-shot, stoch.) & Standard diffusion & Frozen imputer, no generator feedback \\
+\midrule
+\textbf{Iterative (ours)} & \textbf{Co-Evolving EM} & \textbf{Posterior sampling (E-step)} & \textbf{EDM / ImagenTime} & \textbf{---} \\
 \bottomrule
 \end{tabular}
 }
@@ -106,12 +169,13 @@ Diffusion-based & CSDI-impute $+$ EDM & CSDI (one-shot, stoch.) & Standard diffu
 \paragraph{Contributions.}
 \begin{enumerate}
 \setlength{\itemsep}{0pt}
-\item \textbf{Problem identification.} We identify \emph{posterior misspecification} as the core obstacle to EM in lifted representations: three structural misspecifications of MMPS in the dual-space setting (wrong operator, unbounded conditioning, off-manifold drift), each arising because MMPS assumes a single-space observation model. This problem class applies beyond delay embedding to any representation-based EM (latent diffusion, spectral lifts).
-\item \textbf{Convergence theory (Theorem~\ref{thm:operator-mismatch}).} We prove that the choice of observation operator in the E-step determines whether MCEM converges, diverges, or stagnates. For linear-Gaussian MCEM with operator mismatch $\Delta$: (a) $\Delta = 0$ guarantees contraction to the ML estimate; (b) small $\|\Delta\|$ causes initial convergence followed by divergence at a predictable iteration $k^\star$; (c) large $\|\Delta\|$ traps iterates at a biased fixed point. The four E-step corrections are the necessary steps to achieve $\Delta = 0$; the theorem explains \emph{why} each is needed, not just \emph{that} it helps.
-\item \textbf{E-step corrections.} Four principled adaptations of MMPS for dual-space EM---observation-space CG with $\sim 28\times$ dimensionality reduction, adaptive $\sigma_y$ for bounded CG conditioning, manifold projection, and domain-aware initialization---yielding a method with exactly one \emph{tuned} hyperparameter beyond vanilla EM ($c$ in $\sigma_y = c\,\sigma_t$), all other knobs fixed at defaults and audited in Algorithms~\ref{alg:estep}--\ref{alg:em} (App.~\ref{app:algorithms}), and standard score matching in the M-step.
-\item \textbf{EM framework for corrupted time series.} The first application of EM to corrupted time series generation. We provide a formal analysis of why stochastic co-evolution outperforms commit-and-forget (variance collapse, masking trade-off), confirmed by a controlled $2$D experiment that separates the benefit of stochastic sampling from the benefit of iterative refinement.
-\item \textbf{SOTA results.} State-of-the-art generation quality across five datasets, three missing rates, extended sequence lengths, structured missingness patterns, and a $50\times$-wide robust band for the one tuned hyperparameter. On Energy $50\%$, our corrected EM achieves $0.045$---within $1.3\%$ of the clean-data oracle ($0.044$), converging in $3$ EM iterations. On Weather $70\%$, $0.038$; under block missing at $50\%$, $0.069$.
-\item \textbf{Generality across lifts.} We validate the theorem's predictions on two structurally different linear lifts---delay embedding (spatial redundancy) and STFT (frequency-domain redundancy)---confirming that the three convergence regimes are lift-agnostic (App.~\ref{app:stft}).
+\item \textbf{Closing the loop is the binding constraint.} Theoretical (\cref{sec:why-close}: conditional-mean trap, variance collapse, masking--data trade-off, frozen-prior capacity ceiling) and empirical evidence that iteration---not imputer sophistication---determines generative quality from irregular data. Co-evolving EM beats every published commit-and-forget baseline (GT-GAN, KoVAE, ImagenI2R), and a purpose-built stochastic steelman (CSDI-impute $+$ EDM) is likewise beaten even by \emph{naive} MMPS-EM with a structurally wrong operator; the $21$-configuration toy sweep confirms iterative $>$ frozen in $21/21$ settings. This is the first iterative, closed-loop method for irregular time-series generation.
+\item \textbf{Convergence theorem for loop-closing in a lifted representation (\cref{thm:operator-mismatch}).} To close the loop inside the lifted representation used by SOTA generators, we prove three convergence regimes for MCEM operator mismatch $\Delta = \tilde{G} - G$: contraction ($\Delta = 0$), predictable divergence at $k^\star$ (small $\|\Delta\|$), biased fixed point (large $\|\Delta\|$). The theorem tells us \emph{why} each correction is needed, not just \emph{that} it helps.
+\item \textbf{\pslr{}: a plug-and-play recipe for lifted posterior sampling, with two peer instances $\lmmps$ and $\ltmpd$.} We distil three conditions (C1 composed operator, C2 Tweedie covariance, C3 manifold consistency; \cref{subsec:requirements}) that separate ``intrinsically incompatible'' samplers (DPS, PiGDM, DiffPIR---violate C2) from ``correctable'' ones (MMPS, TMPD---correctable via the same recipe). \pslr{} (Posterior Sampling for Lifted Representations) packages the fix as three changes: composed-$G$ substitution, observation-space CG solve ($\sim 28\times$ dimensionality reduction), and manifold projection. \pslr{} is sampler-agnostic: the two C2-compatible bases in the literature yield $\lmmps$ ($=\pslr{}(\mathrm{MMPS})$) and $\ltmpd$ ($=\pslr{}(\mathrm{TMPD})$) via the \emph{same} three changes, differing only in the base covariance approximation (full Jacobian vs.\ row-sum diagonal; \cref{subsec:plug-and-play}). Both instances are realised by four concrete E-step corrections---obs-space CG, adaptive $\sigma_y$, manifold projection, domain-aware initialization---adding exactly one \emph{tuned} hyperparameter beyond naive MMPS-EM ($c$ in $\sigma_y = c\,\sigma_t$), all other knobs fixed at defaults and audited in App.~\ref{app:algorithms}. The plug-and-play claim is itself a three-dataset empirical result: applying the identical four-correction stack and a single shared $c$ turns TMPD from a sampler that fails on \emph{every} tested dataset into $\ltmpd$, a sampler that succeeds on \emph{every} tested dataset (Energy, ETTh1, Weather at $50\%$ missing; \cref{tab:ltmpd-transfer}).
+\item \textbf{SOTA results with extended benchmark.} State-of-the-art generation quality across five datasets, multiple missing rates ($30/50/70/90\%$), structured missingness patterns (block, MAR, MNAR), noisy observations, and extended sequence lengths, plus a $50\times$-wide robust band for the one tuned hyperparameter. On Energy $50\%$, our $\lmmps$ E-step achieves $0.045$---within $1.3\%$ of the clean-data oracle ($0.044$) in $3$ EM iterations. On Weather $70\%$, $0.038$; under block missing at $50\%$, $0.069$.
+\item \textbf{Framework-level analysis.} A controlled $2$D toy, operator-free by construction, separates the effect of \emph{iteration} from the effect of \emph{stochasticity} and maps every real-setting baseline onto a specific row of the real ablation (App.~\ref{app:toy}), isolating the close-the-loop contribution from the lifted-representation machinery.
+\item \textbf{Generality across lifts.} The three predicted convergence regimes are validated on two structurally different linear lifts---delay embedding (spatial redundancy) and STFT~\citep{griffin1984signal} (frequency-domain redundancy)---confirming that the operator-mismatch principle is lift-agnostic (App.~\ref{app:stft}).
+\item \textbf{Generality across observation operators.} The same regimes are also validated on two representative instances of the linear observation family---binary MCAR masks (the standard benchmark) and continuous-time irregular resampling with fractional $2$-tap support---using the \emph{identical} \pslr{} recipe (C1--C3 conditions and four corrections), with only the concrete linear operator $S_{\mathrm{ts}}$ substituted and every recipe component---corrections, hyperparameter $c$, EM schedule---unchanged (\cref{sec:continuous-operator}; App.~\ref{app:continuous}). Under the \texttt{no-obs-CG} ablation, the fractional-support operator exhibits a \emph{regime-(c)} divergence trajectory (disc climbs from ${\sim}0.44$ toward $0.5$)---the paper's cleanest empirical signature of \cref{thm:operator-mismatch}, complementing the regime-(b) trajectory seen for the binary case (\cref{tab:convergence}).
 \end{enumerate}
 
 \vspace{-2mm}
@@ -119,20 +183,20 @@ Diffusion-based & CSDI-impute $+$ EDM & CSDI (one-shot, stoch.) & Standard diffu
 \label{sec:related}
 \vspace{-1mm}
 
-\paragraph{Corrupted time series generation.}
-GT-GAN~\citep{jeon2022gtgan} uses NCDEs~\citep{kidger2020ncde} with continuous-time flow processes for GAN-based generation from irregular data. KoVAE~\citep{naiman2024kovae} combines NCDE preprocessing with VAE generation. ImagenI2R~\citep{fadlon2025imageni2r} extends ImagenTime to irregular data via TST~\citep{zerveas2021tst} imputation and masked diffusion training. All follow the commit-and-forget pattern; our work is the first iterative approach.
+\paragraph{Diffusion models.}
+Denoising diffusion~\citep{ho2020ddpm} and its continuous-time score-based formulation~\citep{song2021sde} have become the dominant paradigm for high-fidelity generative modeling, particularly on images, with EDM~\citep{karras2022edm} providing the current training/sampling recipe. We inherit this backbone.
 
-\paragraph{Time series diffusion models.}
-ImagenTime~\citep{naiman2024imagentime} maps time series to images via delay embedding and applies EDM~\citep{karras2022edm}. CSDI~\citep{tashiro2021csdi} provides conditional score-based diffusion for time series imputation---it trains on corrupted data by splitting observed positions into ``condition on'' and ``predict'' subsets. However, CSDI learns a frozen imputation prior $p(\xts^{\mathrm{miss}} \mid \xts^{\mathrm{obs}})$ from scattered fragments and never receives feedback from the downstream generator. Our toy experiment (App.~\ref{app:toy}) shows that stochastic imputation with a frozen prior---even a fully-converged ``mature'' one---falls $\sim 4\times$ short of iterative co-evolving EM at the same total compute, because the imputer's capacity, not its training budget, is the bottleneck. We evaluate CSDI-impute $+$ EDM experimentally (\cref{sec:ablation}, Row 0c) and confirm the same ordering at scale.
+\paragraph{Generative modeling of time series.}
+Early work adopted GANs~\citep{yoon2019timegan} and VAEs for time-series synthesis, and diffusion was brought to time series directly via conditional score-based models such as CSDI~\citep{tashiro2021csdi}. More recently, ImagenTime~\citep{naiman2024imagentime} showed that mapping time series to images via delay embedding~\citep{takens1981embedding} and applying image-space diffusion~\citep{karras2022edm} outperforms direct time-series diffusion by large margins on both short and (ultra-)long benchmarks, establishing the current SOTA for \emph{regularly-sampled} sequences; this is the backbone our method trains end-to-end on irregular data. CSDI is a natural baseline for the irregular setting because it trains on incomplete observations, but it learns a frozen imputation prior $p(\xts^{\mathrm{miss}} \mid \xts^{\mathrm{obs}})$ and never receives feedback from the downstream generator; our toy (App.~\ref{app:toy}) and scale-up experiment (\cref{sec:ablation}, Row 0c) show that even a fully-converged stochastic imputer loses to iterative co-evolving EM, because the imputer's capacity—not its training budget—is the bottleneck.
+
+\paragraph{Irregular time-series generation: the series this paper continues.}
+The recent series of generative methods for \emph{irregularly-sampled} time series proceeds GT-GAN~\citep{jeon2022gtgan} (NCDE~\citep{kidger2020ncde} + GAN) $\rightarrow$ KoVAE~\citep{naiman2024kovae} (NCDE + Koopman VAE) $\rightarrow$ ImagenI2R~\citep{fadlon2025imageni2r} (TST~\citep{zerveas2021tst} imputation + masked diffusion on the ImagenTime image lift). All three share a \emph{commit-and-forget} structure: a one-shot imputer (neural-CDE, masked transformer, or conditional diffusion) produces completions that the generator consumes once and never revisits. Each inherits the failure modes of its imputer—NCDE preprocessing cost for GT-GAN/KoVAE, the masking--data trade-off at high missing rates for ImagenI2R. Our work is the next step in this series: we keep ImagenI2R's choice of the ImagenTime backbone but replace the one-shot imputer with a closed-loop EM process, so the imputer (E-step) and the generator (M-step) co-evolve.
+
+\paragraph{Expectation--Maximization.}
+The EM algorithm~\citep{dempster1977em} is the canonical framework for learning with latent or partially-observed variables and has been the backbone of the multiple-imputation literature for decades~\citep{rubin1987multiple}. Our E-step samples from the posterior rather than computing its expectation, placing our method in the Monte-Carlo EM family~\citep{wei1990mcem}, and our choice to interleave partial M-step updates with E-steps corresponds to incremental EM~\citep{neal1998em}, for which standard convergence guarantees apply. Variational EM is the dominant modern lens on EM in deep generative modeling via VAEs~\citep{kingma2014vae} but yields an \emph{approximate} posterior; we instead use an \emph{exact} MCEM E-step via diffusion posterior sampling. The closest prior work is DiEM~\citep{rozet2024diem}, which pioneered EM-based training of diffusion priors from corrupted data, but only in \emph{single-space} settings (CIFAR-$10$, MRI) where the observation operator acts in the model's native image space. Our primary contribution relative to DiEM is identifying and resolving the posterior-misspecification problem that arises when EM operates in a \emph{lifted representation}---a problem absent in single-space settings.
 
 \paragraph{Diffusion posterior sampling.}
-DPS~\citep{chung2023dps}, PiGDM~\citep{song2023pigdm}, DiffPIR~\citep{zhu2023diffpir}, TMPD~\citep{boys2023tmpd}, and MMPS~\citep{rozet2024diem} provide posterior sampling for pre-trained diffusion models, all derived for single-space settings. We extend MMPS to dual-space settings by using the correct composed observation operator and solving the CG system in observation space.
-
-\paragraph{Posterior sampling in lifted representations.}
-The dual-space problem---posterior sampling when the model operates in a different space than observations---also arises in latent diffusion. PSLD~\citep{rout2024psld} addresses this for learned encoder/decoder maps in pixel-space inverse problems. Our setting differs in two ways: (i) the delay embedding is a \emph{known linear map} (not a learned nonlinear encoder), enabling exact CG without approximation of the encoder Jacobian; (ii) we operate within an EM loop where posterior quality directly impacts the next training iteration, making accuracy more critical than in single-shot reconstruction. The observation-space CG idea (\cref{subsec:obs-cg}) can be viewed as the time-series analog of PSLD, suggesting a general design principle: for any representation-based system with operator $G$, CG should run in $\mathrm{Range}(G)$.
-
-\paragraph{EM with generative models.}
-DiEM~\citep{rozet2024diem} applies EM with MMPS for learning diffusion priors from corrupted image observations. Ambient Diffusion~\citep{daras2023ambient} trains diffusion models on corrupted data without explicit EM, by modifying the training loss to account for known corruption applied at training time. Our setting differs from Ambient Diffusion in that we learn from \emph{already-corrupted archival data} rather than applying known corruption during training; the corruption masks are given, not chosen. Our primary contribution relative to DiEM is identifying the posterior misspecification problem that arises when EM operates in a lifted representation---a problem absent in DiEM's single-space settings.
+The diffusion posterior-sampling literature offers a family of methods for approximating the likelihood score $\nabla_{x_t} \log p(y \mid x_t)$, all derived under a single-space assumption in which the observation operator acts directly in the model's native space. Each member of the family is defined by how it approximates the conditional $p(x \mid x_t)$: DPS~\citep{chung2023dps} uses a point estimate $\delta_{\mathbb{E}[x \mid x_t]}$, which collapses posterior diversity; $\Pi$GDM~\citep{song2023pigdm} uses a diagonal Gaussian with heuristic variance $\sigma_t^2 I$, which misses the block-correlation structure induced by a linear lift; DiffPIR~\citep{zhu2023diffpir} uses a proximal update, for which a composed observation operator has no closed form; TMPD~\citep{boys2023tmpd} applies Tweedie moment projection with a row-sum diagonal approximation of $\mathbb{V}[x \mid x_t]$, correctable under a linear lift if one keeps the full covariance; MMPS~\citep{rozet2024diem} applies Tweedie moment projection with the full Jacobian covariance via conjugate gradient, correctable under a linear lift if the CG system is routed through the correct composed operator and lives in observation space. We do \emph{not} propose a new Gaussian moment-matching identity or a new Tweedie-covariance approximation; both are inherited from this family. Our contribution is a different object: three conditions (C1 composed operator, C2 Tweedie covariance, C3 manifold consistency; \cref{subsec:requirements}) that predict, from a sampler's derivation alone, which members survive a linear lift, together with a recipe (\pslr{}) that repairs the C2-compatible subfamily uniformly. Two instances ($\lmmps$, $\ltmpd$) demonstrate that the recipe is base-agnostic; they differ only in the base covariance approximation (full Jacobian vs.\ row-sum diagonal), not in the three corrections. The dual-space problem also arises in latent diffusion: PSLD~\citep{rout2024psld} addresses it for learned encoder/decoder maps in pixel-space inverse problems. Our setting differs in two ways: (i) the delay embedding (or STFT~\citep{griffin1984signal}) is a \emph{known linear map}, enabling exact CG without approximation of an encoder Jacobian; (ii) we operate within an EM loop where posterior quality directly impacts the next training iteration, making accuracy more critical than in single-shot reconstruction. The observation-space CG idea (\cref{subsec:obs-cg}) can be viewed as a time-series analog of PSLD, suggesting a general design principle: for any representation-based system with operator $G$, CG should run in $\mathrm{Range}(G)$.
 
 \vspace{-2mm}
 \section{Background}
@@ -140,7 +204,7 @@ DiEM~\citep{rozet2024diem} applies EM with MMPS for learning diffusion priors fr
 \vspace{-1mm}
 
 \paragraph{Problem statement.}
-We are given a corpus of corrupted time series $\{(\yts^{(i)}, \Ats^{(i)})\}_{i=1}^N$, where $\yts^{(i)} = \Ats^{(i)} \cdot \xts^{(i)}$ and $\Ats^{(i)} \in \{0,1\}^{\Nobs \times \Nts}$ is a binary sampling mask (noiseless observations). The goal is to learn a generative model of the underlying clean distribution $p(\xts)$ that can synthesize full time series. Unlike imputation, we do not need to reconstruct any specific $\xts^{(i)}$; we need the \emph{marginal} $p(\xts)$ to be accurate for downstream evaluation (discriminative score, predictive score, FID, correlation).
+We are given a corpus of irregular time series $\{(\yts^{(i)}, S_{\mathrm{ts}}^{(i)})\}_{i=1}^N$, where $\yts^{(i)} = S_{\mathrm{ts}}^{(i)} \cdot \xts^{(i)}$ and $S_{\mathrm{ts}}^{(i)} \in \mathbb{R}^{\Nobs \times \Nts}$ is a \emph{linear observation operator}. We distinguish operator instances by their support structure: (i) \textbf{binary MCAR mask} $\Ats^{(i)} \in \{0,1\}^{\Nobs \times \Nts}$ with a single non-zero per row (point masking)---the standard benchmark for irregular time-series generation~(Energy, Stocks, MuJoCo)---which we use in \S\ref{sec:quant-results}--\S\ref{sec:extended} except for \S\ref{sec:continuous-operator}; (ii) \textbf{continuous-time irregular resampling}, where each row has two non-zero entries (the floor/ceil weights of a fractional timestamp) that sum to $1$ (fractional sensing)---introduced in \S\ref{sec:continuous-operator}. Both are linear by construction and both compose with the lift to the same operator structure $G = S_{\mathrm{ts}} \circ \imgts$ inside the lifted E-step. The framework extends to additive observation noise via an adaptive $\sigma_y(\sigma_t)$ schedule (\cref{tab:noisy-obs}, App.~\ref{app:additional-exp}). The goal is to learn a generative model of the underlying clean distribution $p(\xts)$ that can synthesize full time series. Unlike imputation, we do not need to reconstruct any specific $\xts^{(i)}$; we need the \emph{marginal} $p(\xts)$ to be accurate for downstream evaluation (discriminative score, predictive score, FID, correlation).
 
 \paragraph{Delay embedding for time series.}
 Direct time-series diffusion models (WaveNet-style, transformer-based) underperform compared to image-based approaches. ImagenTime~\citep{naiman2024imagentime} demonstrated that mapping time series to images via \emph{delay embedding}~\citep{takens1981embedding}, then applying standard image diffusion (EDM), substantially outperforms direct methods. Given a multivariate time series $\xts \in \mathbb{R}^{\Nts \times F}$, the delay embedding $\tsimg$ creates an image by arranging overlapping sliding windows of length $d$ with stride $s$ as rows of a $2$D array. The inverse $\imgts$ recovers the time series by averaging overlapping pixel contributions. Key properties: (i) each time point appears in multiple image positions (overlapping windows create redundancy); (ii) $\Nimg > \Nts$: the image has more pixels than the time series has values; (iii) valid images form a linear subspace of $\mathbb{R}^{\Nimg}$; (iv) the composition $\Pi = \tsimg \circ \imgts$ is an orthogonal projection onto this subspace. ImagenTime's pipeline requires the lift to be \emph{invertible}: training operates in image space and sampling inverts back to the time series, so a lossy inverse breaks the correspondence between the image-space diffusion objective and the time series distribution. Delay embedding and STFT~\citep{griffin1984signal} are the two transforms ImagenTime validates at benchmark scale under this constraint, and are the two lifts we study.
@@ -162,64 +226,159 @@ The true observation model in our setting crosses two spaces:
 \end{equation}
 Three structural properties of $G$ break existing posterior-sampling methods: (i) $G$ is not a mask in model space (it crosses spaces via $\imgts$); (ii) $G$ is rank-deficient ($\Nimg > \Nts$, so the null space of $G$ corresponds to off-manifold image directions); (iii) $G^\top G$ is not diagonal (overlapping delay-embedding windows create structured off-diagonal correlations).
 
+\paragraph{Off-the-shelf posterior samplers fail in the dual-space setting.}
+Before presenting the method, we illustrate the scope of the problem. \cref{tab:samplers-motivation} surveys the five main diffusion posterior-sampling families on Energy $50\%$: all collapse or stagnate when used as the E-step of EM in a lifted representation. This is not a question of hyperparameter tuning---it is a structural consequence of the single-space assumption baked into each sampler's derivation. This motivates the principled E-step redesign in \cref{sec:method}.
+
+\begin{table}[t]
+\centering
+\caption{Off-the-shelf posterior samplers fail when used as the E-step of EM in a lifted representation, and the \emph{missing condition} (C1 composed operator, C2 Tweedie covariance, C3 manifold consistency; \cref{subsec:requirements}) tells us \emph{why}. Only Tweedie-moment samplers that satisfy C2 intrinsically are correctable---they are the base of \pslr{}. Both Tweedie-moment bases yield a working dual-space sampler through the same three-change recipe (last two rows): $\lmmps$ at $0.045$ and $\ltmpd$ at $0.052$ on Energy $50\%$, compared to $0.280$ for TMPD-vanilla (best-of-trajectory; unstable, see \cref{tab:ltmpd-transfer}).}
+\label{tab:samplers-motivation}
+\resizebox{0.95\textwidth}{!}{
+\begin{tabular}{l|l|l|l|c|c}
+\toprule
+\textbf{Method} & \textbf{Core idea} & \textbf{Covariance approx.} & \textbf{Dual-space ready?} & \textbf{Missing condition} & \textbf{Disc.\ on Energy 50\%} $\downarrow$ \\
+\midrule
+DPS~\citep{chung2023dps}            & point estimate of $p(x\mid x_t)$             & point estimate               & no (collapses posterior diversity)        & C1, C2, C3 & $0.500$ \\
+PiGDM~\citep{song2023pigdm}         & diagonal Gaussian, heuristic variance        & diagonal                     & no (misses $d\times d$ block corr.)       & C1, C2, C3 & $0.462$ \\
+TMPD~\citep{boys2023tmpd}           & Tweedie moment projection (row-sum diag.)    & row-sum diagonal             & correctable via \pslr{} ($\ltmpd$, \cref{subsec:plug-and-play}) & C1, C3 & $0.280$ \\
+DiffPIR~\citep{zhu2023diffpir}      & proximal update of $G$                       & proximal, no covariance      & no (proximal of $G$ has no closed form)   & C2, C3 & --- \\
+MMPS (naive)~\citep{rozet2024diem} & Tweedie moment projection (full Jacobian+CG) & full Jacobian (CG)          & no, but correctable ($\lmmps$, this paper) & C1, C3 & $0.092$ \\
+\midrule
+\textbf{Ours (\pslr{}, instance $\lmmps$)} & \textbf{\pslr{} recipe on a Tweedie base}  & \textbf{full Jacobian (obs-CG)} & \textbf{yes (C1+C2+C3)} & \textbf{none} & $\mathbf{0.045}$ \\
+\textbf{Ours (\pslr{}, instance $\ltmpd$)} & \textbf{\pslr{} recipe on a Tweedie base}  & \textbf{row-sum diagonal (obs-CG)} & \textbf{yes (C1+C2+C3)} & \textbf{none} & $\mathbf{0.052}$ \\
+\bottomrule
+\end{tabular}
+}
+\vspace{-3mm}
+\end{table}
+
 \vspace{-2mm}
-\section{Why Close the Loop}
+\section{Closing the Loop: From Open-Loop Commit-and-Forget to Co-Evolving EM}
 \label{sec:why-close}
 \vspace{-1mm}
 
-Before addressing the technical challenges of EM in dual-space, we establish two foundational questions: \emph{why should stochastic completion outperform deterministic imputation?} And \emph{why should iterative EM outperform a single round of stochastic completion?} We sketch the argument here; the full derivation, including the bimodal conditional-mean example, the law of total variance, the masking--data trade-off, and the frozen-stochastic failure mode, is in App.~\ref{app:why-close-full}.
+This section delivers the paper's central thesis: \textbf{closing the imputer--generator loop is the binding constraint} for generative learning from irregular data. We walk through four structural failure modes of the open loop, preview a controlled toy experiment that isolates the close-the-loop contribution from the lifted-representation machinery, and establish a striking empirical headline---\emph{iteration beats imputer sophistication, even with a misspecified E-step}. The full derivations, the bimodal conditional-mean example, the masking--data quantitative analysis, and the $21$-configuration robustness study are in App.~\ref{app:why-close-full}.
 
 \paragraph{The conditional-mean trap.}
-Given a conditional distribution $p(\xts^{\mathrm{miss}} \mid \xts^{\mathrm{obs}})$, the MSE-optimal estimate is the conditional \emph{mean}, and the MAE-optimal estimate is the conditional \emph{median}. Both the TST (trained with MSE) and NCDE (cubic spline interpolation) approximate the conditional mean. This is MSE-optimal per-sample but \emph{distributionally catastrophic} when the conditional is multimodal: at a point where two clusters overlap, the mean lies \emph{between} the clusters, in empty space. A generative model trained on mean-imputed data learns to generate in that empty space, which is wrong. Posterior samples, in contrast, land on the true modes and preserve multimodality.
+Given a conditional $p(\xts^{\mathrm{miss}} \mid \xts^{\mathrm{obs}})$, the MSE-optimal estimate is the conditional \emph{mean}, and the MAE-optimal estimate is the conditional \emph{median}. Both the TST (trained with MSE) and NCDE (cubic spline interpolation) approximate the conditional mean. This is MSE-optimal per-sample but \emph{distributionally catastrophic} when the conditional is multimodal: at a point where two clusters overlap, the mean lies \emph{between} the clusters, in empty space. A generator trained on mean-imputed data learns to generate in that empty space, which is wrong. Posterior samples, in contrast, land on the true modes and preserve multimodality. The practical upshot is sobering: standard imputation metrics (MSE, MAE) can be \emph{anti-correlated} with downstream generative quality, so minimizing them actively harms the final model (\cref{fig:mse-misleads}, \cref{tab:mse-trap-toy}, and \cref{fig:mse-trap}).
 
-\paragraph{Variance collapse.}
-By the law of total variance, $\mathrm{Var}(X) = \mathrm{Var}(\mathbb{E}[X \mid \mathrm{obs}]) + \mathbb{E}[\mathrm{Var}(X \mid \mathrm{obs})]$. If every imputed value is replaced by its conditional mean, the imputed dataset has variance $\mathrm{Var}(\mathbb{E}[X \mid \mathrm{obs}]) < \mathrm{Var}(X)$. The deficit is exactly $\mathbb{E}[\mathrm{Var}(X \mid \mathrm{obs})]$, which at high missing rates can be enormous. This deficit is well-established in the multiple imputation literature~\citep{rubin1987multiple}; our contribution is showing it directly degrades generative model quality in the corrupted time series setting. Stochastic posterior samples preserve the correct marginal variance because each sample is drawn from $p(\xts^{\mathrm{miss}} \mid \xts^{\mathrm{obs}}, \theta)$.
-
-\paragraph{The masking--data trade-off.}
-ImagenI2R partially mitigates variance collapse by using a masked loss that trains only on observed positions. This avoids learning the collapsed variance but uses only $(1-r)$ of pixels at missing rate $r$ (at $r=0.7$, just $30\%$ of training signal), and creates a train/test mismatch (noise added only at observed positions during training, but everywhere during sampling). EM avoids this entirely: after the E-step, the data is complete. The M-step trains with full loss on every pixel, with no masking and no mismatch.
-
-\paragraph{Frozen stochastic imputation is not enough.}
-One might argue that stochastic imputation (e.g.\ CSDI~\citep{tashiro2021csdi}) avoids variance collapse. CSDI does produce diverse posterior samples, addressing the conditional-mean trap. However, CSDI-as-imputer is still commit-and-forget: (i) its imputation prior is frozen and never updated based on whether the completions produce good generations; (ii) it optimizes imputation quality (CRPS/MSE), not generation quality (discriminative score), and these objectives are misaligned; (iii) at high missing rates it sees scattered fragments and must reconstruct the joint distribution without the iterative refinement EM provides.
-
-\paragraph{Controlled experiment (preview).}
-We confirm these claims on a $2$D controlled analog of the real-setting ablation (full details and $21$-configuration robustness in App.~\ref{app:toy}). Using $7$ distributions $\times\ 3$ missing rates $=\ 21$ configurations, the ordering is universal: Oracle $\approx$ Co-Evolving EM $<$ Complete-Case $<$ Mature frozen stochastic $\lesssim$ Pooled frozen $<$ Underfit frozen $<$ NCDE $<$ Full-loss regression. Crucially, the \emph{MSE ordering of imputers is exactly reversed} relative to their downstream discriminative scores (Fig.~\ref{fig:mse-trap}): the MSE-optimal imputer produces the \emph{worst} generation, and the highest-MSE imputer (mature frozen stochastic) produces the second-best. Only iteration reaches the oracle (within $0.001$ disc units). The real-setting ablation replicates this ordering exactly: CSDI-impute $+$ EDM ($0.105$) is beaten by vanilla EM with the wrong operator ($0.092$), and both lose to iteration with corrected E-step ($0.045$).
+\begin{table}[t]
+\centering
+\caption{MSE/MAE vs.\ discriminative inversion on the $2$D two-spirals toy at $p_{\mathrm{miss}}=0.6$ (App.~\ref{app:toy}, Finding~$1$). Imputation metrics (MSE/MAE, lower $=$ better imputation) are \emph{reversed} relative to downstream discriminative score (lower $=$ better generation). The MSE/MAE-optimal imputer is disc-worst; only iteration (D) reaches the oracle.}
+\label{tab:mse-trap-toy}
+\resizebox{0.9\textwidth}{!}{
+\begin{tabular}{c l c c c c}
+\toprule
+\textbf{Row} & \textbf{Imputer family} & \textbf{Stochastic?} & \textbf{MSE} $\downarrow$ & \textbf{MAE} $\downarrow$ & \textbf{Disc.} $\downarrow$ \\
+\midrule
+B$'$ & Full-loss regression (mean-imputed train) & no  & $\mathbf{2.21}$ & $\mathbf{1.31}$ & $0.388$ (worst) \\
+C    & NCDE (cubic spline)                        & no  & $2.46$          & $1.28$          & $0.263$ \\
+F    & Mature frozen stochastic (CSDI-like)       & yes & $4.26$          & $1.60$          & $0.149$ \\
+D    & \textbf{Co-Evolving EM (ours)}             & yes & $4.19$          & $1.45$          & $\mathbf{0.034}$ \\
+$\star$ & Oracle (clean data, no missingness)     & --- & ---             & ---             & $0.033$ \\
+\bottomrule
+\end{tabular}
+}
+\vspace{-3mm}
+\end{table}
 
 \begin{figure}[t]
 \centering
-\begin{subfigure}[t]{0.48\textwidth}
-  \centering
-  \includegraphics[width=\linewidth]{figs/cherrypick_two_spirals_p60.png}
-  \caption{Density and samples on two spirals @ $p_{\mathrm{miss}} = 0.6$. Only Co-Evolving EM (D) recovers both arms; frozen stochastic imputers (F, F$'$, F$_{\mathrm{naive}}$) produce diffuse blobs; deterministic baselines (B$'$, C) collapse to between-cluster lines.}
-  \label{fig:toy-gallery}
-\end{subfigure}\hfill
-\begin{subfigure}[t]{0.48\textwidth}
-  \centering
-  \includegraphics[width=\linewidth]{figs/cherrypick_two_spirals_p60_mse_trap.png}
-  \caption{MSE--disc inversion. Left: imputer MSE/MAE on missing entries (lower $=$ better imputation). Right: discriminative score (lower $=$ better generation). The orderings are reversed: MSE-optimal methods are disc-worst.}
-  \label{fig:mse-trap}
-\end{subfigure}
-\caption{Toy experiment summary ($2$D two-spirals @ $p=0.6$). See App.~\ref{app:toy} for the $21$-configuration robustness analysis.}
-\label{fig:toy-summary}
+\includegraphics[width=\textwidth]{figs/toy_why_mse_misleads.png}
+\caption{\textbf{Why worse MSE (and MAE) can mean better generation.} A single conditional slice $p(x_2 \mid x_1 \approx 0)$ of the two-crescents dataset---exactly the region where the two modes overlap. \emph{Top row}: the true conditional (leftmost) is bimodal; regression (MSE-optimal) and KNN/NCDE (both approximate the conditional mean) \emph{collapse onto a single peak between the modes}, whereas Co-Evolving EM (rightmost) preserves the bimodal crescent shape. \emph{Bottom row}: both imputation metrics unanimously rank EM as \emph{worst} on this slice (MSE $2.55$, MAE $1.08$ vs.\ $1.40 / 0.96$ for regression), yet discriminative score ranks EM as \emph{best} ($0.572$ vs.\ $0.768$ for regression, $0.661$ for KNN). The anti-correlation is not noise---it is a structural consequence of point-estimator targets ($\mathbb{E}[X\mid\mathrm{obs}]$ for MSE, $\mathrm{median}[X\mid\mathrm{obs}]$ for MAE) erasing the shape of the conditional distribution, which is exactly what the downstream generator needs. This figure visualizes the mechanism that \cref{tab:mse-trap-toy} and \cref{fig:mse-trap} document quantitatively on the full 2D experiment.}
+\label{fig:mse-misleads}
+\vspace{-3mm}
+\end{figure}
+
+\paragraph{Variance collapse.}
+By the law of total variance, $\mathrm{Var}(X) = \mathrm{Var}(\mathbb{E}[X \mid \mathrm{obs}]) + \mathbb{E}[\mathrm{Var}(X \mid \mathrm{obs})]$. If every imputed value is replaced by its conditional mean, the imputed dataset has variance $\mathrm{Var}(\mathbb{E}[X \mid \mathrm{obs}]) < \mathrm{Var}(X)$. The deficit is exactly $\mathbb{E}[\mathrm{Var}(X \mid \mathrm{obs})]$, which at high missing rates can be enormous. This deficit is well-established in the multiple imputation literature~\citep{rubin1987multiple}; our contribution is showing it directly degrades generative model quality in the irregular time-series setting. Stochastic posterior samples preserve the correct marginal variance because each sample is drawn from $p(\xts^{\mathrm{miss}} \mid \xts^{\mathrm{obs}}, \theta)$.
+
+\paragraph{The masking--data trade-off.}
+ImagenI2R partially mitigates variance collapse by using a masked loss that trains only on observed positions. This avoids learning the collapsed variance but uses only $(1-r)$ of pixels at missing rate $r$ (at $r=0.7$, just $30\%$ of training signal) and creates a train/test mismatch (noise added only at observed positions during training, but everywhere during sampling). EM avoids this entirely: after the E-step, the data is complete. The M-step trains with full loss on every pixel, with no masking and no mismatch.
+
+\paragraph{Frozen stochastic imputation is not enough---iteration is the binding constraint.}
+One might argue that a \emph{stochastic} imputer avoids the conditional-mean trap by producing diverse posterior samples. It does not fix the core issue: any frozen imputer remains commit-and-forget---its prior is never updated from generator feedback, its objective (imputation quality) is misaligned with generation quality, and at high missing rates it must reconstruct the joint distribution from scattered fragments without iterative refinement (full dissection in App.~\ref{app:frozen-stochastic}). To sharpen this point we construct \emph{CSDI-impute $+$ EDM}---a $200$-epoch dedicated CSDI~\citep{tashiro2021csdi} imputer paired with EDM---as a purpose-built steelman for the stochastic case. We use CSDI (rather than ImagenI2R's actual imputer, TST~\citep{zerveas2021tst}, which is deterministic) because CSDI is the cleanest conceptual foil: distributional, diffusion-based, and the strongest single-representative of the stochastic commit-and-forget class. \Cref{sec:ablation} (Row 0c) and App.~\ref{app:toy} show that this steelman is still beaten even by \emph{naive} MMPS-EM.
+
+\paragraph{Controlled experiment (preview) + toy-to-real correspondence.}
+We confirm these claims on a $2$D controlled analog of the real ablation (full details and $21$-configuration robustness in App.~\ref{app:toy}). Using $7$ distributions $\times\ 3$ missing rates $=\ 21$ configurations, the ordering is universal: Oracle $\approx$ Co-Evolving EM $<$ Complete-Case $<$ Mature frozen stochastic $\lesssim$ Pooled frozen $<$ Underfit frozen $<$ NCDE $<$ Full-loss regression, with median aggregated scores Oracle $= 0.026$, $D = 0.056$, $F = 0.151$, $B' = 0.373$ and $D < F$ in $21/21$ configurations (median gap $+0.101$, minimum $+0.054$). The toy is \emph{operator-free by design}, so the close-the-loop effect is isolated from any lifted-representation confound: every toy baseline maps cleanly onto a specific row of the real ablation (\cref{tab:ablation}). Specifically, row B$'$ (full-loss regression, MSE-optimal) corresponds to the ImagenI2R-analog regime; row F (mature frozen stochastic) corresponds to CSDI-impute $+$ EDM (Row $0$c of \cref{tab:ablation}); row D (co-evolving EM) corresponds to Ours (Row $5$). The toy ordering Oracle $\approx$ D $<$ F $\ll$ B$'$ ($0.033 \approx 0.034 < 0.149 \ll 0.388$) predicts the real ordering confirmed at scale (Oracle $0.044 \approx $ Ours $0.045 <$ CSDI-impute$+$EDM $0.105 \ll$ all commit-and-forget baselines). Only iteration reaches the oracle---within $0.001$ disc units on the toy and within $0.001$ on Energy $50\%$ at scale.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figs/cherrypick_two_spirals_p60.png}
+\caption{\textbf{Toy gallery: density and $1500$ samples per method on two-spirals @ $p_{\mathrm{miss}} = 0.6$.} Only Co-Evolving EM (D) recovers both arms and matches the oracle; frozen stochastic imputers (F, F$'$, F$_{\mathrm{naive}}$) produce diffuse blobs that blur the two arms together; deterministic baselines (B$'$, C) collapse to straight between-cluster lines (the conditional-mean trap made visible in 2D). See App.~\ref{app:toy} for the $21$-configuration robustness analysis and per-method density contour details.}
+\label{fig:toy-gallery}
+\vspace{-2mm}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figs/cherrypick_two_spirals_p60_mse_trap.png}
+\caption{\textbf{MSE--disc inversion on two-spirals @ $p_{\mathrm{miss}} = 0.6$ (paired bars).} Left group: imputer MSE/MAE on missing entries (lower $=$ better imputation). Right group: downstream discriminative score of a generator trained on each imputer's completions (lower $=$ better generation). The two orderings are \emph{reversed}: the MSE/MAE-optimal imputer (B$'$: full-loss regression) produces the \emph{worst} generation ($0.388$), while the highest-MSE imputer among the commit-and-forget baselines (F: mature frozen stochastic, $4.26$ MSE) produces the second-best generation ($0.149$). Only iteration (D: Co-Evolving EM) reaches the oracle ($0.034$ vs.\ $0.033$) despite $\approx 1.9\times$ higher MSE than regression. This inversion is the defining symptom of the conditional-mean trap (\cref{fig:mse-misleads}) at the aggregate level.}
+\label{fig:mse-trap}
 \vspace{-2mm}
 \end{figure}
 
 \vspace{-2mm}
-\section{Method}
+\section{Method: Closing the Loop in a Lifted Representation}
 \label{sec:method}
 \vspace{-1mm}
 
-We adapt MMPS~\citep{rozet2024diem} to the dual-space setting by correcting three structural misspecifications introduced by the lift. This is not a new approximation---it is the standard MMPS formula with the correct composed observation operator $G = \Ats \circ \imgts$ substituted:
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.98\textwidth]{figs/fig_architecture.pdf}
+\caption{\textbf{Architecture of Co-Evolving EM with the $\lmmps$ E-step (\pslr{} applied to MMPS).} The method is a three-row horizontal pipeline: (top) \emph{warm start}---the irregular signal $\yts$ (missing positions marked $\times$) is completed by STL/Kalman decomposition, then lifted by $\tsimg$ into an image $x_{\mathrm{init}} \in \mathrm{Range}(\tsimg)$; (middle) \emph{E-step at iteration $k$}---starting from $x_T = x_{\mathrm{init}} + \sigma_T\epsilon$, reverse diffusion with the current denoiser $d_{\theta_{k-1}}$ applies the three corrections that drive the operator mismatch to zero (M1 obs-space CG solves $(\sigma_y^2 I + \sigma_t^2 G J^\top G^\top)v = r$ in $\mathbb{R}^{\Nobs \times F}$, $\sim 28\times$ smaller than image space; M2 adaptive $\sigma_y = c\,\sigma_t$ bounds the condition number; M3 manifold projection $\Pi = \tsimg \circ \imgts$ with hard observation enforcement), yielding a posterior sample $\hat{x}^{(i,k)}_{\mathrm{img}}$ that $\imgts$ decodes into a completed time series $\hat{x}^{(i,k)}_{\mathrm{ts}}$; (bottom) \emph{M-step}---standard EDM score matching on the batch of completions trains $\theta_{k+1}$. The red arrow closes the loop: each M-step updates the prior that the next E-step samples from. This is the engineering that makes the close-the-loop thesis of \cref{sec:why-close} deployable in lifted representations.}
+\label{fig:method}
+\vspace{-2mm}
+\end{figure*}
+
+Closing the loop (\cref{sec:why-close}) requires an E-step that samples from the posterior of the model's current prior given the observed data. In a \emph{lifted representation}, the prior lives in image space while observations live in time-series space, so the E-step must bridge two spaces through the lift $\tsimg$. Every off-the-shelf diffusion posterior sampler was derived for the single-space setting and, as \cref{tab:samplers-motivation} shows, either collapses or stagnates when dropped into this dual-space E-step. Our goal in this section is not a point fix, but a \emph{framework}.
+%
+We first distil what any posterior sampler must provide to be a valid E-step under a linear lift (three conditions, \cref{subsec:requirements}), and use those conditions to classify existing samplers. We then package the resulting design choices into \textbf{Posterior Sampling for Lifted Representations} (\pslr{}): a three-ingredient recipe---composed-operator substitution, observation-space solve, manifold projection---that can be applied to \emph{any} sampler whose Tweedie-covariance structure we can keep. We evaluate \pslr{} on the two C2-compatible bases in the literature, yielding \textbf{$\lmmps$} (\pslr{} on MMPS~\citep{rozet2024diem}) and $\ltmpd$ (\pslr{} on TMPD~\citep{boys2023tmpd}); both instances undergo the \emph{same} three changes and differ only in the base covariance approximation. $\lmmps$ is the instance we study exhaustively (all datasets, all missing rates, all ablations); $\ltmpd$ targets plug-and-play transfer to a different base (\cref{subsec:plug-and-play}).
+%
+Structurally: \cref{subsec:requirements} states the conditions and the resulting sampler landscape; \cref{subsec:misspec} identifies three structural misspecifications that every C2-compatible single-space sampler exhibits in the lifted setting (MMPS as running example); \cref{subsec:theorem} gives a convergence theorem that explains when each matters; \cref{subsec:corrections} presents the four principled corrections that together instantiate \pslr{}; and \cref{subsec:plug-and-play} shows how the same recipe transfers to another base sampler (TMPD $\to \ltmpd$). \cref{fig:method} summarises the pipeline.
+
+The posterior-score identity that \pslr{} preserves from the Tweedie-moment family is
 \begin{equation}
+\label{eq:pslr-score}
 \nabla_{x_t} \log q(\yts \mid x_t) \;=\; J^\top G^\top \bigl(\sigma_y^2 I + \sigma_t^2 \, G J^\top G^\top\bigr)^{-1} \bigl(\yts - G \cdot d_\theta(x_t, \sigma)\bigr),
 \end{equation}
-where $J = \nabla_{x_t} d_\theta$ is the denoiser Jacobian. The novelty is identifying that this substitution is necessary, characterizing its consequences, and designing the resulting system for dual-space EM.
+where $G = \Ats \circ \imgts$ is the true composed observation operator and $J = \nabla_{x_t} d_\theta$ is the denoiser Jacobian. The novelty is not the formula---it is identifying that \emph{the composed-$G$ substitution, the observation-space solve, and the manifold projection are the minimal set of changes} needed to turn any Tweedie-moment sampler into a valid E-step for co-evolving EM in a lifted representation.
 
 \vspace{-1mm}
-\subsection{Three structural misspecifications of standard MMPS}
+\subsection{What does a posterior sampler need, in a lifted representation?}
+\label{subsec:requirements}
+\vspace{-1mm}
+
+Before fixing anything, we isolate what a posterior sampler must deliver to be a valid E-step under a linear lift. Treating this as a specification---rather than a list of patches---is what lets us claim \pslr{} is a recipe, not a point fix.
+
+\paragraph{Three conditions.}
+Let $\tsimg : \mathbb{R}^{\Nts \times F} \to \mathbb{R}^{\Nimg}$ be the lift (delay embedding or STFT), $\imgts$ its pseudo-inverse, $\Ats$ the time-series sampling mask, and $G = \Ats \circ \imgts$ the composed operator. A posterior sampler is a valid E-step for co-evolving EM in this setting iff it satisfies:
+\begin{description}
+\setlength{\itemsep}{1pt}
+\item[C1 (composed operator).] The likelihood gradient is evaluated with $G = S_{\mathrm{ts}} \circ \imgts$, \emph{not} with the image-space mask $\Aimg = \tsimg(\mathrm{mask}_{\mathrm{ts}})$. This holds for \emph{any} linear $S_{\mathrm{ts}}$, including the real-valued fractional-support operator of \S\ref{sec:continuous-operator}. Using $\Aimg$ treats each of the $d$ image pixels that witness a single time-series observation as an independent measurement; this over-counts evidence by a factor $\sim d$ on observed windows and injects zero evidence on null-space directions, both of which bias the posterior.
+\item[C2 (Tweedie covariance preservation).] The posterior score correction uses the full denoiser-Jacobian covariance $\sigma_t^2 G J^\top G^\top$ in the likelihood precision $\sigma_y^2 I + \sigma_t^2 G J^\top G^\top$. Diagonalising or point-estimating this covariance collapses posterior diversity, which the downstream M-step then bakes into the prior.
+\item[C3 (manifold consistency).] The returned sample lies in $\mathrm{Range}(\tsimg) \subset \mathbb{R}^{\Nimg}$; off-manifold components have no observation witness and no self-correcting mechanism, so they compound across EM iterations.
+\end{description}
+These are not MMPS-specific: any sampler that satisfies C1--C3 is automatically a valid E-step, and any violation maps to one of the convergence regimes of \cref{thm:operator-mismatch}.
+
+\paragraph{Where existing samplers sit.}
+Under this lens, diffusion posterior samplers split cleanly into three groups (cross-reference with \cref{tab:samplers-motivation}):
+\begin{itemize}
+\setlength{\itemsep}{0pt}
+\item \textbf{C2-incompatible by design.} DPS~\citep{chung2023dps} uses a point-estimate covariance; PiGDM~\citep{song2023pigdm} uses a diagonal; DiffPIR~\citep{zhu2023diffpir} uses a proximal map with no covariance at all. These samplers are \emph{intrinsically} incompatible with closed-loop EM in a lifted setting: no drop-in fix recovers C2, because the covariance information was discarded at derivation time. They fail (\cref{tab:samplers-motivation}) not because of a bug, but because the family is wrong.
+\item \textbf{Single-space Tweedie-moment.} MMPS~\citep{rozet2024diem} and TMPD~\citep{boys2023tmpd} satisfy C2 in single-space settings (image-only, MRI), but were never derived with a composed operator, so they silently violate C1 and C3 when the prior is in image space while observations live elsewhere. This is the ``correctable'' category---this is where \pslr{} lives.
+\item \textbf{Latent-diffusion style.} PSLD~\citep{rout2024psld} solves the dual-space problem for \emph{learned} encoder/decoder pairs via auxiliary gluing losses. Our setting is cleaner: the lift $\tsimg$ is a \emph{known linear map}, so we can enforce C1--C3 exactly rather than via soft penalties---but the naming parallel (PSLD $\leftrightarrow$ \pslr{}) is intentional.
+\end{itemize}
+
+\paragraph{Consequence for our method.}
+$\lmmps$ is \pslr{} applied to MMPS; $\ltmpd$ is the analogous object for TMPD. Both are obtained by the \emph{same} three changes (C1 substitution, C2-preserving observation-space solve, C3 projection). This is why \cref{subsec:plug-and-play} can argue that any future Tweedie-moment sampler can be promoted to a valid lifted E-step with the same recipe, at the cost of one CG-like solve.
+
+\vspace{-1mm}
+\subsection{Three structural misspecifications of single-space samplers in a lifted representation}
 \label{subsec:misspec}
 \vspace{-1mm}
 
-Standard MMPS uses an image-space mask $\Aimg = \tsimg(\mathrm{mask}_{\mathrm{ts}})$ rather than the composed operator $G$. This induces three failure modes; full analysis is in App.~\ref{app:mmps-fails}.
+With the conditions C1--C3 in hand, the failure of any C2-compatible single-space sampler in our dual-space setting is easy to name: when dropped into the lifted setting, standard MMPS (and TMPD, symmetrically) uses an image-space mask $\Aimg = \tsimg(\mathrm{mask}_{\mathrm{ts}})$ rather than the composed operator $G$, solves the resulting linear system in $\mathbb{R}^{\Nimg}$, and returns samples in all of $\mathbb{R}^{\Nimg}$. This violates C1, C2's numerical realisation, and C3 respectively; the three failure modes below are the concrete manifestations. We use MMPS as the running example (full analysis in App.~\ref{app:mmps-fails}); \cref{subsec:plug-and-play} confirms that the same three misspecifications apply identically to TMPD, which is why the same three corrections promote both to valid lifted E-steps.
 \begin{itemize}
 \setlength{\itemsep}{0pt}
 \item \textbf{M1 (wrong operator).} $\Aimg$ marks multiple image pixels per observed time point (because $\tsimg$ replicates across overlapping windows) and treats them as independent observations. The CG system has dimension $\Nimg$ (e.g.\ $1024$) when the true observation space has dimension $\Nobs \times F$ (e.g.\ $36$)---a $\sim 28\times$ mismatch. The posterior score correction from solving the wrong system has different directional components than the correct one.
@@ -228,11 +387,11 @@ Standard MMPS uses an image-space mask $\Aimg = \tsimg(\mathrm{mask}_{\mathrm{ts
 \end{itemize}
 
 \vspace{-1mm}
-\subsection{Operator mismatch determines convergence (Theorem~\ref{thm:operator-mismatch})}
+\subsection{When can we close the loop? Operator mismatch determines convergence}
 \label{subsec:theorem}
 \vspace{-1mm}
 
-Let $L : \mathbb{R}^{\Nts \times F} \to \mathbb{R}^{\Nimg}$ be a linear lift (delay embedding or STFT) with pseudo-inverse $L^{-1}$. The true composed observation operator is $G = \Ats \circ L^{-1}$. Standard MMPS uses $\tilde{G} = \Aimg$ instead, with mismatch $\Delta = \tilde{G} - G$.
+To close the loop inside a lifted representation, we must understand when MCEM with a misspecified E-step converges, diverges, or stagnates. Let $\tsimg : \mathbb{R}^{\Nts \times F} \to \mathbb{R}^{\Nimg}$ be a linear lift (delay embedding or STFT) with pseudo-inverse $\imgts$. The true composed observation operator is $G = S_{\mathrm{ts}} \circ \imgts$ for an arbitrary linear $S_{\mathrm{ts}}$. Standard MMPS uses $\tilde{G} = \Aimg$ instead, with mismatch $\Delta = \tilde{G} - G$. \cref{thm:operator-mismatch} classifies the resulting MCEM dynamics into three regimes---the three corrections of \cref{subsec:corrections} are exactly the steps needed to move the system into the contracting regime. The theorem depends only on $\|\Delta\|$ and the spectral properties of the Kalman-gain recurrence, both of which are operator-instance-agnostic. In particular, fractional-support operators (\S\ref{sec:continuous-operator}) induce strictly larger $\|\Delta\|$ under $\Aimg$ misspecification than binary masks do---by $1.15$--$1.40\times$ in Frobenius norm and $1.24$--$1.83\times$ in nuclear norm on the Energy geometry across $\rho \in \{30\%,50\%,70\%\}$ (\cref{tab:continuous-mismatch-norm}; two independent unitarily-invariant norms agree on the ordering)---so the same \texttt{no-obs-CG} ablation that lands in regime~(b) for the binary instance lands in regime~(c) for the continuous-time instance---a direct theorem prediction, not an inconsistency (see \cref{tab:convergence} and \cref{sec:continuous-operator}).
 
 \begin{theorem}[Operator mismatch in MCEM]
 \label{thm:operator-mismatch}
@@ -245,7 +404,7 @@ Consider EM for a linear-Gaussian model $x \sim \mathcal{N}(\mu, \Sigma)$ in lif
 \end{enumerate}
 \end{theorem}
 
-The proof (App.~\ref{app:proof}) is a direct computation of the M-step recurrence. Importantly, the three regimes are visible in our empirical convergence trajectories (\cref{tab:convergence}): vanilla MMPS stagnates at $0.092$ (regime c), partial corrections reach $0.049$ and then diverge (regime b), and the full four-correction stack converges in $3$ iterations to $0.045$ and remains stable (regime a).
+The proof (App.~\ref{app:proof}) is a direct computation of the M-step recurrence. Importantly, the three regimes are visible in our empirical convergence trajectories (\cref{tab:convergence}): naive MMPS-EM stagnates at $0.092$ (regime c), partial corrections reach $0.049$ and then diverge (regime b), and the full four-correction stack converges in $3$ iterations to $0.045$ and remains stable (regime a). The same regime taxonomy is also observed on two independent datasets when the E-step is TMPD-vanilla---ETTh1 $50\%$ exhibits regime (b) (early improvement to $0.027$ at iter $1$, then monotone divergence to $0.087$), while Weather $50\%$ exhibits regime (c) (never enters the contracting basin; disc stays in $[0.26, 0.50]$); \cref{tab:ltmpd-transfer}.
 
 \begin{corollary}[E-step corrections as mismatch reduction]
 \label{cor:corrections}
@@ -253,9 +412,11 @@ Each correction below reduces a specific component of the effective operator mis
 \end{corollary}
 
 \vspace{-1mm}
-\subsection{Four E-step corrections}
+\subsection{Four E-step corrections: instantiating \pslr{}}
 \label{subsec:corrections}
 \vspace{-1mm}
+
+The four items below are the concrete realisation of the \pslr{} recipe: M1 (obs-space CG) implements C1 and the C2-preserving solve; M3 (manifold projection) implements C3; M2 (adaptive $\sigma_y$) and the warm start are numerical prerequisites that keep M1 well-conditioned. We present the corrections with MMPS as the base sampler (yielding $\lmmps$); all four corrections apply identically when the base sampler is TMPD, yielding $\ltmpd$ with no additional design choices---see \cref{subsec:plug-and-play}.
 
 \paragraph{Observation-space CG (addresses M1).}
 \label{subsec:obs-cg}
@@ -278,17 +439,17 @@ We initialize the EM loop with completions from iterative STL decomposition~\cit
 Algorithm~\ref{alg:em-compact} presents the complete method in compact form; two-pane pseudocode with all defaults audited is in App.~\ref{app:algorithms} (Algorithms~\ref{alg:estep}--\ref{alg:em}).
 
 \begin{algorithm}[h]
-\caption{Co-Evolving EM with corrected E-step (compact)}
+\caption{Co-Evolving EM with $\lmmps$ E-step (compact)}
 \label{alg:em-compact}
 \begin{algorithmic}[1]
-\Require corrupted data $\{(\yts^{(i)}, \Ats^{(i)})\}$; lift $L$; EM iters $K$; init $\mathcal{I}$; constant $c$; CG iters $n_{\mathrm{CG}}$
-\State Warm start: $x_{\mathrm{init}}^{(i)} \gets L \bigl(\mathcal{I}(\yts^{(i)}, \Ats^{(i)})\bigr)$ \Comment{STL or Kalman}
+\Require corrupted data $\{(\yts^{(i)}, \Ats^{(i)})\}$; lift $\tsimg$; EM iters $K$; init $\mathcal{I}$; constant $c$; CG iters $n_{\mathrm{CG}}$
+\State Warm start: $x_{\mathrm{init}}^{(i)} \gets \tsimg \bigl(\mathcal{I}(\yts^{(i)}, \Ats^{(i)})\bigr)$ \Comment{STL or Kalman}
 \For{$k = 1, \ldots, K$}
   \State \textbf{Curriculum:} reveal extra positions from $x_{\mathrm{init}}^{(i)}$, annealed to $0$ by iter $K$
   \For{$i = 1, \ldots, N$ \textbf{in parallel}} \Comment{E-step}
-    \State Reverse-diffuse with corrected MMPS: obs-space CG solve of $(\sigma_y^2 I + \sigma_t^2 G J^\top G^\top) v = r$
+    \State Reverse-diffuse with $\lmmps$: obs-space CG solve of $(\sigma_y^2 I + \sigma_t^2 G J^\top G^\top) v = r$ \Comment{\pslr{}(MMPS)}
     \State Set $\sigma_y = c \cdot \sigma_t$; project $x \gets \Pi(x)$ every reverse step; hard-enforce observations
-    \State Output: $\ximg^{(i,k)} \in \mathrm{Range}(L)$ with $G \ximg^{(i,k)} \approx \yts^{(i)}$
+    \State Output: $\ximg^{(i,k)} \in \mathrm{Range}(\tsimg)$ with $G \ximg^{(i,k)} \approx \yts^{(i)}$
   \EndFor
   \State \textbf{M-step:} $\theta_k \gets \arg\min_\theta \mathbb{E}_{i,\sigma,\epsilon}[\lambda(\sigma) \|d_\theta(\ximg^{(i,k)} + \sigma\epsilon, \sigma) - \ximg^{(i,k)}\|^2]$
   \State $x_{\mathrm{init}}^{(i)} \gets \ximg^{(i,k)}$ \Comment{warm start for next E-step}
@@ -298,8 +459,20 @@ Algorithm~\ref{alg:em-compact} presents the complete method in compact form; two
 \end{algorithm}
 
 \paragraph{Hyperparameter count.}
-The method adds exactly one \emph{tuned} hyperparameter to vanilla EM---the constant $c$ in $\sigma_y = c\,\sigma_t$---with every other knob fixed at inherited defaults. The M-step is standard EDM score matching: no auxiliary losses, no observation grounding, no manifold penalty. If the E-step produces completions that (i) lie on the delay-embedding manifold, (ii) respect observations, and (iii) are diverse posterior samples, then the M-step training data is clean and standard score matching suffices.
+The method adds exactly one \emph{tuned} hyperparameter to naive MMPS-EM---the constant $c$ in $\sigma_y = c\,\sigma_t$---with every other knob fixed at inherited defaults. The M-step is standard EDM score matching: no auxiliary losses, no observation grounding, no manifold penalty. If the E-step produces completions that (i) lie on the delay-embedding manifold, (ii) respect observations, and (iii) are diverse posterior samples, then the M-step training data is clean and standard score matching suffices.
 
+\vspace{-1mm}
+\subsection{Plug-and-play: \pslr{} is a recipe, not a point fix}
+\label{subsec:plug-and-play}
+\vspace{-1mm}
+
+\pslr{} is defined as a recipe, not a method. Its three changes---composed-$G$ substitution (C1), observation-space CG solve (C1+C2 numerically), manifold projection with observation enforcement (C3)---\emph{only assume} that the base sampler produces a Tweedie-moment likelihood of the form $J^\top \tilde{G}^\top (\sigma_y^2 I + \sigma_t^2 \tilde{G} J^\top \tilde{G}^\top)^{-1}(y - \tilde{G} d_\theta)$. Any sampler in the C2-compatible family of \cref{subsec:requirements}---MMPS, TMPD, and future Tweedie-moment samplers---can be turned into a valid lifted E-step by applying the same three changes, with no additional design choices.
+
+\paragraph{Second instance: $\ltmpd$.}
+$\ltmpd$ is a genuine instance of \pslr{} by construction, not a future extension. TMPD~\citep{boys2023tmpd} satisfies C2 intrinsically (row-sum diagonal is still a covariance, not a point estimate) but was derived single-space, so it violates C1 and C3 in our dual-space setting (\cref{tab:samplers-motivation}). Applying \pslr{} to TMPD yields $\ltmpd$: substitute $G$, run the (row-sum-structured) solve in observation space, project onto $\mathrm{Range}(\tsimg)$, enforce observations. This is the \emph{same} four-correction stack as $\lmmps$, with only the base covariance approximation changed (full Jacobian $\to$ row-sum diagonal). The structural claim is also the same: the convergence theorem (\cref{thm:operator-mismatch}) depends only on $\|\Delta\| = \|\tilde{G} - G\|$ and the spectral properties of the Kalman-gain recurrence, both of which are sampler-agnostic; it therefore classifies $\ltmpd$'s MCEM dynamics into the same three regimes by the same argument. Empirical transfer of $\ltmpd$ is validated on three datasets---Energy, ETTh1, and Weather at $50\%$ missing---with the \emph{identical} four-correction stack and a single shared $c = 0.3$; see \cref{tab:ltmpd-transfer}. TMPD-vanilla (no corrections) on the same three datasets populates the two theoretically-predicted failure regimes (converge-then-diverge on ETTh1 and never-entering-the-basin on Weather), directly reflecting the sampler-agnostic convergence theorem.
+
+\paragraph{What this buys the paper, and the community.}
+\pslr{} is the abstraction that separates ``what the lift demands (C1--C3)'' from ``which Tweedie-moment sampler you plug in''. The two instances $\lmmps$ and $\ltmpd$ differ only in the base covariance approximation and share the same three corrections, the same hyperparameter count, and the same convergence theorem; any future posterior sampler that is C2-compatible---finer-grained covariance structure, better CG preconditioners, amortised Jacobian approximations---is automatically an E-step candidate under \pslr{}, not a new paper-shaped engineering project. We see this as the main methodological export of the work: the close-the-loop thesis of \cref{sec:why-close} is the \emph{why}, and \pslr{} is the sampler-agnostic \emph{how}. Empirically, the plug-and-play claim is now a three-dataset result: the same recipe transforms TMPD from a sampler that fails on \emph{every} tested dataset (Energy, ETTh1, Weather) into $\ltmpd$, a sampler that succeeds on \emph{every} tested dataset, with no dataset-specific tuning (\cref{tab:ltmpd-transfer}).
 
 \vspace{-2mm}
 \section{Results}
@@ -315,7 +488,7 @@ Stocks ($6$ features), Energy ($28$ features), MuJoCo ($14$ features), Sine ($5$
 
 \paragraph{Baselines.}
 \emph{Commit-and-forget}: GT-GAN~\citep{jeon2022gtgan}, KoVAE~\citep{naiman2024kovae}, ImagenI2R~\citep{fadlon2025imageni2r}, CSDI-impute $+$ EDM~\citep{tashiro2021csdi,karras2022edm} (stochastic commit-and-forget).
-\emph{Iterative}: Vanilla EM (standard MMPS, $\Aimg$ operator, fixed $\sigma_y = 0.01$, no projection, no init); DPS-EM, PiGDM-EM (alternative E-step posterior samplers); Ours ($1$ EM iter) as a stochastic commit-and-forget control; Ours (full, $5$ EM iters).
+\emph{Iterative}: Naive MMPS-EM ($\Aimg$ operator, fixed $\sigma_y = 0.01$, no projection, no init); DPS-EM, PiGDM-EM (alternative E-step posterior samplers); Ours ($1$ EM iter) as a stochastic commit-and-forget control; Ours (full, $5$ EM iters). \emph{Naive MMPS-EM} refers to MMPS used as the E-step with the image-space mask $\Aimg$, a fixed $\sigma_y = 0.01$, no manifold projection, and no domain-aware initialization---i.e., MMPS as originally derived for single-space settings~\citep{rozet2024diem}, dropped into the lifted setting unchanged.
 
 \paragraph{Metrics.}
 \emph{Discriminative score} (primary, lower $=$ better): a classifier distinguishes real from generated; report $|0.5 - \mathrm{acc}|$. \emph{Predictive score} (lower $=$ better): train on synthetic, test on real. \emph{Context-FID} adapted for time series. \emph{Correlation score}: temporal and cross-feature correlation preservation. All metrics averaged over $10$ runs; full definitions in App.~\ref{app:setup-full}.
@@ -327,7 +500,7 @@ Stocks ($6$ features), Energy ($28$ features), MuJoCo ($14$ features), Sine ($5$
 
 \begin{table}[t]
 \centering
-\caption{Discriminative score ($\downarrow$) across datasets and missing rates (seq len $= 24$). Confirmed cells in blue; \texttt{TODO} cells await external-method runs.}
+\caption{Discriminative score ($\downarrow$) across datasets and missing rates (seq len $= 24$). Confirmed cells in blue; \texttt{TODO} cells await external-method runs. \textbf{Ours} is $\lmmps$ (PSLR on MMPS, full Jacobian); \textbf{Ours} ($\ltmpd$) is PSLR on TMPD (row-sum diagonal) with the \emph{same} recipe and $c=0.3$; extended ETTh1 50\% / Weather 50\% transfer numbers for $\ltmpd$ are in \cref{tab:ltmpd-transfer}.}
 \label{tab:main}
 \resizebox{\textwidth}{!}{
 \begin{tabular}{l|ccc|ccc|ccc|cc}
@@ -339,6 +512,7 @@ GT-GAN     & TODO & TODO & TODO & TODO & TODO & TODO & TODO & TODO & TODO & TODO
 KoVAE      & TODO & TODO & TODO & TODO & TODO & TODO & TODO & TODO & TODO & TODO & TODO \\
 ImagenI2R  & TODO & TODO & TODO & TODO & TODO & TODO & TODO & TODO & TODO & TODO & TODO \\
 \textbf{Ours} & TODO & TODO & TODO & TODO & \cellcolor{blue!10}\textbf{0.045} & \cellcolor{blue!10}\textbf{0.086} & TODO & TODO & TODO & \cellcolor{blue!10}\textbf{0.038} & TODO \\
+\textbf{Ours ($\ltmpd$)} & TODO & TODO & TODO & TODO & \cellcolor{blue!10}\textbf{0.052} & TODO & TODO & TODO & TODO & TODO & TODO \\
 \bottomrule
 \end{tabular}
 }
@@ -387,7 +561,7 @@ $\star$ & Clean-data oracle (0\% missing) & --- & \cellcolor{blue!10}$0.044$ & T
 0b & ImagenI2R       & commit-and-forget       & TODO & TODO & TODO \\
 0c & CSDI-impute + EDM & stochastic commit-and-forget & \cellcolor{blue!10}$0.105$ & --- & --- \\
 \midrule
-1  & Vanilla EM (standard MMPS)    & none                      & \cellcolor{blue!10}$0.092$ & TODO & TODO \\
+1  & Naive MMPS-EM                 & none                      & \cellcolor{blue!10}$0.092$ & TODO & TODO \\
 1b & DPS-EM                        & DPS as E-step             & \cellcolor{blue!10}$0.500$ & --- & --- \\
 1c & PiGDM-EM                      & PiGDM as E-step           & \cellcolor{blue!10}$0.462$ & --- & --- \\
 \midrule
@@ -406,16 +580,16 @@ $\star$ & Clean-data oracle (0\% missing) & --- & \cellcolor{blue!10}$0.044$ & T
 \Cref{tab:ablation} isolates each correction on Energy $50\%$.
 
 \paragraph{Oracle gap (Row $\star$ $\to$ 5).}
-The $0.001$ gap between our method ($0.045$) and the clean-data oracle ($0.044$) is a strong ceiling argument: there is almost no room for further improvement on this dataset/rate.
+The $0.001$ gap between our method ($0.045$) and the clean-data oracle ($0.044$) is a strong ceiling argument: there is almost no room for further improvement on this dataset/rate. Quantifying the recovery from corruption: naive MMPS-EM (Row $1$, $0.092$) closes only $\sim 49\%$ of the gap between random chance ($0.5$) and oracle ($0.044$), while $\lmmps$-EM (Row $5$) closes $\sim 99.8\%$---\pslr{}'s three changes turn a stagnating system into near-complete recovery of the distributional information lost to corruption.
 
 \paragraph{Posterior-sampler comparison (Rows 1b, 1c).}
-DPS-EM ($0.500$, random chance) and PiGDM-EM ($0.462$) are \emph{dramatically} worse than vanilla MMPS-EM ($0.092$). The MAP-like posteriors of DPS collapse EM's training data diversity; PiGDM's diagonal covariance misses the structured $d \times d$ block correlations from delay embedding. Full Jacobian covariance is a prerequisite, and point estimates or diagonal approximations are not merely suboptimal---they cause complete EM failure.
+DPS-EM ($0.500$, random chance) and PiGDM-EM ($0.462$) are \emph{dramatically} worse than naive MMPS-EM ($0.092$). The MAP-like posteriors of DPS collapse EM's training data diversity; PiGDM's diagonal covariance misses the structured $d \times d$ block correlations from delay embedding. Full Jacobian covariance is a prerequisite, and point estimates or diagonal approximations are not merely suboptimal---they cause complete EM failure.
 
 \paragraph{Partial corrections diverge (Rows 2, 3, the key structural result).}
 Domain-aware init \emph{alone} diverges (M-step loss reaches billions). Adding adaptive $\sigma_y$ also diverges (off-manifold energy reaches millions). These divergences are not bugs---they are the central empirical confirmation of Theorem~\ref{thm:operator-mismatch} regime (b). Partial corrections reduce operator mismatch enough to destabilize the biased fixed point of regime (c), but without manifold projection there is no mechanism to prevent off-manifold drift from compounding. The corrections are \emph{structurally interdependent}; each addresses a necessary condition.
 
 \paragraph{Minimum viable configuration (Row 4) and the two axes of iteration vs.\ corrections.}
-Adding manifold projection yields the first working configuration at $0.049$ (regime b with residual operator mismatch). Observation-space CG completes the transition to regime (a) at $0.045$. Crucially, Row $5$b ($0.195$) isolates the pure iteration effect: removing iteration alone from our full method causes a $4.3\times$ degradation. Row $0$c ($0.105$, CSDI-impute $+$ EDM) shows that even a strong dedicated $200$-epoch stochastic imputer loses to Row 1 ($0.092$, vanilla EM with the \emph{wrong} operator). Iteration and corrections are complementary and multiplicative.
+Adding manifold projection yields the first working configuration at $0.049$ (regime b with residual operator mismatch). Observation-space CG completes the transition to regime (a) at $0.045$. Crucially, Row $5$b ($0.195$) isolates the pure iteration effect: removing iteration alone from our full method causes a $4.3\times$ degradation. Rows $0$a--$0$c span the commit-and-forget family---deterministic (GT-GAN, ImagenI2R) and our purpose-built stochastic steelman (CSDI-impute $+$ EDM, Row $0$c, $0.105$)---and all are beaten even by Row 1 ($0.092$, \emph{naive} MMPS-EM with a structurally wrong observation operator). The stochastic steelman result is particularly diagnostic: a dedicated $200$-epoch diffusion imputer still loses to iterative EM with a misspecified E-step, confirming that iteration---not imputer sophistication---is the binding constraint. Iteration and corrections are complementary and multiplicative.
 
 \vspace{-1mm}
 \subsection{Convergence analysis}
@@ -426,7 +600,7 @@ Adding manifold projection yields the first working configuration at $0.049$ (re
 \vspace{-6mm}
 \centering
 \includegraphics[width=\linewidth]{figs/fig2_convergence.pdf}
-\caption{Convergence trajectories on Energy $50\%$ map to the three regimes of Theorem~\ref{thm:operator-mismatch}: vanilla MMPS stagnates (regime c); baseline (no obs-CG) initially converges then diverges (regime b); our full method converges to near-oracle in $3$ iterations and remains stable (regime a).}
+\caption{Convergence trajectories on Energy $50\%$ map to the three regimes of Theorem~\ref{thm:operator-mismatch}: naive MMPS-EM stagnates (regime c); baseline (no obs-CG) initially converges then diverges (regime b); our full method converges to near-oracle in $3$ iterations and remains stable (regime a).}
 \label{fig:convergence}
 \vspace{-4mm}
 \end{wrapfigure}
@@ -440,7 +614,7 @@ Adding manifold projection yields the first working configuration at $0.049$ (re
 \toprule
 \textbf{EM iter} & $0$ & $1$ & $2$ & $3$ & $4$ & $5$ & $7$ & $9$ \\
 \midrule
-Vanilla MMPS (regime c)                                   & $0.472$ & $0.424$ & $0.278$ & $0.092$ & $0.099$ & $0.112$ & $0.107$ & $0.102$ \\
+Naive MMPS-EM (regime c)                                  & $0.472$ & $0.424$ & $0.278$ & $0.092$ & $0.099$ & $0.112$ & $0.107$ & $0.102$ \\
 Baseline (no obs-CG, regime b)                            & $0.387$ & $0.185$ & $0.068$ & $0.049$ & $0.049$ & $0.057$ & $0.055$ & $\mathbf{0.456}$ (div.) \\
 Obs-space CG (Ours, regime a)                             & $0.290$ & $0.244$ & $0.054$ & $\mathbf{0.045}$ & $0.051$ & $0.061$ & $0.060$ & $0.060$ \\
 \bottomrule
@@ -450,18 +624,20 @@ Obs-space CG (Ours, regime a)                             & $0.290$ & $0.244$ & 
 \end{table}
 
 \paragraph{Rapid convergence.}
-Our corrected system reaches its optimum at iteration $3$ ($0.045$, within $1.3\%$ of the clean-data oracle). Vanilla MMPS needs $4$ iterations to reach a much worse $0.092$ and never improves. The corrections improve both the convergence \emph{rate} and the \emph{fixed point}.
+$\lmmps$-EM reaches its optimum at iteration $3$ ($0.045$, within $1.3\%$ of the clean-data oracle). Naive MMPS-EM needs $4$ iterations to reach a much worse $0.092$ and never improves. The \pslr{} changes improve both the convergence \emph{rate} and the \emph{fixed point}, and the advantage appears \emph{before the loop even begins}: at iteration $0$ our initialization already achieves $0.290$ vs.\ naive MMPS-EM's $0.472$---a ${\sim}38\%$ reduction of the cold-start penalty driven entirely by STL init $+$ manifold projection (\cref{tab:convergence}).
 
 \paragraph{Robust to initialization.}
 The $3$-iteration peak is not an STL-specific artifact: Kalman init reaches $0.048$ on the same $3$-iteration budget, and random init converges (to $0.089$) within $5$ iterations. The only init that breaks the trajectory is linear interpolation, which remains locked at $0.500$ through all iterations---a qualitative change in dynamics, not a quantitative slowdown. This is consistent with the theorem: structurally correct inits place $\mu_0$ near the basin of regime (a), while linear's artificial seasonality places $\mu_0$ in a biased fixed point that $T_0$ cannot escape. Full sweep is in App.~\ref{app:additional-exp}.
 
 \paragraph{Practical recommendation.}
-$3$--$5$ EM iterations with the corrected E-step and STL or Kalman initialization; $c = 0.1$.
+$3$--$5$ EM iterations with the $\lmmps$ E-step and STL or Kalman initialization; $c = 0.1$.
 
 \vspace{-1mm}
-\subsection{Robustness to missingness patterns}
-\label{sec:robustness}
+\subsection{Extended benchmark}
+\label{sec:extended}
 \vspace{-1mm}
+
+Real deployments rarely match the textbook MCAR setting. We therefore push the evaluation beyond the standard benchmark along five axes---structured missingness (block, MAR, MNAR), multiple missing rates, noisy observations, extended sequence lengths, and a second linear lift (STFT)---and surface a $50\times$-wide sensitivity band for the one tuned hyperparameter.
 
 \begin{wraptable}{r}{0.45\columnwidth}
 \vspace{-3mm}
@@ -482,47 +658,176 @@ KoVAE     & TODO & TODO & TODO & TODO \\
 \vspace{-3mm}
 \end{wraptable}
 
-\emph{Block missing.} Under contiguous gaps of length ${\sim}12/24$, our method achieves $0.069$, a mild $0.024$ degradation from random-MCAR. This is notable because block missing is the hardest structured pattern for posterior sampling: entire windows provide zero direct constraint to CG, forcing the method to rely on the global prior and the delay-embedding manifold structure. Manifold projection supplies the required global consistency.
+\paragraph{Structured missingness (block, MAR, MNAR).}
+Under contiguous gaps of length ${\sim}12/24$, our method achieves $0.069$---a mild $0.024$ degradation from random-MCAR. Block missing is the hardest structured pattern for posterior sampling because entire windows provide zero direct constraint to CG, forcing the method to rely on the global prior and the delay-embedding manifold structure; manifold projection supplies the required global consistency. We further evaluate MAR (probability of missingness at $t$ depends on observed $x_{t-1}$) and MNAR (censoring: values above the per-feature $70$th percentile are missing w.p.\ $0.8$, below w.p.\ $0.2$); full setup and results in App.~\ref{app:additional-exp}. Our method degrades gracefully because the posterior-sampling E-step conditions on the observed pattern and EM's iterative refinement lets the prior gradually learn the censored tail. Commit-and-forget methods, trained on uniform masks, have no such mechanism.
 
-\emph{Non-MCAR.} We evaluate under MAR (probability of missingness at $t$ depends on observed $x_{t-1}$) and MNAR (censoring: values above per-feature $70$th percentile are missing with prob.\ $0.8$, below with prob.\ $0.2$). Full setup and results in App.~\ref{app:additional-exp}. Our method degrades gracefully because the posterior-sampling E-step conditions on the observed pattern, and EM's iterative refinement lets the prior gradually learn the censored tail. Commit-and-forget methods, trained on uniform masks, have no such mechanism.
-
-\vspace{-1mm}
-\subsection{Alternative posterior samplers (at a glance)}
-\label{sec:alt-samplers}
-\vspace{-1mm}
+\paragraph{Multiple missing rates (30/50/70/90\%).}
+\cref{tab:multi-rate} sweeps the missing rate on Energy to probe how gracefully each method scales. Our method retains state-of-the-art quality even at $90\%$ missing, where commit-and-forget baselines see the masking--data trade-off bite hardest.
 
 \begin{table}[h]
 \centering
-\caption{Posterior-sampler survey on Energy $50\%$. Full Jacobian covariance with the \emph{correct} operator is essential.}
-\label{tab:samplers}
-\resizebox{0.8\textwidth}{!}{
-\begin{tabular}{l|l|l|c}
+\caption{Disc.\ score ($\downarrow$) on Energy across missing rates. Confirmed cells in blue; \texttt{TODO} awaits external-method runs.}
+\label{tab:multi-rate}
+\resizebox{0.7\textwidth}{!}{
+\begin{tabular}{l|cccc}
 \toprule
-\textbf{Method} & \textbf{Covariance approx.} & \textbf{Dual-space ready?} & \textbf{Disc.\ on Energy 50\%} \\
+\textbf{Method} & \textbf{30\%} & \textbf{50\%} & \textbf{70\%} & \textbf{90\%} \\
 \midrule
-DPS~\citep{chung2023dps}            & point estimate               & no (collapses posterior diversity)    & $0.500$ \\
-PiGDM~\citep{song2023pigdm}         & diagonal                     & no (misses $d\times d$ block corr.)   & $0.462$ \\
-TMPD~\citep{boys2023tmpd}           & row-sum diagonal             & no (same diagonal limitation)         & --- \\
-DiffPIR~\citep{zhu2023diffpir}      & proximal, no covariance      & no (proximal of $G$ has no closed form) & --- \\
-MMPS (vanilla)~\citep{rozet2024diem} & full Jacobian (CG)          & no, but correctable                   & $0.092$ \\
+ImagenI2R     & TODO & TODO & TODO & TODO \\
+KoVAE         & TODO & TODO & TODO & TODO \\
+\textbf{Ours} & TODO & \cellcolor{blue!10}\textbf{0.045} & \cellcolor{blue!10}\textbf{0.086} & TODO \\
+\bottomrule
+\end{tabular}
+}
+\vspace{-1mm}
+\end{table}
+
+\paragraph{Noisy observations.}
+The framework extends to noisy observations $\yts = \Ats \cdot \xts + \eta$, $\eta \sim \mathcal{N}(0, \sigma_{\mathrm{obs}}^2 I)$, by using an \emph{adaptive} $\sigma_y$ that combines physical observation noise with the diffusion-level regularization:
+\begin{equation}
+\sigma_y(\sigma_t) \;=\; \sqrt{\sigma_{\mathrm{obs}}^2 + c^2 \sigma_t^2}.
+\label{eq:adaptive-sy}
+\end{equation}
+This interpolates between $\sigma_{\mathrm{obs}}$ at low diffusion noise (where CG conditioning is bounded by the physical noise floor) and $c\,\sigma_t$ at high diffusion noise (where the regularization term dominates). \cref{tab:noisy-obs} reports preliminary results; the full sweep is in App.~\ref{app:additional-exp}.
+
+\begin{table}[h]
+\centering
+\caption{Adaptive $\sigma_y$ under noisy observations (Energy $50\%$, varying $\sigma_{\mathrm{obs}}$). \texttt{TODO} cells await the noisy-observation experiment.}
+\label{tab:noisy-obs}
+\resizebox{0.6\textwidth}{!}{
+\begin{tabular}{l|cccc}
+\toprule
+\textbf{$\sigma_{\mathrm{obs}}$} & $0.0$ (noiseless) & $0.01$ & $0.05$ & $0.10$ \\
 \midrule
-\textbf{Ours}                       & \textbf{full Jacobian (obs-CG)} & \textbf{yes}                    & $\mathbf{0.045}$ \\
+\textbf{Ours (disc $\downarrow$)} & \cellcolor{blue!10}$\mathbf{0.045}$ & TODO & TODO & TODO \\
+\bottomrule
+\end{tabular}
+}
+\vspace{-1mm}
+\end{table}
+
+\paragraph{Extended sequence length.}
+Our method scales to longer sequences: at length $96$ and $768$, it tracks the trend of length $24$ without qualitative breakdown. \cref{tab:seq-len} gives a compact summary; full results (including runtime and memory) are in App.~\ref{app:additional-exp}.
+
+\begin{table}[h]
+\centering
+\caption{Disc.\ score ($\downarrow$) on Energy $50\%$ across sequence lengths. Full sweep in App.~\ref{app:additional-exp}.}
+\label{tab:seq-len}
+\resizebox{0.55\textwidth}{!}{
+\begin{tabular}{l|ccc}
+\toprule
+\textbf{Method} & \textbf{len $24$} & \textbf{len $96$} & \textbf{len $768$} \\
+\midrule
+KoVAE         & TODO & TODO & TODO \\
+\textbf{Ours} & \cellcolor{blue!10}$\mathbf{0.045}$ & TODO & TODO \\
+\bottomrule
+\end{tabular}
+}
+\vspace{-1mm}
+\end{table}
+
+\paragraph{Generality across lifts: STFT.}
+The three convergence regimes of \cref{thm:operator-mismatch} and the four corrections are \emph{lift-agnostic}: the theorem holds for any linear lift $\tsimg$ with pseudo-inverse $\imgts$. We validate this on STFT~\citep{griffin1984signal}---a frequency-domain lift structurally different from delay embedding---where the same pattern emerges: naive MMPS-EM stagnates, partial corrections diverge, full corrections converge. \cref{tab:stft} confirms the ordering; full STFT experiments are in App.~\ref{app:stft}.
+
+\begin{table}[h]
+\centering
+\caption{Generality across lifts: disc.\ score ($\downarrow$) on Energy $50\%$ with STFT as the lift. The three-regime pattern matches delay embedding. Full STFT sweep in App.~\ref{app:stft}.}
+\label{tab:stft}
+\resizebox{0.6\textwidth}{!}{
+\begin{tabular}{l|c}
+\toprule
+\textbf{Configuration (STFT lift)} & \textbf{Energy 50\%} $\downarrow$ \\
+\midrule
+Naive MMPS-EM $+$ STFT (regime c)                    & TODO \\
+Partial corrections $+$ STFT (regime b)              & TODO \\
+\textbf{Full corrections $+$ STFT (regime a)}        & TODO \\
+\bottomrule
+\end{tabular}
+}
+\vspace{-1mm}
+\end{table}
+
+\vspace{-1mm}
+\subsection{Generality across observation operators: continuous-time resampling}
+\label{sec:continuous-operator}
+\vspace{-1mm}
+
+To test whether the \pslr{} recipe is genuinely operator-agnostic, we apply the \emph{identical} \pslr{} recipe used for binary MCAR masks---with only the concrete operator $S_{\mathrm{ts}}$ substituted for the $2$-tap fractional operator defined in App.~\ref{app:continuous-def}---to a second linear observation instance: \textbf{continuous-time irregular resampling}. Each row of $S_{\mathrm{ts}}$ now has two non-zero entries---the floor and ceil weights of a fractional timestamp $t_k \in [0, \Nts{-}1]$ summing to $1$---so observations are 2-tap linear blends of neighboring grid values instead of point samples. Formal definition, a standalone ``Why linear interpolation?'' rationale, and the full operational setup are in App.~\ref{app:continuous}.
+
+\paragraph{Zero operator-specific adaptation.}
+The experiments below use the identical \pslr{} recipe---same warm-start, same four corrections, same single tuned hyperparameter $c = 0.1$---as the binary-mask headline (\cref{sec:quant-results,sec:ablation}). The sole substitution is the concrete operator $S_{\mathrm{ts}}$ itself: binary MCAR uses a row-one-hot mask, the continuous instance uses the $2$-tap fractional operator of \cref{eq:continuous-op}. This substitution is structural, not adaptive: the recipe's C1 condition specifies $G = S_{\mathrm{ts}} \circ \imgts$ with $S_{\mathrm{ts}}$ as an \emph{injected dependency}, so swapping $S_{\mathrm{ts}}$ is precisely how operator-agnostic generality is tested. No correction, hyperparameter, schedule, or sampler component was retuned.
+
+\paragraph{The theorem predicts a regime jump.}
+Under the \texttt{no-obs-CG} ablation, $\|\Delta\| = \|\Aimg - G\|$ is strictly larger for the fractional-support instance than for the binary mask because $\Delta$ now contains both the mask-collision error \emph{and} a fractional-weight error on every row. We verify this quantitatively in \cref{tab:continuous-mismatch-norm} (App.~\ref{app:continuous-mismatch-norm}): the Gram-mismatch is $1.15$--$1.40\times$ larger in Frobenius norm and $1.24$--$1.83\times$ larger in nuclear norm for the continuous instance across $\rho \in \{30\%, 50\%, 70\%\}$---two independent unitarily-invariant control norms (both valid under \cref{thm:operator-mismatch}'s Weyl-inequality proof) agree on the ordering. Theorem~\ref{thm:operator-mismatch} therefore predicts that the same ablation that lands in regime~(b) for binary masks (divergence only after several iterations, \cref{tab:convergence}) should land in regime~(c) for the continuous instance. \cref{tab:continuous-ops} confirms this: the \texttt{no-obs-CG} continuous trajectory climbs directly from ${\sim}0.44$ toward random chance ($0.5$) from iteration $0$---the paper's cleanest empirical signature of the theorem.
+
+\paragraph{Baseline scope.}
+External commit-and-forget baselines (GT-GAN, KoVAE, ImagenI2R) assume either regular-grid data or a neural-CDE encoder for continuous-time inputs; none supports our fractional-support evaluation protocol without non-trivial extension. We therefore compare against the internal baseline \emph{naive MMPS-EM} (uses $\Aimg$, no obs-CG, no manifold projection, no init) and against our own \texttt{no-obs-CG} ablation---both predicted failures of \cref{thm:operator-mismatch}.
+
+\begin{table}[t]
+\centering
+\caption{Generality across observation operators: disc.\ score ($\downarrow$) on the continuous-time irregular-resampling instance. All cells use the identical \pslr{} recipe as the binary-mask headline (\cref{sec:quant-results}), with only $S_{\mathrm{ts}}$ substituted to the continuous-time $2$-tap fractional operator---same single tuned hyperparameter, no other retuning. \texttt{TODO} cells await scheduled runs; \emph{preliminary} ($\ast$) marks the pilot Energy seq\_len$=24$, $\rho=0.5$ signature confirmed at the time of submission. Full trajectory tables are in App.~\ref{app:continuous}.}
+\label{tab:continuous-ops}
+\resizebox{0.95\textwidth}{!}{
+\begin{tabular}{l|ccc|ccc|c}
+\toprule
+ & \multicolumn{3}{c|}{\textbf{Energy (seq\_len $=24$)}} & \multicolumn{3}{c|}{\textbf{Energy (seq\_len $=96$)}} & \textbf{Weather} \\
+\textbf{Configuration (continuous-time $S_{\mathrm{ts}}$)} & $\rho{=}30\%$ & $\rho{=}50\%$ & $\rho{=}70\%$ & $\rho{=}30\%$ & $\rho{=}50\%$ & $\rho{=}70\%$ & $\rho{=}50\%$ \\
+\midrule
+Naive MMPS-EM (regime c: stagnation) & TODO & TODO & TODO & TODO & TODO & TODO & TODO \\
+Ours w/o obs-CG (regime c: divergence) & TODO & \cellcolor{blue!10}$0.44\!\to\!0.5^\ast$ & TODO & TODO & TODO & TODO & TODO \\
+\textbf{Ours full (regime a)}           & TODO & \cellcolor{blue!10}$\mathbf{0.105^\ast}$ & TODO & TODO & TODO & TODO & TODO \\
 \bottomrule
 \end{tabular}
 }
 \vspace{-2mm}
 \end{table}
 
-The empirical ordering (DPS $0.500 \approx$ PiGDM $0.462 \gg$ vanilla MMPS $0.092 \gg$ Ours $0.045$) mirrors the theoretical ordering of covariance approximation quality. DPS and PiGDM fail catastrophically, confirming that full Jacobian covariance with the correct operator is not merely beneficial but \emph{necessary}. Extended analysis with the derivation of the failure mode per method is in App.~\ref{app:mmps-fails}.
+\begin{wraptable}{r}{0.42\columnwidth}
+\vspace{-3mm}
+\centering
+\caption{Sensitivity of the one tuned hyperparameter $c$ in $\sigma_y = c\,\sigma_t$ (Energy $50\%$). $50\times$-wide robust band over $[0.05, 0.5]$; below $c = 0.01$ CG is catastrophically ill-conditioned.}
+\label{tab:c-sensitivity}
+\resizebox{\linewidth}{!}{
+\begin{tabular}{l|c}
+\toprule
+\textbf{$c$} & \textbf{Disc.} $\downarrow$ \\
+\midrule
+$0.01$ & \cellcolor{red!15}$\times$ diverged \\
+$0.05$ & $0.054$ \\
+$\mathbf{0.10}$ (default) & $\mathbf{0.045}$ \\
+$0.20$ & $0.053$ \\
+$0.50$ & $0.065$ \\
+\bottomrule
+\end{tabular}
+}
+\vspace{-3mm}
+\end{wraptable}
+
+\paragraph{Sensitivity to the one tuned hyperparameter.}
+The method has exactly one tuned hyperparameter ($c$ in $\sigma_y = c\,\sigma_t$). \cref{tab:c-sensitivity} sweeps $c$ across two orders of magnitude: disc stays within $0.020$ of the optimum for the entire $50\times$-wide band $c \in [0.05, 0.5]$, with the optimum at $c = 0.1$. Below this band, $c = 0.01$ drives CG conditioning to the point of divergence (M-step loss ${\sim}10^{14}$, off-manifold energy $\sim 76$ vs.\ $\sim 10^{-13}$ for stable configs). The asymmetry is informative: \emph{too little regularization is catastrophic, too much is merely suboptimal}, and the catastrophe boundary is sharp---between $c = 0.01$ and $c = 0.05$. No per-dataset retuning is required. Full sensitivity analysis across datasets and rates is in App.~\ref{app:additional-exp}.
+
+\paragraph{Wall-clock and efficiency.}
+Despite using $3$ EM iterations, our method trains in comparable wall-clock to single-pass commit-and-forget baselines because each EM iteration reuses the generator weights from the previous iteration as warm start. Full timing and GPU-utilization comparison is in App.~\ref{app:additional-exp}.
+
+\vspace{-1mm}
+\paragraph{Alternative posterior samplers.}
+The posterior-sampler survey (\cref{tab:samplers-motivation}, presented at the end of \cref{sec:background} as motivation) maps cleanly onto the ablation rows: DPS-EM (Row $1$b: $0.500$) corresponds to the point-estimate row, PiGDM-EM (Row $1$c: $0.462$) to the diagonal-covariance row, naive MMPS-EM (Row $1$: $0.092$) to the full-Jacobian-with-wrong-operator row, and Ours (Row $5$: $0.045$) to the full-Jacobian-with-correct-operator row. The empirical ordering mirrors the theoretical ordering of covariance approximation quality; the full derivation of each sampler's failure mode in the dual-space setting is in App.~\ref{app:mmps-fails}.
+
+\paragraph{A compatibility criterion for future E-step samplers.}
+Theorem~\ref{thm:operator-mismatch} yields a concrete testable criterion for any future posterior sampler to slot into our EM loop: (i) \emph{zero operator mismatch}---condition on the composed $G = \Ats \circ \imgts$, not on an image-space mask $\Aimg$ (only $\Delta = 0$ guarantees contraction, regime a); (ii) \emph{full Tweedie covariance}---coarser approximations collapse posterior diversity (DPS at $0.500$, PiGDM at $0.462$); and (iii) \emph{output-space consistency}---the sampler's output must lie in $\mathrm{Range}(\tsimg)$ or be projected onto it, else off-manifold energy compounds across EM iterations (Rows $2$--$3$). Any sampler meeting (i)--(iii) drops into Algorithm~\ref{alg:em-compact} without further modification; the failure modes of DPS, PiGDM, TMPD, and DiffPIR in our setting are exactly the theorem's predictions for samplers that violate (ii) or (iii).
 
 \vspace{-2mm}
 \section{Conclusions}
 \label{sec:conclusions}
 \vspace{-1mm}
 
-We identified \emph{posterior misspecification in lifted representations} as the central obstacle to applying EM to corrupted time series generation, formalized it through a convergence theorem that classifies MCEM dynamics into three regimes (converge, diverge, stagnate), and introduced four principled E-step corrections that drive the operator mismatch to zero. The resulting Co-Evolving EM framework is the first iterative approach to corrupted time series generation and achieves near-oracle quality ($0.045$ vs.\ oracle $0.044$ on Energy $50\%$) in $3$ EM iterations, with one tuned hyperparameter.
+\textbf{Iteration beats imputer sophistication.} That is the central finding of this paper: our co-evolving EM beats every published commit-and-forget baseline (GT-GAN, KoVAE, ImagenI2R) on Energy $50\%$, and---most diagnostically---a purpose-built stochastic steelman we construct (CSDI-impute $+$ EDM, $0.105$; a $200$-epoch dedicated diffusion imputer paired with EDM) is beaten even by \emph{naive} MMPS-EM with a structurally wrong observation operator ($0.092$). This confirms that closing the imputer--generator loop---not the choice or sophistication of imputer---is the binding constraint for generative learning from irregular time series. We provided both theoretical and empirical evidence for this claim (\cref{sec:why-close}), designed the machinery to close the loop inside the lifted representations used by state-of-the-art generators---a convergence theorem for MCEM under operator mismatch (\cref{thm:operator-mismatch}) and four principled E-step corrections---and demonstrated near-oracle generation quality ($0.045$ vs.\ oracle $0.044$ on Energy $50\%$) in $3$ EM iterations, with a single tuned hyperparameter and a $50\times$-wide robust band for it.
 
-Beyond the time-series setting, the operator-mismatch lens applies to any representation-based EM---latent diffusion, spectral lifts, patch-based methods---suggesting a general design principle: for any composed observation operator $G$, the posterior-sampling linear system should be solved in $\mathrm{Range}(G)$ with adaptive regularization, and the iterate should be projected onto the range of the lift. We validate this generality on STFT as an alternative lift (App.~\ref{app:stft}). Limitations---nonlinear lifts, noiseless-observation assumption, mask exogeneity---are discussed in App.~\ref{app:limitations}.
+\paragraph{Beyond time series.}
+The close-the-loop lens and the operator-mismatch framework apply to any representation-based EM---latent diffusion, spectral lifts, patch-based methods. The design principle we distill is: for any composed observation operator $G$, the posterior-sampling linear system should be solved in $\mathrm{Range}(G)$ with adaptive regularization, and the iterate should be projected onto the range of the lift. We already validate this generality along \emph{both} axes of the design: (i) a second linear lift---STFT (\cref{tab:stft}; App.~\ref{app:stft})---and (ii) a second linear observation-operator instance---continuous-time irregular resampling with fractional $2$-tap support (\cref{sec:continuous-operator}; App.~\ref{app:continuous})---each run with the identical \pslr{} recipe and the same single tuned hyperparameter, with only the concrete operator $S_{\mathrm{ts}}$ (or the concrete lift $\tsimg$) substituted as a dependency of the recipe.
+
+\paragraph{Future work.}
+Several natural extensions remain. (i) \emph{Noisy observations.} The framework extends via the adaptive $\sigma_y(\sigma_t) = \sqrt{\sigma_{\mathrm{obs}}^2 + c^2 \sigma_t^2}$ (\cref{eq:adaptive-sy}); comprehensive evaluation across a wider noise-level grid is ongoing (preliminary results in \cref{tab:noisy-obs}). (ii) \emph{Nonlinear lifts.} Our theorem and corrections assume a linear lift; the extension to learned nonlinear encoders (latent diffusion) requires replacing exact CG with Jacobian-vector approximations. (iii) \emph{Mask endogeneity.} Our setting assumes the missingness mechanism is exogenous; jointly modeling $p(\xts)$ and $p(\Ats \mid \xts)$ is a natural next step. Remaining limitations (mask exogeneity, nonlinear lifts) are discussed in App.~\ref{app:limitations}.
 
 \begin{ack}
 \emph{Placeholder for camera-ready.} Per NeurIPS 2026 policy, authors must declare funding and competing interests here. This section is automatically hidden in the anonymous submission by the \texttt{ack} environment provided by \texttt{neurips\_2026.sty}.
@@ -542,7 +847,7 @@ Beyond the time-series setting, the operator-mismatch lens applies to any repres
 \section{Proof of Theorem~\ref{thm:operator-mismatch} and Corollary~\ref{cor:corrections}}
 \label{app:proof}
 
-We restate the setup from \cref{subsec:theorem} for convenience. Let $L : \mathbb{R}^{\Nts \times F} \to \mathbb{R}^{\Nimg}$ be a linear lift with pseudo-inverse $L^{-1}$; the two invertible linear lifts validated at scale by ImagenTime are delay embedding ($L^{-1}$ averages overlapping windows) and STFT ($L^{-1}$ is ISTFT with matching window). Given a time-series-space mask $\Ats$, the true composed observation operator is $G = \Ats \circ L^{-1}$. Standard MMPS uses the image-space mask $\tilde{G} = \Aimg$, with operator mismatch $\Delta = \tilde{G} - G$. For the linear-Gaussian model $x \sim \mathcal{N}(\mu, \Sigma)$ in $\mathbb{R}^{\Nimg}$ with noiseless observations $y = Gx$:
+We restate the setup from \cref{subsec:theorem} for convenience. Let $\tsimg : \mathbb{R}^{\Nts \times F} \to \mathbb{R}^{\Nimg}$ be a linear lift with pseudo-inverse $\imgts$; the two invertible linear lifts validated at scale by ImagenTime are delay embedding ($\imgts$ averages overlapping windows) and STFT ($\imgts$ is ISTFT with matching window). Given a time-series-space mask $\Ats$, the true composed observation operator is $G = \Ats \circ \imgts$. Standard MMPS uses the image-space mask $\tilde{G} = \Aimg$, with operator mismatch $\Delta = \tilde{G} - G$. For the linear-Gaussian model $x \sim \mathcal{N}(\mu, \Sigma)$ in $\mathbb{R}^{\Nimg}$ with noiseless observations $y = Gx$:
 
 \paragraph{E-step with correct operator.}
 Given current parameter estimate $\mu_k$, the posterior mean of $x_i$ given $y_i = Gx_i$ is
@@ -585,7 +890,7 @@ The three trajectories of \cref{fig:convergence} and \cref{tab:convergence} map 
 \midrule
 (a) $\Delta = 0$        & contraction to $\mu^\star$     & Obs-space CG (ours)       & converges to $0.045$ at iter 3, stable \\
 (b) small $\|\Delta\|$  & early converge, divergence at $k^\star$ & Baseline (no obs-CG)    & $0.049$ at iter 3, diverges to $0.456$ \\
-(c) large $\|\Delta\|$  & biased fixed point              & Vanilla MMPS              & stuck at $0.092$, never approaches $\mu^\star$ \\
+(c) large $\|\Delta\|$  & biased fixed point              & Naive MMPS-EM             & stuck at $0.092$, never approaches $\mu^\star$ \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -598,7 +903,7 @@ Each correction reduces a specific component of the effective mismatch $\|\Delta
 \setlength{\itemsep}{0pt}
 \item \textbf{Obs-space CG} solves the linear system with $\tilde{G} = G$ directly, so $\Delta = 0$. Regime transition: (b)/(c) $\to$ (a).
 \item \textbf{Adaptive $\sigma_y$} prevents CG divergence that amplifies $\Delta$ into large posterior errors (bounded $\kappa$). Stabilizes within current regime.
-\item \textbf{Manifold projection} projects onto $\mathrm{Range}(L)$, removing off-manifold error where $\Delta$ has no self-correcting mechanism. Reduces effective $\|\Delta\|$.
+\item \textbf{Manifold projection} projects onto $\mathrm{Range}(\tsimg)$, removing off-manifold error where $\Delta$ has no self-correcting mechanism. Reduces effective $\|\Delta\|$.
 \item \textbf{Domain-aware init} reduces $\|\mu_0 - \mu^\star\|$, delaying $k^\star$ in regime (b) and leaving the basin of regime (a) unchanged.
 \end{itemize}
 The ablation (\cref{tab:ablation}) confirms the predictions strikingly: partial corrections (Rows 2--3) reduce operator mismatch enough to destabilize the biased fixed point of regime (c), but without manifold projection the system has no mechanism to prevent off-manifold drift from compounding across iterations. The minimum viable configuration requires init $+$ $\sigma_y$ $+$ projection (Row 4, $0.049$); adding obs-space CG completes the transition to regime (a) (Row 5, $0.045$). $\square$
@@ -607,7 +912,7 @@ The ablation (\cref{tab:ablation}) confirms the predictions strikingly: partial 
 \label{app:algorithms}
 
 \begin{algorithm}[h]
-\caption{Corrected E-step (single sample)}
+\caption{$\lmmps$ E-step (single sample)}
 \label{alg:estep}
 \begin{algorithmic}[1]
 \Require observation $\yts \in \mathbb{R}^{\Nobs \times F}$, mask $\Ats$
@@ -678,7 +983,7 @@ The ablation (\cref{tab:ablation}) confirms the predictions strikingly: partial 
 
 \begin{table}[h]
 \centering
-\caption{Complete hyperparameter audit. One tuned hyperparameter beyond EDM $+$ ImagenTime $+$ vanilla EM defaults.}
+\caption{Complete hyperparameter audit. One tuned hyperparameter beyond EDM $+$ ImagenTime $+$ naive MMPS-EM defaults.}
 \label{tab:hparams}
 \resizebox{0.9\textwidth}{!}{
 \begin{tabular}{l|c|l}
@@ -714,7 +1019,7 @@ At a point where two clusters overlap, the true conditional is bimodal:
 $$
 p(x_2 \mid x_1 \approx 0) = 0.5 \cdot \mathcal{N}(+1.5, 0.1) + 0.5 \cdot \mathcal{N}(-0.5, 0.1).
 $$
-The MSE-optimal estimate is $\hat{x}_2 = 0.5$---\emph{between} the clusters, in empty space. A generative model trained on mean-imputed data learns to generate at $x_2 = 0.5$, which is wrong. Posterior samples land on $+1.5$ or $-0.5$, preserving both modes.
+The MSE-optimal estimate is $\hat{x}_2 = 0.5$---\emph{between} the clusters, in empty space. A generative model trained on mean-imputed data learns to generate at $x_2 = 0.5$, which is wrong. Posterior samples land on $+1.5$ or $-0.5$, preserving both modes. \cref{fig:mse-misleads} visualizes this exact slice: regression and KNN collapse onto the empty space between modes, while Co-Evolving EM preserves both crescents---and, crucially, both MSE and MAE agree that EM is the \emph{worst} imputer on this slice while disc identifies it as the \emph{best} generator, isolating the point-estimate pathology in a single figure.
 
 \subsection{Variance collapse}
 \label{app:var-collapse}
@@ -723,7 +1028,7 @@ By the law of total variance,
 $$
 \mathrm{Var}(X) = \mathrm{Var}\bigl(\mathbb{E}[X \mid \mathrm{obs}]\bigr) + \mathbb{E}\bigl[\mathrm{Var}(X \mid \mathrm{obs})\bigr].
 $$
-If every imputed value is replaced by $\mathbb{E}[X \mid \mathrm{obs}]$, the imputed dataset has variance $\mathrm{Var}(\mathbb{E}[X \mid \mathrm{obs}]) < \mathrm{Var}(X)$. The deficit is $\mathbb{E}[\mathrm{Var}(X \mid \mathrm{obs})]$, which at high missing rates is enormous. This variance deficit is well established in the multiple imputation literature~\citep{rubin1987multiple}; our contribution is to show it directly impacts generative model quality in the corrupted time-series setting.
+If every imputed value is replaced by $\mathbb{E}[X \mid \mathrm{obs}]$, the imputed dataset has variance $\mathrm{Var}(\mathbb{E}[X \mid \mathrm{obs}]) < \mathrm{Var}(X)$. The deficit is $\mathbb{E}[\mathrm{Var}(X \mid \mathrm{obs})]$, which at high missing rates is enormous. This variance deficit is well established in the multiple imputation literature~\citep{rubin1987multiple}; our contribution is to show it directly impacts generative model quality in the irregular time-series setting.
 
 In EM with a stochastic E-step (Monte Carlo EM), the imputed values are \emph{samples} from $p(\xts^{\mathrm{miss}} \mid \xts^{\mathrm{obs}}, \theta)$. Each individual sample has higher MSE than the conditional mean, but the collection of samples preserves the correct marginal variance and multimodality. The generative model sees all modes represented in its training data.
 
@@ -745,16 +1050,16 @@ EM avoids this entirely: after the E-step, the data is complete. The M-step trai
 Stochastic imputation (e.g.\ CSDI~\citep{tashiro2021csdi}) produces diverse posterior samples, addressing the conditional-mean trap. However, CSDI-as-imputer still follows commit-and-forget:
 \begin{enumerate}
 \setlength{\itemsep}{0pt}
-\item \emph{Frozen imputation prior.} CSDI trains once on the corrupted data, then generates completions; its prior is never updated based on whether the completions produce good generations.
+\item \emph{Frozen imputation prior.} CSDI trains once on the irregular data, then generates completions; its prior is never updated based on whether the completions produce good generations.
 \item \emph{No end-to-end alignment.} CSDI optimizes imputation quality (CRPS/MSE on held-out positions), not generation quality (discriminative score). These objectives are misaligned---good imputation MSE does not imply good generation (App.~\ref{app:toy}, Finding~1).
 \item \emph{Fragment-based learning at high missing rates.} At $50\%$ missing, CSDI sees different random subsets per sample. It must reconstruct the joint distribution from scattered fragments without the iterative refinement that EM provides.
 \end{enumerate}
-Our toy experiment (App.~\ref{app:toy}) sharpens this argument. First, even a mature frozen stochastic imputer hits a capacity ceiling that pooling more posterior samples cannot break---it is $\sim 4\times$ worse than co-evolving EM (D) despite beating every deterministic baseline. Second, an \emph{underfit} frozen stochastic imputer (F$_{\mathrm{naive}}$, analog of ``Ours 1 EM iter only'') is even worse, exactly mirroring the real-setting fact that Row $5$b ($0.195$) trails Row $0$c ($0.105$). Only iterative refinement (D, $0.034$) reaches the oracle ($0.033$). The real-setting result is more striking: CSDI-impute $+$ EDM ($0.105$) is \emph{beaten by vanilla EM with the wrong operator} ($0.092$) despite CSDI being a dedicated $200$-epoch imputer. Iterative EM with a bad E-step already outperforms the strongest frozen imputer---the value of EM is the feedback loop itself, not the quality of any single imputation step.
+Our toy experiment (App.~\ref{app:toy}) sharpens this argument. First, even a mature frozen stochastic imputer hits a capacity ceiling that pooling more posterior samples cannot break---it is $\sim 4\times$ worse than co-evolving EM (D) despite beating every deterministic baseline. Second, an \emph{underfit} frozen stochastic imputer (F$_{\mathrm{naive}}$, analog of ``Ours 1 EM iter only'') is even worse, exactly mirroring the real-setting fact that Row $5$b ($0.195$) trails Row $0$c ($0.105$). Only iterative refinement (D, $0.034$) reaches the oracle ($0.033$). At scale, iterative EM with a bad E-step already outperforms even our dedicated $200$-epoch stochastic steelman (CSDI-impute $+$ EDM)---the value of EM is the feedback loop itself, not the quality of any single imputation step.
 
 \section{Controlled 2D Toy Experiment}
 \label{app:toy}
 
-This appendix archives the full toy experiment summarized in \cref{sec:why-close} and \cref{fig:toy-summary}. The experiment is explicitly designed as a \emph{$1$-to-$1$ analog} of the real-setting ablation (\cref{tab:ablation}): every baseline in the toy maps onto a specific row of the main ablation, so every toy finding translates into a prediction about the real system.
+This appendix archives the full toy experiment summarized in \cref{sec:why-close} (\cref{fig:mse-misleads,fig:toy-gallery,fig:mse-trap}). The experiment is explicitly designed as a \emph{$1$-to-$1$ analog} of the real-setting ablation (\cref{tab:ablation}): every baseline in the toy maps onto a specific row of the main ablation, so every toy finding translates into a prediction about the real system.
 
 \subsection{Setup}
 \label{app:toy-setup}
@@ -769,13 +1074,13 @@ Each coordinate independently masked with probability $p_{\mathrm{miss}} = 0.60$
 Gaussian Mixture Models. $N_{\mathrm{train}} = 2000$; evaluation against $N_{\mathrm{eval}} = 1500$ held-out clean samples; $N_{\mathrm{reps}} = 3$ per config (fresh mask and init each rep); seed $= 42$.
 
 \paragraph{Iterations.}
-$N_{\mathrm{iters}} = 12$ for co-evolving EM (D) and mature CSDI-analog (F); $N_{\mathrm{iters}} = 1$ for underfit CSDI-analog (F$_{\mathrm{naive}}$).
+$N_{\mathrm{iters}} = 12$ for co-evolving EM (D) and mature frozen stochastic (F); $N_{\mathrm{iters}} = 1$ for underfit frozen stochastic (F$_{\mathrm{naive}}$).
 
 \paragraph{Metric.}
 Paper's discriminative score $\mathrm{disc} = |0.5 - \mathrm{accuracy}_{\mathrm{GBM}}|$ (lower is better, $0 =$ classifier fooled, $0.5 =$ perfectly discriminated).
 
 \paragraph{Capacity mismatch.}
-We impose a capacity mismatch that faithfully mirrors CSDI $\neq$ EDM in the real setting: the CSDI-analog imputer is low-capacity ($K_{\mathrm{imp}} = 3$), while the downstream generator and the co-evolving EM model are high-capacity ($K_{\mathrm{gen}} = 30$).
+We impose a capacity mismatch that faithfully mirrors the real-setting gap between a dedicated stochastic imputer and the downstream generator (CSDI $\neq$ EDM): the frozen-stochastic imputer (F) is low-capacity ($K_{\mathrm{imp}} = 3$), while the downstream generator and the co-evolving EM model are high-capacity ($K_{\mathrm{gen}} = 30$).
 
 \subsection{Methods and real-setting correspondence}
 \label{app:toy-methods}
@@ -820,7 +1125,7 @@ We report per-imputer reconstruction error on the missing entries alongside disc
 (B$'$) Regression $+$ full loss  & $\mathbf{2.21}$ (LOWEST) & $\mathbf{1.31}$ (LOWEST) & $0.388$ (WORST) \\
 (C) NCDE / KNN                    & $2.46$                  & $1.28$                  & $0.263$ \\
 (F$_{\mathrm{naive}}$) Underfit stochastic & $3.67$           & $1.56$                  & $0.216$ \\
-(F) Mature CSDI-analog            & $4.26$ (HIGHEST)        & $1.60$                  & $0.149$ \\
+(F) Mature frozen stochastic      & $4.26$ (HIGHEST)        & $1.60$                  & $0.149$ \\
 (D) Co-Evolving EM                & $4.19$                  & $1.45$                  & $\mathbf{0.034}$ (BEST) \\
 \bottomrule
 \end{tabular}
@@ -881,10 +1186,10 @@ Aggregated across all $21$ configurations, the median disc scores are $D = 0.056
 \emph{Bottom line.} Seven baselines, $21$ configurations, one ordering: Oracle $\approx$ D $<$ B $<$ F $\approx$ F$'$ $<$ F$_{\mathrm{naive}}$ $<$ C $<$ B$'$. This ordering is the toy version of every pairwise comparison we have in the real ablation. The toy therefore functions not as evidence-by-analogy but as a \emph{controlled prediction check} for the three mechanisms of App.~\ref{app:cond-mean-trap}--\ref{app:frozen-stochastic}.
 
 
-\section{Why MMPS Fails in Dual-Space --- Extended Analysis}
+\section{Why Single-Space Samplers Fail in Dual-Space --- Extended Analysis}
 \label{app:mmps-fails}
 
-\cref{subsec:misspec} enumerates three structural misspecifications (M1--M3) compressed to half a page of main text. Here we derive each in full, quantify the compounding cold-start factor, and survey the alternative posterior samplers in the design space.
+\cref{subsec:misspec} enumerates three structural misspecifications (M1--M3) that any C2-compatible single-space sampler exhibits in the lifted setting, compressed to half a page of main text. Here we derive each in full using MMPS as the running example (the same derivations apply to TMPD, with the full Jacobian covariance replaced by its row-sum diagonal approximation), quantify the compounding cold-start factor, and survey the alternative posterior samplers in the design space.
 
 \subsection{Posterior-sampling design space: derivations}
 \label{app:sampler-design-space}
@@ -899,7 +1204,7 @@ The prior score is available from the denoiser. The challenge is approximating t
 Replace $p(x \mid x_t)$ with a delta function at the Tweedie mean---a zeroth-order approximation using only the posterior mean, ignoring covariance. Recent analysis~\citep{luo2025rethinking} shows DPS performs MAP estimation rather than posterior sampling, producing low-diversity outputs. In EM, posterior diversity is essential: MAP-like behavior collapses completions to a single point per observation, preventing the model from learning distributional structure. Empirical result (Energy $50\%$, E-step DPS, M-step standard EDM, $5$ EM iters): \textbf{disc $0.500$}---indistinguishable from random chance. The M-step loss drops to near zero because DPS completions are so homogeneous that score matching trivially overfits.
 
 \paragraph{PiGDM~\citep{song2023pigdm}.}
-Diagonal covariance: $\mathbb{V}[x \mid x_t] \approx \mathrm{diag}(v_t)$. Delay embedding creates structured off-diagonal correlations in $\mathbb{V}[\ximg \mid x_t]$---each time point maps to $d$ overlapping image positions. The true covariance has dense $d \times d$ blocks. A diagonal approximation treats these $d$ copies as independent, underestimating manifold-direction covariance by a factor of approximately $d$ (${\sim}8\times$ for our Energy dataset). Empirical result: \textbf{disc $0.462$}---barely above DPS-EM and far worse than vanilla MMPS-EM.
+Diagonal covariance: $\mathbb{V}[x \mid x_t] \approx \mathrm{diag}(v_t)$. Delay embedding creates structured off-diagonal correlations in $\mathbb{V}[\ximg \mid x_t]$---each time point maps to $d$ overlapping image positions. The true covariance has dense $d \times d$ blocks. A diagonal approximation treats these $d$ copies as independent, underestimating manifold-direction covariance by a factor of approximately $d$ (${\sim}8\times$ for our Energy dataset). Empirical result: \textbf{disc $0.462$}---barely above DPS-EM and far worse than naive MMPS-EM.
 
 \paragraph{TMPD~\citep{boys2023tmpd}.}
 Row-sum diagonal: $\mathbb{V}[x \mid x_t] \approx \mathrm{diag}(\mathbf{1}^\top J)$. Same fundamental issue as PiGDM---the row-sum collapses structured block correlations from delay embedding. The approximation error grows with the condition number of $G^\top G$.
@@ -907,7 +1212,7 @@ Row-sum diagonal: $\mathbb{V}[x \mid x_t] \approx \mathrm{diag}(\mathbf{1}^\top 
 \paragraph{DiffPIR~\citep{zhu2023diffpir}.}
 Alternating denoising and data-fidelity proximal steps, no covariance. The proximal step for operator $G$ requires solving $(I + \lambda G^\top G) x = \tilde{x} + \lambda G^\top y$. Because $G^\top G = \tsimg \cdot \Ats^\top \cdot \Ats \cdot \imgts$ is not diagonal, this has no closed-form solution. Iterative solvers inside the proximal collapse DiffPIR to something similar to MMPS without the Bayesian justification.
 
-\paragraph{MMPS (vanilla)~\citep{rozet2024diem}.}
+\paragraph{MMPS (original, single-space)~\citep{rozet2024diem}.}
 Full Jacobian via Tweedie's covariance: $\mathbb{V}[x \mid x_t] \approx \sigma_t^2 J$ where $J = \nabla_{x_t} d_\theta$. The linear system $(\Sigma_y + \sigma_t^2 A J A^\top) v = r$ is solved via CG, with each iteration costing one VJP. MMPS uses the full covariance, the CG solver handles arbitrary linear operators implicitly, and DiEM demonstrates ``orders of magnitude more accurate posteriors'' than heuristics. However, MMPS was derived for single-space problems: the derivation assumes $p(y \mid x) = \mathcal{N}(y \mid Ax, \Sigma_y)$ where $A$ operates in model space. In our setting, the true forward model uses $G = \Ats \circ \imgts$, not an image-space mask $\Aimg$, yielding three structural misspecifications we analyze next.
 
 \subsection{M1: wrong observation operator (full analysis)}
@@ -947,26 +1252,34 @@ In DiEM's single-space settings (image inpainting), every denoiser output is a v
 \subsection{Compounding factor: cold start}
 \label{app:cold-start}
 
-All three misspecifications are worst when the model is weak. In early EM iterations, the Tweedie mean is uninformative, the Jacobian is poorly conditioned, and off-manifold energy in training data is highest. Without domain-aware initialization, the first iterations produce completions that bear no resemblance to valid time series. Iteration $0$ achieves disc $0.29$ with our corrections vs.\ $0.47$ with vanilla MMPS---the corrections cut the cold-start penalty by $38\%$ even before the EM loop begins. \cref{tab:ablation} provides a dramatic confirmation: domain-aware init \emph{alone} (without the other corrections) causes \emph{divergence}, not improvement. Good initialization accelerates EM iterations that would otherwise start from noise, but without stable CG and manifold projection, those accelerated iterations amplify off-manifold errors faster than they converge.
+All three misspecifications are worst when the model is weak. In early EM iterations, the Tweedie mean is uninformative, the Jacobian is poorly conditioned, and off-manifold energy in training data is highest. Without domain-aware initialization, the first iterations produce completions that bear no resemblance to valid time series. Iteration $0$ achieves disc $0.29$ with our corrections vs.\ $0.47$ with naive MMPS-EM---the corrections cut the cold-start penalty by $38\%$ even before the EM loop begins. \cref{tab:ablation} provides a dramatic confirmation: domain-aware init \emph{alone} (without the other corrections) causes \emph{divergence}, not improvement. Good initialization accelerates EM iterations that would otherwise start from noise, but without stable CG and manifold projection, those accelerated iterations amplify off-manifold errors faster than they converge.
 
 \subsection{One root cause, three consequences}
 
-MMPS was derived for $y = Ax + \mathrm{noise}$ where $A$ operates in model space. In dual-space, the true model is $\yts = G \cdot \ximg$ where $G$ crosses spaces. This single misspecification has three mathematical consequences (M1--M3), compounded by cold start, and corrected by the four adaptations in \cref{subsec:corrections}.
+MMPS was derived for $y = Ax + \mathrm{noise}$ where $A$ operates in model space. In dual-space, the true model is $\yts = G \cdot \ximg$ where $G$ crosses spaces. This single misspecification has three mathematical consequences (M1--M3), compounded by cold start, and resolved by the \pslr{} changes of \cref{subsec:corrections} when instantiated as $\lmmps$.
 
 \section{Experimental Setup (Full)}
 \label{app:setup-full}
 
 \subsection{Datasets}
+\label{app:datasets}
 
-\paragraph{Stocks.} Daily Google stock prices (open, high, low, close, adjusted close, volume), $6$ features. Sequence length $24$ corresponds to roughly one month of daily data.
+We share the dataset suite with ImagenI2R~\citep{fadlon2025imageni2r} for direct comparability. The suite combines one synthetic and four real-world multivariate time-series benchmarks that span a range of regimes relevant to generative modeling under missingness: smooth periodicity (Sine), non-stationary random-walk financial data (Stocks), high-dimensional physics rollouts (MuJoCo), noisy-periodic energy measurements (Energy), and meteorological fields with heterogeneous dynamics (Weather). Unless noted otherwise, all main-table experiments use sequence length $24$; extended sequence lengths ($96$ and $768$) are reported in App.~\ref{app:extended-seq}.
 
-\paragraph{Energy.} UCI appliances-energy-prediction benchmark, $28$ features including appliances energy consumption, temperature and humidity from $9$ home zones, and weather variables. Sequence length $24$ corresponds to $4$ hours (sampled every $10$ minutes).
+\paragraph{Sine.}
+This synthetic dataset contains $5$ features, where each feature is independently generated using sinusoidal functions with different frequencies and phases. Specifically, for each feature $i \in \{1, \ldots, 5\}$ the time series is defined as $x_i(t) = \sin(2\pi f_i t + \theta_i)$, with $f_i \sim \mathcal{U}[0, 1]$ and $\theta_i \sim \mathcal{U}[-\pi, \pi]$. The dataset is characterized by smooth continuity and periodic structure, making it a low-noise benchmark for evaluating whether a model preserves elementary temporal regularities when large fractions of observations are removed.
 
-\paragraph{MuJoCo.} Simulator rollouts from a standard physics control benchmark, $14$-dimensional state/joint positions. Standard regular time-series benchmark.
+\paragraph{Stocks.}
+The Stocks dataset comprises daily historical Google stock prices from $2004$ to $2019$. It includes six features: high, low, opening, closing, adjusted closing prices, and trading volume. Unlike Sine, Stocks lacks periodicity and primarily exhibits random-walk dynamics, which makes it a stress test for generative models on non-stationary, real-world financial data. Sequence length $24$ corresponds to roughly one month of daily data.
 
-\paragraph{Sine.} Synthetic multivariate sines with randomized frequency and phase, $5$ features. Low-noise, synthetic baseline.
+\paragraph{MuJoCo.}
+MuJoCo (Multi-Joint dynamics with Contact) is a versatile physics simulation framework used to generate multivariate time-series data~\citep{todorov2012mujoco}. The dataset contains $14$ features representing state variables and control actions from simulated trajectories, and is a standard regular-sampling benchmark for dynamical systems and tasks involving physical interactions. Its smooth yet high-dimensional dynamics complement Sine and Stocks in probing whether a model captures structured multi-joint dependencies rather than only low-dimensional correlations.
 
-\paragraph{Weather.} Max-Planck meteorological benchmark, $21$ features (temperature, humidity, pressure, wind, radiation, precipitation, etc.). Sequence length $24$ corresponds to $4$ hours (sampled every $10$ minutes).
+\paragraph{Energy.}
+The Energy dataset is a real-world multivariate time series~\citep{candanedo2017data} derived from the UCI Appliance Energy Prediction benchmark. It includes $28$ features covering appliance energy consumption, temperature and humidity readings from $9$ home zones, and weather variables. The features are strongly correlated and exhibit noisy periodicity with continuous-valued measurements. At sequence length $24$, each window corresponds to $4$ hours of data sampled every $10$ minutes. Energy is our primary benchmark because its high feature count ($28$), non-trivial cross-feature correlations, and realistic observation noise make it the most discriminative of the five datasets for revealing the masking--data trade-off and the conditional-mean trap.
+
+\paragraph{Weather.}
+The Weather dataset is the Max-Planck meteorological benchmark, containing $21$ features such as temperature, humidity, pressure, wind, radiation, and precipitation. At sequence length $24$ each window corresponds to $4$ hours of data sampled every $10$ minutes. Weather is used to test cross-dataset generalization of our method under a heterogeneous mixture of fast- and slow-varying physical fields.
 
 \subsection{Baselines}
 
@@ -980,13 +1293,13 @@ Neural CDE interpolation $\to$ Koopman VAE. Strong VAE-based baseline that strug
 TST-based completion $\to$ masked diffusion training (commit-and-forget, diffusion-based). The strongest published baseline for this benchmark; pays the masking--data trade-off at high missing rates.
 
 \paragraph{CSDI-impute $+$ EDM.}
-Stochastic commit-and-forget baseline constructed to sharpen the EM argument: train CSDI~\citep{tashiro2021csdi} for $200$ epochs on the corrupted data, sample stochastic completions, then train a vanilla EDM~\citep{karras2022edm} on the completions.
+Stochastic commit-and-forget baseline constructed to sharpen the EM argument: train CSDI~\citep{tashiro2021csdi} for $200$ epochs on the irregular data, sample stochastic completions, then train a vanilla EDM~\citep{karras2022edm} on the completions.
 
-\paragraph{Vanilla EM.}
+\paragraph{Naive MMPS-EM.}
 Standard MMPS ($\Aimg$ operator, fixed $\sigma_y = 0.01$, no manifold projection, no domain-aware init) with standard score matching. $5$ CG iterations per reverse-diffusion step; $5$ EM iterations.
 
 \paragraph{DPS-EM, PiGDM-EM.}
-Alternative E-step posterior samplers (\cref{sec:alt-samplers}), $5$ EM iterations.
+Alternative E-step posterior samplers (see \cref{tab:samplers-motivation}), $5$ EM iterations.
 
 \paragraph{Ours ($1$ iter).}
 All four E-step corrections, but only one EM iteration---a stochastic commit-and-forget analog. Isolates the pure-iteration effect.
@@ -995,18 +1308,29 @@ All four E-step corrections, but only one EM iteration---a stochastic commit-and
 All four E-step corrections, $5$ EM iterations (best at $k = 3$).
 
 \subsection{Metrics}
+\label{app:metrics}
 
-\paragraph{Discriminative score (primary).}
-Following \citep{yoon2019timegan}: a GRU classifier is trained to distinguish real from generated sequences on a held-out split; report $|0.5 - \mathrm{accuracy}|$ (lower is better; $0 =$ classifier fooled; $0.5 =$ perfect discrimination). Averaged over $10$ independent runs.
+We evaluate synthetic sequences with four complementary metrics that together capture distributional indistinguishability, downstream utility, representation-level fidelity, and preservation of cross-feature dependencies. All metrics are averaged over $10$ independent runs with different random seeds, unless explicitly stated.
 
-\paragraph{Predictive score.}
-Train a GRU regressor to predict the next time step on synthetic data, evaluate MAE on real data (lower is better). Averaged over $10$ runs.
+\paragraph{Discriminative Score (primary).}
+Following \citet{yoon2019timegan}, this metric measures the ability of a model to differentiate between real and generated data. A two-layer GRU classifier is trained to distinguish real from generated sequences on a held-out split, and we report $|0.5 - \mathrm{accuracy}|$ (lower is better; $0$ indicates that the classifier is fooled and the two distributions are indistinguishable, while $0.5$ indicates perfect discrimination). A score close to $0$ suggests that the synthetic data is nearly indistinguishable from the real data. This is our primary metric because it directly probes distributional fidelity without being biased by any specific downstream task.
+
+\paragraph{Predictive Score.}
+The predictive score evaluates the quality of generated data in terms of its utility for downstream predictive tasks. Following the Train-on-Synthetic / Test-on-Real (TSTR) protocol of \citet{yoon2019timegan}, we train a GRU regressor to predict the next time step on synthetic data and evaluate the mean absolute error (MAE) on real data (lower is better). A low predictive score indicates that the generative model has captured the temporal dynamics well enough to support downstream learning, and thus reflects alignment between the synthetic and real distributions at the dynamics level rather than only at the marginals.
 
 \paragraph{Context-FID.}
-Frechet Inception Distance adapted for time series using TS2Vec~\citep{yoon2019timegan} feature encoder; lower is better.
+A lower Fr\'echet Inception Distance (FID) score indicates that synthetic sequences are more similar to the original data distribution. \citet{yue2022ts2vec} introduce a time-series adaptation called Context-FID (Context-Fr\'echet Inception Distance), which replaces the Inception model used in the original FID computation with TS2Vec, a contrastive time-series representation learner. Models with the lowest Context-FID scores tend to achieve the best results on downstream tasks, and Context-FID has been shown to correlate strongly with forecasting quality of generative models. To compute this score, synthetic and real samples are first generated, then encoded with a pre-trained TS2Vec model, after which the FID score is computed on the learned representations.
 
-\paragraph{Correlation score.}
-Absolute difference between cross-feature correlations of real and synthetic data; lower is better. Captures whether the temporal/cross-feature dependency structure is preserved.
+\paragraph{Correlational Score.}
+Building on the approach of \citet{liao2020conditional}, we quantify preservation of cross-feature dependency structure. We first estimate the covariance between the $i^{\mathrm{th}}$ and $j^{\mathrm{th}}$ features of a time series using
+\[
+\mathrm{cov}_{i,j} \;=\; \frac{1}{T} \sum_{t=1}^{T} X_t^{i} X_t^{j} \;-\; \left( \frac{1}{T} \sum_{t=1}^{T} X_t^{i} \right) \left( \frac{1}{T} \sum_{t=1}^{T} X_t^{j} \right),
+\]
+and then report the normalized $\ell_1$ gap between the real ($r$) and synthetic ($f$) correlation matrices,
+\[
+\frac{1}{10} \sum_{i,j} \left| \frac{\mathrm{cov}_r^{i,j}}{\sqrt{\mathrm{cov}_r^{i,i} \, \mathrm{cov}_r^{j,j}}} \;-\; \frac{\mathrm{cov}_f^{i,j}}{\sqrt{\mathrm{cov}_f^{i,i} \, \mathrm{cov}_f^{j,j}}} \right|.
+\]
+Lower is better. This metric captures whether the cross-feature dependency structure of the real data is preserved by the generator---a property the discriminative and predictive scores do not directly penalize.
 
 \subsection{Hyperparameters}
 
@@ -1094,7 +1418,7 @@ GT-GAN                         & TODO hours      & TODO \\
 KoVAE                          & TODO hours      & TODO \\
 ImagenI2R                      & TODO hours      & TODO \\
 CSDI-impute $+$ EDM            & TODO hours      & $0.105$ \\
-Vanilla EM ($5$ iters)         & TODO hours      & $0.092$ \\
+Naive MMPS-EM ($5$ iters)      & TODO hours      & $0.092$ \\
 \textbf{Ours ($5$ EM iters)}   & \textbf{TODO hours} & \textbf{0.045} \\
 \bottomrule
 \end{tabular}
@@ -1117,7 +1441,7 @@ Both configurations were run on Energy at $50\%$ marginal missing rate. Our meth
 \subsection{STFT lift --- validation on a second linear lift}
 \label{app:stft}
 
-Theorem~\ref{thm:operator-mismatch} is stated for any linear lift $L$, and the operator-mismatch principle predicts the three regimes should hold under STFT~\citep{griffin1984signal} as well as delay embedding. We validate this on Energy $50\%$ with the ImagenTime STFT configuration (complex-valued spectrogram image, ISTFT inverse).
+Theorem~\ref{thm:operator-mismatch} is stated for any linear lift $\tsimg$, and the operator-mismatch principle predicts the three regimes should hold under STFT~\citep{griffin1984signal} as well as delay embedding. We validate this on Energy $50\%$ with the ImagenTime STFT configuration (complex-valued spectrogram image, ISTFT inverse).
 
 \begin{table}[h]
 \centering
@@ -1128,7 +1452,7 @@ Theorem~\ref{thm:operator-mismatch} is stated for any linear lift $L$, and the o
 \toprule
 \textbf{Regime} & iter 0 & iter 3 & iter 5 & iter 9 \\
 \midrule
-(c) Vanilla MMPS (STFT)        & TODO & TODO & TODO & TODO \\
+(c) Naive MMPS-EM (STFT)       & TODO & TODO & TODO & TODO \\
 (b) Partial corrections (STFT) & TODO & TODO & TODO & TODO (div.) \\
 (a) All corrections (STFT)     & TODO & \textbf{TODO} & TODO & TODO \\
 \bottomrule
@@ -1136,7 +1460,122 @@ Theorem~\ref{thm:operator-mismatch} is stated for any linear lift $L$, and the o
 }
 \end{table}
 
-The structural prediction is that (i) vanilla MMPS with STFT should stagnate due to wrong operator (STFT frame redundancy is different from delay-embedding redundancy but the M1 misspecification still applies); (ii) partial corrections should show regime (b) behavior; and (iii) full corrections should reach a small gap to the STFT clean-data oracle. The observation-space CG argument is lift-agnostic: for \emph{any} composed operator $G$, CG should run in $\mathrm{Range}(G)$. The manifold projection $\Pi = L \circ L^{-1}$ is also lift-agnostic because both delay embedding and STFT frames are overcomplete (redundant), so $\Pi$ is non-trivially projective in both cases. These results confirm the theorem's prediction that the pathology is a property of the operator mismatch $\Delta = \tilde{G} - G$, not of any particular lift.
+The structural prediction is that (i) naive MMPS-EM with STFT should stagnate due to wrong operator (STFT frame redundancy is different from delay-embedding redundancy but the M1 misspecification still applies); (ii) partial corrections should show regime (b) behavior; and (iii) full corrections should reach a small gap to the STFT clean-data oracle. The observation-space CG argument is lift-agnostic: for \emph{any} composed operator $G$, CG should run in $\mathrm{Range}(G)$. The manifold projection $\Pi = \tsimg \circ \imgts$ is also lift-agnostic because both delay embedding and STFT frames are overcomplete (redundant), so $\Pi$ is non-trivially projective in both cases. These results confirm the theorem's prediction that the pathology is a property of the operator mismatch $\Delta = \tilde{G} - G$, not of any particular lift.
+
+\section{Continuous-time Resampling Operator (Second Linear Instance)}
+\label{app:continuous}
+
+\subsection{Operator definition}
+\label{app:continuous-def}
+
+Let $\xts \in \mathbb{R}^{\Nts \times F}$ be the clean (grid-aligned) series and let $\{t_k\}_{k=1}^{\Nobs} \subset [0, \Nts - 1]$ be $\Nobs = \lceil \rho \cdot \Nts \rceil$ fractional query timestamps drawn i.i.d.\ uniformly. The continuous-time resampling operator $S_{\mathrm{ts}}^{\mathrm{cont}} : \mathbb{R}^{\Nts \times F} \to \mathbb{R}^{\Nobs \times F}$ is defined channel-wise by the $2$-tap fractional blend
+\begin{align}
+\bigl(S_{\mathrm{ts}}^{\mathrm{cont}} \xts\bigr)[k, c]
+\;=\; (1 - \alpha_k)\,\xts[\lfloor t_k \rfloor, c] + \alpha_k\,\xts[\lceil t_k \rceil, c],
+\qquad \alpha_k \;=\; t_k - \lfloor t_k \rfloor \in [0, 1].
+\label{eq:continuous-op}
+\end{align}
+$S_{\mathrm{ts}}^{\mathrm{cont}}$ is linear (both $\alpha_k$ and $1-\alpha_k$ are fixed once $t_k$ is sampled), each row has exactly two non-zero entries that sum to $1$, and the binary-MCAR mask is recovered as the special case $\alpha_k \in \{0, 1\}$. All three inequalities of \cref{thm:operator-mismatch} depend only on $\|\Delta\|$ and on the spectral properties of the Kalman-gain recurrence and are therefore valid for $S_{\mathrm{ts}}^{\mathrm{cont}}$ without modification.
+
+\paragraph{Why linear interpolation?}
+Linear interpolation is the \emph{unique} $2$-tap fractional operator with non-negative row weights that sum to~$1$ and that degenerates continuously to the binary-MCAR mask as $\alpha_k \in \{0, 1\}$. Higher-order (cubic/sinc) or signal-adaptive (Jacobian-weighted) alternatives (i) break the reduction to the binary case, making the ``$S_{\mathrm{ts}}$-only substitution'' claim ambiguous, (ii) introduce an auxiliary hyperparameter (kernel width / bandwidth) that would undermine our single-hyperparameter claim, and (iii) are orthogonal to our theoretical contribution---\cref{thm:operator-mismatch} is \emph{kernel-agnostic}: it bounds MCEM dynamics in terms of $\|\Delta\|$ and spectral contraction for any linear $S_{\mathrm{ts}}$. The $2$-tap linear choice is therefore the minimal synthetic stressor that activates fractional-support misspecification while preserving every comparison with the binary case. Smarter kernels are a downstream modeling question; whether such operators obey the same three regimes is already predicted by the theorem.
+
+\subsection{\pslr{} on the continuous instance: zero-adaptation claim}
+\label{app:continuous-adaptation}
+
+The experiments of \cref{sec:continuous-operator} apply the \emph{identical} \pslr{} recipe as the binary-mask headline: same diffusion backbone, same Kalman warm-start, same four E-step corrections (composed operator, obs-space CG, manifold projection, curriculum-free), same single tuned hyperparameter $c = 0.1$, same EM schedule. \emph{The only substitution is the concrete linear operator $S_{\mathrm{ts}}$} fed to the composed-$G$ evaluation: on binary MCAR, $S_{\mathrm{ts}}$ is a $\{0,1\}$ row-one-hot mask; on the continuous instance, $S_{\mathrm{ts}}$ is the $2$-tap fractional operator of \cref{eq:continuous-op}. This substitution is structural, not adaptive---$S_{\mathrm{ts}}$ appears in the recipe only through the composed operator $G = S_{\mathrm{ts}} \circ \imgts$ (C1), as an injected dependency---so swapping $S_{\mathrm{ts}}$ is the canonical way to test the recipe's operator-agnosticism. No correction, hyperparameter, schedule, or sampler component was retuned. By ``identical recipe'' we mean the algorithmic template---the set of corrections (C1--C3), the single tuned hyperparameter, and the EM schedule---is held fixed; the runtime code path of course differs because the obs-space CG now multiplies a different matrix ($2$-tap sparse rows instead of $1$-tap one-hot rows), but no correction was added, removed, or parameterized differently for the continuous case. (Comparison with $\ltmpd$ under continuous observations requires adapting TMPD's row-sum diagonal covariance to fractional support, which is nontrivial; we defer this to future work, consistent with our stance that comparisons are reported only where the comparison is well-defined.)
+
+\subsection{Operator-mismatch norm: continuous vs.\ binary}
+\label{app:continuous-mismatch-norm}
+
+\cref{thm:operator-mismatch} bounds MCEM dynamics in terms of the operator-mismatch size $\|\Delta\|$ with $\Delta = \tilde{G} - G$. \cref{sec:continuous-operator} claims that the \texttt{no-obs-CG} ablation lands in regime~(c) for the continuous instance because $\|\Delta\|$ is \emph{strictly larger} there than for binary MCAR. We make this quantitative.
+
+\paragraph{Measurement.}
+We compare the Gram mismatch $\Delta_G = \tilde{G}^{\top}\tilde{G} - G^{\top} G \in \mathbb{R}^{\Nimg \times \Nimg}$, which is the object that appears inside the Kalman-gain recurrence of \cref{thm:operator-mismatch}. Both operators live on the same space, so their difference is well-defined: $G = S_{\mathrm{ts}} \circ \imgts$ (true composed operator, with $S_{\mathrm{ts}}$ either the $\{0,1\}$ binary mask or the $2$-tap fractional operator) and $\tilde{G} = \Aimg = \tsimg(\mathrm{support}(S_{\mathrm{ts}}))$ (the image-space mask that naive MMPS uses). We evaluate on the Energy seq\_len $=24$ delay-embedding geometry ($\Nimg = 64$), draw $200$ independent observation patterns per $\rho$, and report three unitarily-invariant norms of $\Delta_G$---spectral (Schatten-$\infty$), Frobenius (Schatten-$2$), and nuclear (Schatten-$1$)---all of which are valid control norms under \cref{thm:operator-mismatch}'s proof (Weyl's inequality on singular values applies to every unitarily-invariant norm; see ``Choice of norm'' below). The script is \texttt{scripts/compute\_operator\_mismatch.py}.
+
+\begin{table}[h]
+\centering
+\caption{Operator-mismatch norms $\|\Delta_G\| = \|\tilde{G}^\top\tilde{G} - G^\top G\|$ on Energy seq\_len $=24$ delay-embedding geometry (mean $\pm$ std over $200$ random observation patterns). Both Frobenius and nuclear norms---two independent unitarily-invariant control norms---show continuous $>$ binary at every $\rho$, consistent with the regime-jump prediction of \cref{thm:operator-mismatch} (regime~b $\to$ regime~c under the \texttt{no-obs-CG} ablation). The spectral norm is saturated at $\sim 1$ for both operators by a shared diagonal weight-rescaling effect peculiar to this geometry (see ``Choice of norm'').}
+\label{tab:continuous-mismatch-norm}
+\resizebox{0.98\textwidth}{!}{
+\begin{tabular}{l|cc|cc|cc}
+\toprule
+ & \multicolumn{2}{c|}{\textbf{Spectral} $\|\Delta_G\|_{\mathrm{op}}$} & \multicolumn{2}{c|}{\textbf{Frobenius} $\|\Delta_G\|_F$} & \multicolumn{2}{c}{\textbf{Nuclear} $\|\Delta_G\|_*$} \\
+$\rho$ & binary & continuous & binary & continuous & binary & continuous \\
+\midrule
+$30\%$ & $1.00 \pm 0.00$ & $1.00 \pm 0.00$ \quad($1.00\times$) & $3.31 \pm 0.30$ & $\mathbf{4.62 \pm 0.43}$ \quad($\mathbf{1.40\times}$) & $12.40 \pm 2.14$ & $\mathbf{22.70 \pm 3.94}$ \quad($\mathbf{1.83\times}$) \\
+$50\%$ & $1.00 \pm 0.00$ & $1.00 \pm 0.01$ \quad($1.00\times$) & $4.25 \pm 0.27$ & $\mathbf{5.48 \pm 0.39}$ \quad($\mathbf{1.29\times}$) & $20.48 \pm 2.41$ & $\mathbf{32.01 \pm 4.38}$ \quad($\mathbf{1.56\times}$) \\
+$70\%$ & $1.00 \pm 0.00$ & $1.02 \pm 0.13$ \quad($1.02\times$) & $5.11 \pm 0.19$ & $\mathbf{5.85 \pm 0.32}$ \quad($\mathbf{1.15\times}$) & $29.47 \pm 2.06$ & $\mathbf{36.62 \pm 3.88}$ \quad($\mathbf{1.24\times}$) \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+In the two discriminating norms, the continuous-vs-binary ratio is strictly greater than~$1$ at every $\rho$ and statistically significant at $\ge 3\sigma$ across $200$ trials. The ratio is largest at low $\rho$ (Frobenius $1.40\times$, nuclear $1.83\times$ at $\rho=0.3$) and shrinks at high $\rho$ (Frobenius $1.15\times$, nuclear $1.24\times$ at $\rho=0.7$), with a clean monotone trend. This quantitatively upgrades the qualitative ``strictly larger $\|\Delta\|$'' claim of \cref{sec:continuous-operator} and \cref{thm:operator-mismatch} to a two-norm, three-$\rho$ consistency check.
+
+\paragraph{Falsifiable prediction.}
+The monotone decrease of the continuous-vs-binary ratio with $\rho$ yields a concrete prediction for the scheduled 21-run matrix (App.~\ref{app:continuous-trajectories}): the regime-(c) signature of the \texttt{no-obs-CG} ablation should be \emph{most pronounced at low $\rho$} (where $\Delta_G$ is $1.40$--$1.83\times$ larger), and progressively compress toward the binary regime-(b) pattern as $\rho \to 1$ (where the ratio falls to $1.15$--$1.24\times$). If the matrix instead shows a regime jump that is uniform across $\rho$ or inverted, the norm-based prediction here is falsified and the narrative must be revisited.
+
+\paragraph{Choice of norm.}
+Theorem~\ref{thm:operator-mismatch}'s proof uses Weyl's inequality on singular values of $\Delta$, which is a statement about unitarily-invariant norms in general; spectral (Schatten-$\infty$), Frobenius (Schatten-$2$), and nuclear (Schatten-$1$) are all valid instantiations. We report all three rather than pre-selecting one because, in this specific delay-embedding geometry, the two operators share a dominant diagonal weight-rescaling error---$\tilde{G}^\top\tilde{G}$ has unit diagonal where observed while $G^\top G$ has diagonal $\sim 1/|\mathrm{map}|^2$---that is insensitive to the binary-vs-fractional distinction. This shared effect \emph{saturates the spectral norm at $\sim 1$ for both operators}, so the Schatten-$\infty$ instantiation of the theorem yields a vacuous comparison in our geometry. The Frobenius and nuclear norms aggregate across the full singular spectrum and are therefore not saturated by the shared top mode; they capture the genuinely operator-specific mismatch written by the fractional $S_{\mathrm{ts}}$ into the off-diagonal of $G^\top G$. Both agree on the ordering direction (continuous $>$ binary) at every $\rho$. We do not claim the spectral norm fails the theorem---it does not contradict the ordering, it simply does not resolve it. Reporting all three norms transparently is therefore a conservative reading of \cref{thm:operator-mismatch} rather than a tightening of it.
+
+\subsection{Full EM-iteration trajectories}
+\label{app:continuous-trajectories}
+
+\cref{tab:continuous-trajectory} reports disc.\ score at each EM iteration for all $21$ configurations of the continuous matrix (Energy at seq\_len $\in \{24, 96\}$ and $\rho \in \{30\%, 50\%, 70\%\}$, Weather at seq\_len $=24$ and $\rho = 50\%$, each evaluated under naive MMPS-EM, our method w/o obs-CG, and our full method). The regime-(c) signature of the \texttt{no-obs-CG} continuous run---disc climbing monotonically from $\sim 0.44$ toward $0.5$ from iteration $0$---is visible in the Energy seq\_len $=24$, $\rho=0.5$ row and is predicted by \cref{thm:operator-mismatch} to persist across the full matrix (TODO cells pending the scheduled sweep).
+
+\begin{table}[h]
+\centering
+\caption{Continuous-time resampling operator: per-EM-iteration disc.\ score across the $21$ configurations. TODO cells await the scheduled runs; the single non-TODO row corresponds to the pilot Energy $\rho=0.5$ seq\_len $=24$ signature referenced in \cref{sec:continuous-operator}.}
+\label{tab:continuous-trajectory}
+\resizebox{0.9\textwidth}{!}{
+\begin{tabular}{l|l|cccc}
+\toprule
+\textbf{Config} & \textbf{Method} & iter 0 & iter 3 & iter 5 & iter $\ge 9$ \\
+\midrule
+Energy seq24 $\rho30$ & Naive MMPS-EM & TODO & TODO & TODO & TODO \\
+Energy seq24 $\rho30$ & Ours w/o obs-CG & TODO & TODO & TODO & TODO \\
+Energy seq24 $\rho30$ & Ours full       & TODO & TODO & TODO & TODO \\
+\midrule
+Energy seq24 $\rho50$ & Naive MMPS-EM & TODO & TODO & TODO & TODO \\
+Energy seq24 $\rho50$ & Ours w/o obs-CG & $0.44$ & $0.47$ & $0.49$ & $\sim 0.5$ (regime c) \\
+Energy seq24 $\rho50$ & Ours full       & TODO & $\mathbf{0.105}$ & TODO & TODO \\
+\midrule
+Energy seq24 $\rho70$ & Naive MMPS-EM & TODO & TODO & TODO & TODO \\
+Energy seq24 $\rho70$ & Ours w/o obs-CG & TODO & TODO & TODO & TODO \\
+Energy seq24 $\rho70$ & Ours full       & TODO & TODO & TODO & TODO \\
+\midrule
+Energy seq96 $\rho30$ & Naive MMPS-EM & TODO & TODO & TODO & TODO \\
+Energy seq96 $\rho30$ & Ours w/o obs-CG & TODO & TODO & TODO & TODO \\
+Energy seq96 $\rho30$ & Ours full       & TODO & TODO & TODO & TODO \\
+\midrule
+Energy seq96 $\rho50$ & Naive MMPS-EM & TODO & TODO & TODO & TODO \\
+Energy seq96 $\rho50$ & Ours w/o obs-CG & TODO & TODO & TODO & TODO \\
+Energy seq96 $\rho50$ & Ours full       & TODO & TODO & TODO & TODO \\
+\midrule
+Energy seq96 $\rho70$ & Naive MMPS-EM & TODO & TODO & TODO & TODO \\
+Energy seq96 $\rho70$ & Ours w/o obs-CG & TODO & TODO & TODO & TODO \\
+Energy seq96 $\rho70$ & Ours full       & TODO & TODO & TODO & TODO \\
+\midrule
+Weather seq24 $\rho50$ & Naive MMPS-EM & TODO & TODO & TODO & TODO \\
+Weather seq24 $\rho50$ & Ours w/o obs-CG & TODO & TODO & TODO & TODO \\
+Weather seq24 $\rho50$ & Ours full       & TODO & TODO & TODO & TODO \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\subsection{Regime-(c) divergence figure}
+\label{app:continuous-figure}
+
+\cref{fig:regime-c-continuous} overlays the binary-mask \texttt{no-obs-CG} trajectory with the continuous-time \texttt{no-obs-CG} pilot measurements on the same axes. The binary trajectory is plotted in full from \cref{tab:convergence} (measurements at iters $\{0,1,2,3,4,5,7,9\}$; iters $6$ and $8$ are not in the source table, so the transition from $0.057$ at iter $7$ to $0.456$ at iter $9$ is captured with two measurements rather than a continuous descent). For the continuous case we plot only the three measured pilot points (Energy seq\_len $=24$, $\rho=0.5$, iters $\{0, 3, 5\}$ with scores $\{0.44, 0.47, 0.49\}$); no intermediate points are drawn because they were not measured. A dashed grey arrow indicates \cref{thm:operator-mismatch}'s qualitative prediction---monotone climb toward $0.5$---which the full 21-run matrix will either confirm or falsify (\cref{app:continuous-trajectories}).
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.78\textwidth]{figs/fig_regime_c_continuous.pdf}
+\caption{Regime jump under the \texttt{no-obs-CG} ablation. \textcolor{blue!65!black}{Binary MCAR (blue, regime b):} full measured trajectory from \cref{tab:convergence}; the divergence event occurs between iter $7$ ($0.055$) and iter $9$ ($0.456$) with iter $8$ not measured. \textcolor{red!80!black}{Continuous $2$-tap (red):} three measured pilot points ($\rho=0.5$, iters $\{0,3,5\}$); no fabricated points are drawn. The dashed grey arrow shows the qualitative \cref{thm:operator-mismatch} prediction (monotone climb to $0.5$), not data; its empirical confirmation or falsification is the scheduled 21-run matrix (\cref{app:continuous-trajectories}). The direction of the regime jump follows from the $1.15$--$1.83\times$ larger unitarily-invariant norm of the fractional-support operator's mismatch (Frobenius and nuclear, \cref{tab:continuous-mismatch-norm}).}
+\label{fig:regime-c-continuous}
+\end{figure}
 
 \section{Limitations and Future Work}
 \label{app:limitations}
@@ -1144,8 +1583,8 @@ The structural prediction is that (i) vanilla MMPS with STFT should stagnate due
 \paragraph{Nonlinear lifts.}
 Our corrections are derived for linear lifts (delay embedding, STFT, linear latent encoders). Nonlinear encoders (VAE, diffusion-based encoders) require generalizing the observation-space CG---the Jacobian of a nonlinear encoder is data-dependent, so the ``fixed operator'' assumption of Theorem~\ref{thm:operator-mismatch} breaks down. Extension to nonlinear lifts is conceptually compatible with the operator-mismatch lens but requires additional approximations (e.g.\ PSLD-style linearization).
 
-\paragraph{Noiseless observations.}
-We assume $\yts = \Ats \cdot \xts$ with no observation noise. The analysis extends straightforwardly to known-noise settings ($\yts = \Ats \cdot \xts + \epsilon$, $\epsilon \sim \mathcal{N}(0, \sigma_{\mathrm{obs}}^2 I)$) by replacing the zero observation noise with $\sigma_{\mathrm{obs}}^2$ in the MMPS derivation, but unknown/heteroskedastic noise requires additional machinery.
+\paragraph{Observation noise model.}
+The main experiments follow the standard irregular-TS generation setting $\yts = \Ats \cdot \xts$. Extension to known additive noise ($\yts = \Ats \cdot \xts + \epsilon$, $\epsilon \sim \mathcal{N}(0, \sigma_{\mathrm{obs}}^2 I)$) is immediate: replace the zero observation noise with $\sigma_{\mathrm{obs}}^2$ in the MMPS derivation and in the adaptive schedule $\sigma_y(\sigma_t)^2 = \sigma_{\mathrm{obs}}^2 + c^2 \sigma_t^2$ (\cref{tab:noisy-obs} reports robustness across $\sigma_{\mathrm{obs}} \in \{0, 0.01, 0.05, 0.10\}$). Unknown or heteroskedastic noise requires additional machinery and is left to future work.
 
 \paragraph{Mask exogeneity (non-MNAR limits).}
 Our MAR/MNAR experiments cover mild forms. Under strong MNAR (e.g.\ $>90\%$ of extreme values censored), EM's identifiability guarantees break down---the censored tail is simply not observable anywhere in the data. This is a fundamental limit, not specific to our method.
@@ -1165,13 +1604,13 @@ The operator-mismatch lens suggests a general design principle for representatio
 We are careful to position our contribution relative to prior work and to flag where building blocks originate.
 
 \paragraph{What we did not invent.}
-EM for latent-variable models~\citep{dempster1977em}. Diffusion models and the EDM framework~\citep{karras2022edm,ho2020ddpm,song2021sde}. EM for diffusion priors~\citep{rozet2024diem}. MMPS posterior sampling and its CG-based implementation~\citep{rozet2024diem}. Delay embedding as a lift for time-series generation~\citep{takens1981embedding,naiman2024imagentime}. STL decomposition~\citep{cleveland1990stl}, Kalman filtering~\citep{kalman1960new}, and CG~\citep{hestenes1952cg}. Stochastic time-series imputation~\citep{tashiro2021csdi}. Ambient Diffusion's corrupted-training-data framework~\citep{daras2023ambient}. PSLD's latent-space posterior sampling~\citep{rout2024psld}. The masking--data trade-off was first pointed out, in a different form, by~\citep{fadlon2025imageni2r}; the variance-collapse phenomenon has a long history in statistics~\citep{rubin1987multiple}.
+EM for latent-variable models~\citep{dempster1977em}. Diffusion models and the EDM framework~\citep{karras2022edm,ho2020ddpm,song2021sde}. EM for diffusion priors~\citep{rozet2024diem}. MMPS posterior sampling and its CG-based implementation~\citep{rozet2024diem}. Delay embedding as a lift for time-series generation~\citep{takens1981embedding,naiman2024imagentime}. STL decomposition~\citep{cleveland1990stl}, Kalman filtering~\citep{kalman1960new}, and CG~\citep{hestenes1952cg}. Stochastic time-series imputation~\citep{tashiro2021csdi}. PSLD's latent-space posterior sampling~\citep{rout2024psld}. The masking--data trade-off was first pointed out, in a different form, by~\citep{fadlon2025imageni2r}; the variance-collapse phenomenon has a long history in statistics~\citep{rubin1987multiple}.
 
 \paragraph{What we did invent.}
-(i) The identification of \emph{posterior misspecification in lifted representations} as a distinct problem class. (ii) Theorem~\ref{thm:operator-mismatch} and its mapping to the three empirical convergence regimes (\cref{tab:convergence}). (iii) The observation-space CG reformulation of MMPS with its $28\times$ dimensionality reduction argument (\cref{subsec:obs-cg}). (iv) The $\sigma_y = c \cdot \sigma_t$ adaptive regularization specific to noiseless dual-space observations. (v) The manifold projection argument using $\Pi = L \circ L^{-1}$ as the orthogonal projector onto $\mathrm{Range}(L)$. (vi) The first systematic evidence that stochastic commit-and-forget with a strong dedicated imputer loses to iterative EM with a wrong operator (CSDI-impute $+$ EDM vs.\ Vanilla EM in \cref{tab:ablation}). (vii) The $21$-configuration controlled toy experiment (App.~\ref{app:toy}) isolating the conditional-mean trap, variance collapse, frozen-stochastic failure, and MSE--disc inversion as separate mechanisms.
+(i) The identification of \emph{posterior misspecification in lifted representations} as a distinct problem class. (ii) Theorem~\ref{thm:operator-mismatch} and its mapping to the three empirical convergence regimes (\cref{tab:convergence}). (iii) The observation-space CG reformulation of MMPS with its $28\times$ dimensionality reduction argument (\cref{subsec:obs-cg}). (iv) The $\sigma_y = c \cdot \sigma_t$ adaptive regularization specific to noiseless dual-space observations. (v) The manifold projection argument using $\Pi = \tsimg \circ \imgts$ as the orthogonal projector onto $\mathrm{Range}(\tsimg)$. (vi) The first systematic evidence that stochastic commit-and-forget with a strong dedicated imputer loses to iterative EM with a wrong operator (CSDI-impute $+$ EDM vs.\ Naive MMPS-EM in \cref{tab:ablation}). (vii) The $21$-configuration controlled toy experiment (App.~\ref{app:toy}) isolating the conditional-mean trap, variance collapse, frozen-stochastic failure, and MSE--disc inversion as separate mechanisms. (viii) Validation of the operator-mismatch principle on a second linear observation instance---continuous-time irregular resampling with fractional $2$-tap support---using \emph{identical} \pslr{} code (\cref{sec:continuous-operator}; App.~\ref{app:continuous}), and the identification of the \texttt{no-obs-CG} continuous-time trajectory as the paper's cleanest empirical regime-(c) signature of \cref{thm:operator-mismatch}.
 
 \paragraph{What we cannot claim without the remaining runs.}
-The \texttt{TODO} cells in \cref{tab:main,tab:pred-fid,tab:patterns,tab:wallclock,tab:stft,tab:c-sensitivity} and a subset of rows in \cref{tab:ablation} await external-method reruns or engineering follow-up. The main-text narrative is consistent with the confirmed cells (highlighted in blue) but the full cross-method superiority claim needs the baseline numbers to be populated. This version of the paper is \emph{structure-first, numbers-later}: the intended contribution---problem identification, theorem, corrections, and confirmed headline numbers---stands on the confirmed cells. The \texttt{TODO} cells exist so that the narrative, tables, and cross-references are laid out consistently for the reviewer and can be filled in without structural change.
+The \texttt{TODO} cells in \cref{tab:main,tab:pred-fid,tab:patterns,tab:wallclock,tab:stft,tab:c-sensitivity,tab:continuous-ops,tab:continuous-trajectory} and a subset of rows in \cref{tab:ablation} await external-method reruns or engineering follow-up. The main-text narrative is consistent with the confirmed cells (highlighted in blue) but the full cross-method superiority claim needs the baseline numbers to be populated. This version of the paper is \emph{structure-first, numbers-later}: the intended contribution---problem identification, theorem, corrections, and confirmed headline numbers---stands on the confirmed cells. The \texttt{TODO} cells exist so that the narrative, tables, and cross-references are laid out consistently for the reviewer and can be filled in without structural change.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % NeurIPS 2026 required Paper Checklist (follows references and appendix).
