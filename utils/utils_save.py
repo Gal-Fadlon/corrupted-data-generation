@@ -171,14 +171,18 @@ def _build_checkpoint(args, uncond_model, optimizer, em_iter, best_metrics, extr
         'rng_torch_cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
     }
 
-    # EMA weights (inference) and raw weights (resume)
+    # EMA weights (inference) and raw weights (resume).
+    # Use uncond_model.net.state_dict() when present (TS2img_Karras-style models);
+    # otherwise fall back to uncond_model.state_dict() so plain nn.Module baselines
+    # (e.g., kovae's VK) also work.
+    state_target = uncond_model.net if hasattr(uncond_model, 'net') else uncond_model
     ema_net = None
     if hasattr(uncond_model, 'ema_scope'):
         with uncond_model.ema_scope():
-            ema_net = {k: v.detach().cpu().clone() for k, v in uncond_model.net.state_dict().items()}
+            ema_net = {k: v.detach().cpu().clone() for k, v in state_target.state_dict().items()}
     if ema_net is not None:
         ckpt['net_ema'] = ema_net
-    ckpt['net_raw'] = {k: v.detach().cpu().clone() for k, v in uncond_model.net.state_dict().items()}
+    ckpt['net_raw'] = {k: v.detach().cpu().clone() for k, v in state_target.state_dict().items()}
 
     # Embedder stats (best-effort STFT min/max cache capture)
     for attr in ('stft_min', 'stft_max'):

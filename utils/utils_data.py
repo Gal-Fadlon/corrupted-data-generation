@@ -294,13 +294,20 @@ def real_data_loading(data_name, seq_len, missing_rate, gaussian_noise_level=0, 
     # Preprocess the data
     irregular_dataset = np.concatenate((irregular_dataset, index), axis=1)
     irregular_temp_data = []
+    # Need per-window copies for block patterns (below) because `_apply_block_missing_to_window`
+    # writes NaNs in-place, and numpy slices are VIEWS — without .copy() the first window's
+    # NaN would propagate through the underlying array into overlapping later windows,
+    # eventually poisoning almost the entire dataset.
+    must_copy = apply_missing and missing_type in ('block_start', 'block_end', 'block_random')
     # Cut data by sequence length
     for i in range(0, len(irregular_dataset) - seq_len):
         _x = irregular_dataset[i:i + seq_len]
+        if must_copy:
+            _x = _x.copy()
         irregular_temp_data.append(_x)
 
     # Apply block patterns PER WINDOW (after slicing)
-    if apply_missing and missing_type in ('block_start', 'block_end', 'block_random'):
+    if must_copy:
         block_size = int(missing_rate * seq_len)
         block_rng = np.random.RandomState(56789)
         for w in irregular_temp_data:

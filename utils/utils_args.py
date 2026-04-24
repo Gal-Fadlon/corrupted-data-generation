@@ -107,6 +107,22 @@ def parse_args_irregular():
                         help='timestep fraction [0,1] to compute noise level from diffusion schedule. '
                              'If set, overrides gaussian_noise_level. 0=max noise (sigma_max), 1=min noise (sigma_min)')
     parser.add_argument('--new_metrics', type=int, default=1, help='save model')
+
+    # --- imputation comparison experiment (experiments/imputation_comparison.py) ---
+    parser.add_argument('--impute_method', type=str, default='tst',
+                        choices=['tst', 'ncde', 'our', 'csdi'],
+                        help='Which imputer to use in the imputation_comparison experiment.')
+    parser.add_argument('--impute_epochs', type=int, default=200,
+                        help='Number of epochs to train TST/NCDE imputers from scratch for the experiment.')
+    parser.add_argument('--impute_results_dir', type=str,
+                        default='/cs/azencot_fsas/gal_and_idan/corrupted-data-generation/experiments/imputation_results',
+                        help='Where to drop per-run JSON results for imputation_comparison. '
+                             'Defaults to a shared path writable by both galfad and korals.')
+    parser.add_argument('--ncde_spline_cache_dir', type=str,
+                        default='/cs/azencot_fsas/gal_and_idan/corrupted-data-generation/metrics/NCDE_splines',
+                        help='Cache dir for cubic spline coefficients used by the NCDE imputer. '
+                             'Set "" to disable and recompute every run.')
+
     parser.add_argument('--ts2vec_cache_dir', type=str,
                         default='/cs/azencot_fsas/gal_and_idan/corrupted-data-generation/metrics/TS2Vec',
                         help='Root dir for cached TS2Vec encoders used by context-FID. '

@@ -40,6 +40,7 @@ from models.sampler import DiffusionProcess
 from utils.train_unconditional import train_unconditional_regular
 from utils.utils_stl import initialize_with_iterative_stl, initialize_with_kalman
 from utils.utils_save import maybe_save_if_improved
+from utils.gpu_heartbeat import start_gpu_heartbeat, stop_gpu_heartbeat
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -647,6 +648,7 @@ def m_step(args, uncond_model, optimizer, reconstructions,
 
 def m_step_bootstrap(args, uncond_model, optimizer, reconstructions, em_iter, device, logger=None):
     """L_SM-only M-step for the warm-start bootstrap (Section 5.1)."""
+    stop_gpu_heartbeat()
     print(f"\n=== Bootstrap M-Step (EM iter {em_iter}) — L_SM only ===")
     print(f"  Training for {args.m_step_epochs} epochs...")
 
@@ -767,6 +769,10 @@ def main(args):
 
     logging.info(args)
 
+    # Start GPU heartbeat BEFORE any long CPU-bound init (Kalman/STL warm-start,
+    # spline computation, etc.) so the cluster's idle-GPU monitor doesn't kill us.
+    start_gpu_heartbeat()
+
     with CompositeLogger([WandbLogger()]) if args.wandb else PrintLogger() as logger:
         log_config_and_tags(args, logger, name)
 
@@ -838,6 +844,7 @@ def main(args):
             initial_reconstructions = initialize_with_iterative_stl(
                 corrupted_data, obs_masks, seed=args.seed,
                 n_iters=getattr(args, 'stl_n_iters', 5),
+                period=getattr(args, 'stl_period', None),
             )
 
         init_seconds = time.time() - init_start_time

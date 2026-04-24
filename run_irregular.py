@@ -11,12 +11,12 @@ from tqdm import tqdm
 from itertools import chain
 
 from metrics import evaluate_model_irregular
-from metrics.memorization import compute_memorization_metric
 from utils.loggers import WandbLogger, PrintLogger, CompositeLogger
 from utils.utils import restore_state, create_model_name_and_dir, print_model_params, log_config_and_tags
 from utils.utils_data import gen_dataloader
 from utils.utils_args import parse_args_irregular
 from utils.utils_save import maybe_save_if_improved
+from utils.gpu_heartbeat import start_gpu_heartbeat, stop_gpu_heartbeat
 from models.our import TS2img_Karras
 from models.sampler import DiffusionProcess
 from models.decoder import TST_Decoder
@@ -102,6 +102,10 @@ def main(args):
 
     # log args
     logging.info(args)
+
+    # Start GPU heartbeat BEFORE any CPU-heavy init (TST pretraining data prep etc.)
+    # so the cluster's idle-GPU monitor doesn't kill us during long CPU phases.
+    start_gpu_heartbeat()
 
     # set-up logger
     with CompositeLogger([WandbLogger()]) if args.wandb else PrintLogger() as logger:
@@ -217,6 +221,7 @@ def main(args):
         best_disc_epoch = None
         cum_at_best_seconds = None
 
+        stop_gpu_heartbeat()
         for epoch in range(init_epoch, args.epochs):
             print("Starting epoch %d." % (epoch,))
             epoch_train_start = time.time()
@@ -314,35 +319,6 @@ def main(args):
                         'tst_optimizer': optimizer_er.state_dict(),
                     },
                 )
-
-                # --- Memorization Check ---
-                # We use a subset of real data to match the generated size if needed, or full real data
-                # real_sig is already available here as a numpy array
-                mem_plot_path = f"memorization_hist_epoch_{epoch}.png"
-                mem_stats = compute_memorization_metric(
-                    real_data=real_sig,
-                    generated_data=gen_sig,
-                    device=args.device,
-                    plot_path=mem_plot_path
-                )
-
-                # Log memorization stats
-                for k, v in mem_stats.items():
-                    logger.log(f'test/memorization/{k}', v, epoch)
-
-                upload_successful = False
-                try:
-                    logger.log_file('test/memorization/histogram', mem_plot_path, epoch)
-                    upload_successful = True
-                except Exception as e:
-                    print(f"Failed to upload memorization plot: {e}")
-
-                if upload_successful:
-                    try:
-                        if os.path.exists(mem_plot_path):
-                            os.remove(mem_plot_path)
-                    except Exception as e:
-                        print(f"Failed to delete temporary plot file {mem_plot_path}: {e}")
 
         # --- Convergence summary (time/epochs to best disc) ---
         if cum_at_best_seconds is not None:
