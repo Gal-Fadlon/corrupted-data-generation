@@ -371,15 +371,27 @@ class DualSpaceMMPS:
 # Helper functions
 # =============================================================================
 
-def get_corrupted_data_from_loader(train_loader, device):
-    """Extract corrupted time series (with NaNs) from the train loader."""
+def get_corrupted_data_from_loader(train_loader, device, cell_level_mask=False):
+    """Extract corrupted time series (with NaNs) from the train loader.
+
+    If cell_level_mask=False (default — bit-identical legacy behavior), returns a
+    row-level mask of shape (N, T) where mask[n, t] is False iff ANY feature at
+    that timestep is NaN.
+
+    If cell_level_mask=True, returns a per-cell mask of shape (N, T, F) — needed
+    for the cell_random missing pattern where individual features can be NaN
+    while others at the same timestep are observed.
+    """
     all_corrupted = []
     all_masks = []
 
     for batch_idx, data in enumerate(train_loader):
         x_irregular = data[0]
         x_ts = x_irregular[:, :, :-1]
-        mask = ~torch.isnan(x_ts).any(dim=-1)
+        if cell_level_mask:
+            mask = ~torch.isnan(x_ts)                # (B, T, F) cell-level
+        else:
+            mask = ~torch.isnan(x_ts).any(dim=-1)    # (B, T) row-level (legacy)
 
         all_corrupted.append(x_ts.numpy())
         all_masks.append(mask.numpy())
@@ -461,11 +473,18 @@ def e_step(args, uncond_model, corrupted_data, obs_masks, em_iter, device, logge
 
             x_obs_img = uncond_model.ts_to_img(obs_ts)
 
-            mask_ts_expanded = mask_ts.unsqueeze(-1).expand(-1, -1, corrupted_ts.shape[-1])
-            mask_img = uncond_model.ts_to_img(mask_ts_expanded)
-            mask_img = mask_img[:, :1, :, :]
-
-            mask_ts_proj = mask_ts.unsqueeze(-1).expand(-1, -1, corrupted_ts.shape[-1])
+            if mask_ts.dim() == 3:
+                # Cell-level mask: shape (B, T, F). Already per-feature; do NOT collapse to a
+                # single image channel because the mask varies across features.
+                mask_ts_expanded = mask_ts
+                mask_img = uncond_model.ts_to_img(mask_ts_expanded)
+                mask_ts_proj = mask_ts
+            else:
+                # Row-level mask: shape (B, T). Replicate across features (legacy behavior).
+                mask_ts_expanded = mask_ts.unsqueeze(-1).expand(-1, -1, corrupted_ts.shape[-1])
+                mask_img = uncond_model.ts_to_img(mask_ts_expanded)
+                mask_img = mask_img[:, :1, :, :]
+                mask_ts_proj = mask_ts.unsqueeze(-1).expand(-1, -1, corrupted_ts.shape[-1])
 
             x_img_imputed = process.sampling_mmps(
                 x_obs_img, mask_img,
@@ -590,7 +609,12 @@ def m_step(args, uncond_model, optimizer, reconstructions,
             # --- L_obs: Section 5.6, observation grounding across dual-space boundary ---
             if lambda_obs > 0:
                 denoised_ts = uncond_model.img_to_ts(denoised)
-                obs_residual = mask_ts_batch.unsqueeze(-1) * (denoised_ts - y_ts_batch)
+                if mask_ts_batch.dim() == 3:
+                    # Cell-level mask: already (B, T, F).
+                    obs_residual = mask_ts_batch * (denoised_ts - y_ts_batch)
+                else:
+                    # Row-level mask: (B, T) — broadcast across features (legacy behavior).
+                    obs_residual = mask_ts_batch.unsqueeze(-1) * (denoised_ts - y_ts_batch)
                 loss_obs_per_sample = (obs_residual ** 2).mean(dim=(-1, -2))
                 loss_obs = (snr_gate_obs * loss_obs_per_sample).mean()
             else:
@@ -791,7 +815,10 @@ def main(args):
 
         # === Extract corrupted data ===
         print("Extracting corrupted data from train loader...")
-        corrupted_data, obs_masks = get_corrupted_data_from_loader(train_loader, args.device)
+        corrupted_data, obs_masks = get_corrupted_data_from_loader(
+            train_loader, args.device,
+            cell_level_mask=(getattr(args, 'missing_type', 'fix_missing_rates') == 'cell_random'),
+        )
         print(f"  {len(corrupted_data)} sequences, "
               f"{obs_masks.sum() / obs_masks.size * 100:.1f}% observed")
 

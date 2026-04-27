@@ -1,0 +1,8 @@
+sbatch sbatch_our_block_start_etth1 && \
+sbatch sbatch_our_block_start_etth2 && \
+sbatch sbatch_our_block_start_ettm1 && \
+sbatch sbatch_our_block_start_ettm2 && \
+sbatch sbatch_our_block_start_energy && \
+sbatch sbatch_our_block_start_weather && \
+
+sbatch sbatch_our_block_start_electricity && \

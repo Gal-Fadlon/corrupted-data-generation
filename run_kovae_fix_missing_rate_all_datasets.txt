@@ -1,0 +1,9 @@
+sbatch sbatch_kovae_fix_missing_rate_etth1 && \
+sbatch sbatch_kovae_fix_missing_rate_etth2 && \
+sbatch sbatch_kovae_fix_missing_rate_ettm1 && \
+sbatch sbatch_kovae_fix_missing_rate_ettm2 && \
+sbatch sbatch_kovae_fix_missing_rate_energy && \
+sbatch sbatch_kovae_fix_missing_rate_stock && \
+sbatch sbatch_kovae_fix_missing_rate_weather && \
+sbatch sbatch_kovae_fix_missing_rate_mujoco && \
+sbatch sbatch_kovae_fix_missing_rate_sine

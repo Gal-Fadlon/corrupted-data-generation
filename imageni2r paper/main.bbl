@@ -1,0 +1,314 @@
+\begin{thebibliography}{10}
+
+\bibitem{allen1977short}
+J.~Allen.
+\newblock Short term spectral analysis, synthesis, and modification by discrete {Fourier} transform.
+\newblock {\em IEEE transactions on acoustics, speech, and signal processing}, 25(3):235--238, 1977.
+
+\bibitem{allen1977unified}
+J.~B. Allen and L.~R. Rabiner.
+\newblock A unified approach to short-time {Fourier} analysis and synthesis.
+\newblock {\em Proceedings of the IEEE}, 65(11):1558--1564, 1977.
+
+\bibitem{berman2025towards}
+N.~Berman, O.~Joglekar, E.~Kosman, D.~Di~Castro, and O.~Azencot.
+\newblock Towards general modality translation with contrastive and predictive latent diﬀusion bridge.
+\newblock In {\em Advances in Neural Information Processing Systems (NeurIPS) 39}, 2025.
+
+\bibitem{berman2025reviving}
+N.~Berman, E.~Kosman, D.~D. Castro, and O.~Azencot.
+\newblock Reviving life on the edge: Joint score-based graph generation of rich edge attributes.
+\newblock {\em Trans. Mach. Learn. Res.}, 2025.
+
+\bibitem{berman2025one}
+N.~Berman, I.~Naiman, M.~Eliasof, H.~Zisling, and O.~Azencot.
+\newblock One-step offline distillation of diffusion-based models via {Koopman} modeling.
+\newblock In {\em Advances in Neural Information Processing Systems (NeurIPS) 39}, 2025.
+
+\bibitem{brophy2023generative}
+E.~Brophy, Z.~Wang, Q.~She, and T.~Ward.
+\newblock Generative adversarial networks in time series: A systematic literature review.
+\newblock {\em ACM Computing Surveys}, 55(10):1--31, 2023.
+
+\bibitem{brophy2019quick}
+E.~Brophy, Z.~Wang, and T.~E. Ward.
+\newblock Quick and easy time series generation with established image-based {GAN}s.
+\newblock {\em arXiv preprint arXiv:1902.05624}, 2019.
+
+\bibitem{candanedo2017data}
+L.~M. Candanedo, V.~Feldheim, and D.~Deramaix.
+\newblock Data driven prediction models of energy use of appliances in a low-energy house.
+\newblock {\em Energy and buildings}, 140:81--97, 2017.
+
+\bibitem{chen2023contiformer}
+Y.~Chen, K.~Ren, Y.~Wang, Y.~Fang, W.~Sun, and D.~Li.
+\newblock {ContiFormer}: Continuous-time transformer for irregular time series modeling.
+\newblock {\em Advances in Neural Information Processing Systems}, 37, 2023.
+
+\bibitem{chen2022resgrad}
+Z.~Chen, Y.~Wu, Y.~Leng, J.~Chen, H.~Liu, X.~Tan, Y.~Cui, K.~Wang, L.~He, S.~Zhao, J.~Bian, and D.~P. Mandic.
+\newblock {ResGrad}: Residual denoising diffusion probabilistic models for text to speech.
+\newblock {\em arXiv preprint arXiv:2212.14518}, 2022.
+
+\bibitem{coletta2023constrained}
+A.~Coletta, S.~Gopalakrishnan, D.~Borrajo, and S.~Vyetrenko.
+\newblock On the constrained time-series generation problem.
+\newblock {\em Advances in Neural Information Processing Systems}, 37, 2023.
+
+\bibitem{corneanu2024latentpaint}
+C.~Corneanu, R.~Gadde, and A.~M. Martinez.
+\newblock {LatentPaint}: Image inpainting in latent space with diffusion models.
+\newblock In {\em Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision}, pages 4334--4343, 2024.
+
+\bibitem{desai2021timevae}
+A.~Desai, C.~Freeman, Z.~Wang, and I.~Beaver.
+\newblock {TimeVAE}: A variational auto-encoder for multivariate time series generation.
+\newblock {\em arXiv preprint arXiv:2111.08095}, 2021.
+
+\bibitem{dhariwal2021diffusion}
+P.~Dhariwal and A.~Nichol.
+\newblock Diffusion models beat {GANs} on image synthesis.
+\newblock {\em Advances in neural information processing systems}, 34:8780--8794, 2021.
+
+\bibitem{flandrin2004empirical}
+P.~Flandrin, G.~Rilling, and P.~Goncalves.
+\newblock Empirical mode decomposition as a filter bank.
+\newblock {\em IEEE signal processing letters}, 11(2):112--114, 2004.
+
+\bibitem{gonen2025time}
+T.~Gonen, I.~Pemper, I.~Naiman, N.~Berman, and O.~Azencot.
+\newblock Time series generation under data scarcity: A unified generative modeling approach.
+\newblock In {\em Advances in Neural Information Processing Systems (NeurIPS) 39}, 2025.
+
+\bibitem{goodfellow2014generative}
+I.~J. Goodfellow, J.~Pouget{-}Abadie, M.~Mirza, B.~Xu, D.~Warde{-}Farley, S.~Ozair, A.~C. Courville, and Y.~Bengio.
+\newblock Generative adversarial nets.
+\newblock In {\em Advances in Neural Information Processing Systems 27}, pages 2672--2680, 2014.
+
+\bibitem{han2019review}
+Z.~Han, J.~Zhao, H.~Leung, K.~F. Ma, and W.~Wang.
+\newblock A review of deep learning models for time series prediction.
+\newblock {\em IEEE Sensors Journal}, 21(6):7833--7848, 2019.
+
+\bibitem{hatami2018classification}
+N.~Hatami, Y.~Gavet, and J.~Debayle.
+\newblock Classification of time-series images using deep convolutional neural networks.
+\newblock In {\em Tenth international conference on machine vision (ICMV 2017)}, volume 10696, pages 242--249. SPIE, 2018.
+
+\bibitem{hellermann2021leveraging}
+J.~Hellermann and S.~Lessmann.
+\newblock Leveraging image-based generative adversarial networks for time series generation.
+\newblock {\em arXiv preprint arXiv:2112.08060}, 2021.
+
+\bibitem{ho2020denoising}
+J.~Ho, A.~Jain, and P.~Abbeel.
+\newblock Denoising diffusion probabilistic models.
+\newblock {\em Advances in neural information processing systems}, 33:6840--6851, 2020.
+
+\bibitem{ho2022video}
+J.~Ho, T.~Salimans, A.~Gritsenko, W.~Chan, M.~Norouzi, and D.~J. Fleet.
+\newblock Video diffusion models.
+\newblock {\em Advances in Neural Information Processing Systems}, 35:8633--8646, 2022.
+
+\bibitem{metro_interstate_traffic_volume_492}
+J.~Hogue.
+\newblock {Metro Interstate Traffic Volume}.
+\newblock UCI Machine Learning Repository, 2019.
+\newblock {DOI}: https://doi.org/10.24432/C5X60B.
+
+\bibitem{ismail2019deep}
+H.~Ismail~Fawaz, G.~Forestier, J.~Weber, L.~Idoumghar, and P.-A. Muller.
+\newblock Deep learning for time series classification: a review.
+\newblock {\em Data mining and knowledge discovery}, 33(4):917--963, 2019.
+
+\bibitem{jeha2022psa}
+P.~Jeha, M.~Bohlke-Schneider, P.~Mercado, S.~Kapoor, R.~S. Nirwan, V.~Flunkert, J.~Gasthaus, and T.~Januschowski.
+\newblock {PSA-GAN}: Progressive self attention {GANs} for synthetic time series.
+\newblock In {\em The Tenth International Conference on Learning Representations}, 2022.
+
+\bibitem{jeon2022gt}
+J.~Jeon, J.~Kim, H.~Song, S.~Cho, and N.~Park.
+\newblock {GT-GAN}: General purpose time series synthesis with generative adversarial networks.
+\newblock {\em Advances in Neural Information Processing Systems}, 35:36999--37010, 2022.
+
+\bibitem{karras2022elucidating}
+T.~Karras, M.~Aittala, T.~Aila, and S.~Laine.
+\newblock Elucidating the design space of diffusion-based generative models.
+\newblock {\em Advances in neural information processing systems}, 35:26565--26577, 2022.
+
+\bibitem{kidger2020neural}
+P.~Kidger, J.~Morrill, J.~Foster, and T.~Lyons.
+\newblock Neural controlled differential equations for irregular time series.
+\newblock {\em Advances in Neural Information Processing Systems}, 33:6696--6707, 2020.
+
+\bibitem{kingma2014auto}
+D.~P. Kingma and M.~Welling.
+\newblock Auto-encoding variational {Bayes}.
+\newblock In {\em 2nd International Conference on Learning Representations, {ICLR}}, 2014.
+
+\bibitem{kreuk2023audiogen}
+F.~Kreuk, G.~Synnaeve, A.~Polyak, U.~Singer, A.~D{\'{e}}fossez, J.~Copet, D.~Parikh, Y.~Taigman, and Y.~Adi.
+\newblock {AudioGen}: Textually guided audio generation.
+\newblock In {\em The Eleventh International Conference on Learning Representations, {ICLR}}, 2023.
+
+\bibitem{li2022tts}
+X.~Li, V.~Metsis, H.~Wang, and A.~H.~H. Ngu.
+\newblock {TTS-GAN}: A transformer-based time-series generative adversarial network.
+\newblock In {\em International conference on artificial intelligence in medicine}, pages 133--143. Springer, 2022.
+
+\bibitem{li2024time}
+Z.~Li, S.~Li, and X.~Yan.
+\newblock Time series as images: Vision transformer for irregularly sampled time series.
+\newblock {\em Advances in Neural Information Processing Systems}, 36, 2023.
+
+\bibitem{liao2020conditional}
+S.~Liao, H.~Ni, L.~Szpruch, M.~Wiese, M.~Sabate-Vidales, and B.~Xiao.
+\newblock Conditional {Sig-Wasserstein GANs} for time series generation.
+\newblock {\em arXiv preprint arXiv:2006.05421}, 2020.
+
+\bibitem{lim2021time}
+B.~Lim and S.~Zohren.
+\newblock Time-series forecasting with deep learning: a survey.
+\newblock {\em Philosophical Transactions of the Royal Society A}, 379(2194):20200209, 2021.
+
+\bibitem{lipman2023flow}
+Y.~Lipman, R.~T.~Q. Chen, H.~Ben{-}Hamu, M.~Nickel, and M.~Le.
+\newblock Flow matching for generative modeling.
+\newblock In {\em The Eleventh International Conference on Learning Representations, {ICLR}}, 2023.
+
+\bibitem{liu2023audioldm}
+H.~Liu, Z.~Chen, Y.~Yuan, X.~Mei, X.~Liu, D.~Mandic, W.~Wang, and M.~D. Plumbley.
+\newblock {A}udio{LDM}: Text-to-audio generation with latent diffusion models.
+\newblock In {\em Proceedings of the 40th International Conference on Machine Learning}, volume 202 of {\em Proceedings of Machine Learning Research}, pages 21450--21474. PMLR, 23--29 Jul 2023.
+
+\bibitem{lugmayr2022repaint}
+A.~Lugmayr, M.~Danelljan, A.~Romero, F.~Yu, R.~Timofte, and L.~Van~Gool.
+\newblock Repaint: Inpainting using denoising diffusion probabilistic models.
+\newblock In {\em Proceedings of the IEEE/CVF conference on computer vision and pattern recognition}, pages 11461--11471, 2022.
+
+\bibitem{naiman2024utilizing}
+I.~Naiman, N.~Berman, I.~Pemper, I.~Arbiv, G.~Fadlon, and O.~Azencot.
+\newblock Utilizing image transforms and diffusion models for generative modeling of short and long time series.
+\newblock {\em Advances in Neural Information Processing Systems}, 38, 2024.
+
+\bibitem{naiman2024generative}
+I.~Naiman, N.~B. Erichson, P.~Ren, M.~W. Mahoney, and O.~Azencot.
+\newblock Generative modeling of regular and irregular time series data via {Koopman VAEs}.
+\newblock In {\em The Twelfth International Conference on Learning Representations, {ICLR}}, 2024.
+
+\bibitem{nochumsohn2025data}
+L.~Nochumsohn and O.~Azencot.
+\newblock Data augmentation policy search for long-term forecasting.
+\newblock {\em Trans. Mach. Learn. Res.}, 2025.
+
+\bibitem{peebles2023scalable}
+W.~Peebles and S.~Xie.
+\newblock Scalable diffusion models with transformers.
+\newblock In {\em Proceedings of the IEEE/CVF International Conference on Computer Vision}, pages 4195--4205, 2023.
+
+\bibitem{popov2021grad}
+V.~Popov, I.~Vovk, V.~Gogoryan, T.~Sadekova, and M.~Kudinov.
+\newblock {Grad-TTS}: A diffusion probabilistic model for text-to-speech.
+\newblock In {\em International Conference on Machine Learning}, pages 8599--8608. PMLR, 2021.
+
+\bibitem{rasul2021autoregressive}
+K.~Rasul, C.~Seward, I.~Schuster, and R.~Vollgraf.
+\newblock Autoregressive denoising diffusion models for multivariate probabilistic time series forecasting.
+\newblock In {\em International Conference on Machine Learning}, pages 8857--8868. PMLR, 2021.
+
+\bibitem{ren2024learning}
+P.~Ren, R.~Nakata, M.~Lacour, I.~Naiman, N.~Nakata, J.~Song, Z.~Bi, O.~A. Malik, D.~Morozov, O.~Azencot, et~al.
+\newblock Learning physics for unveiling hidden earthquake ground motions via conditional generative modeling.
+\newblock {\em arXiv preprint arXiv:2407.15089}, 2024.
+
+\bibitem{rombach2022high}
+R.~Rombach, A.~Blattmann, D.~Lorenz, P.~Esser, and B.~Ommer.
+\newblock High-resolution image synthesis with latent diffusion models.
+\newblock In {\em Proceedings of the IEEE/CVF conference on computer vision and pattern recognition}, pages 10684--10695, 2022.
+
+\bibitem{rubanova2019latent}
+Y.~Rubanova, R.~T. Chen, and D.~K. Duvenaud.
+\newblock Latent ordinary differential equations for irregularly-sampled time series.
+\newblock {\em Advances in neural information processing systems}, 32, 2019.
+
+\bibitem{schirmer2022modeling}
+M.~Schirmer, M.~Eltayeb, S.~Lessmann, and M.~Rudolph.
+\newblock Modeling irregular time series with continuous recurrent units.
+\newblock In {\em International conference on machine learning}, pages 19388--19405. PMLR, 2022.
+
+\bibitem{sikder2023transfusion}
+M.~F. Sikder, R.~Ramachandranpillai, and F.~Heintz.
+\newblock Transfusion: Generating long, high fidelity time series using diffusion models with transformers.
+\newblock {\em arXiv preprint arXiv:2307.12667}, 2023.
+
+\bibitem{sohl2015deep}
+J.~Sohl-Dickstein, E.~Weiss, N.~Maheswaranathan, and S.~Ganguli.
+\newblock Deep unsupervised learning using nonequilibrium thermodynamics.
+\newblock In {\em International conference on machine learning}, pages 2256--2265. PMLR, 2015.
+
+\bibitem{song2021score}
+Y.~Song, J.~Sohl{-}Dickstein, D.~P. Kingma, A.~Kumar, S.~Ermon, and B.~Poole.
+\newblock Score-based generative modeling through stochastic differential equations.
+\newblock In {\em 9th International Conference on Learning Representations, {ICLR}}, 2021.
+
+\bibitem{suh2024timeautodiff}
+N.~Suh, Y.~Yang, D.-Y. Hsieh, Q.~Luan, S.~Xu, S.~Zhu, and G.~Cheng.
+\newblock {TimeAutoDiff}: Combining autoencoder and diffusion model for time series tabular data synthesizing.
+\newblock {\em arXiv preprint arXiv:2406.16028}, 2024.
+
+\bibitem{takens2006detecting}
+F.~Takens.
+\newblock Detecting strange attractors in turbulence.
+\newblock In {\em Dynamical Systems and Turbulence, Warwick 1980: proceedings of a symposium held at the University of Warwick 1979/80}, pages 366--381. Springer, 2006.
+
+\bibitem{tashiro2021csdi}
+Y.~Tashiro, J.~Song, Y.~Song, and S.~Ermon.
+\newblock {CSDI}: Conditional score-based diffusion models for probabilistic time series imputation.
+\newblock {\em Advances in Neural Information Processing Systems}, 34:24804--24816, 2021.
+
+\bibitem{todorov2012mujoco}
+E.~Todorov, T.~Erez, and Y.~Tassa.
+\newblock {MuJoCo}: A physics engine for model-based control.
+\newblock In {\em 2012 IEEE/RSJ international conference on intelligent robots and systems}, pages 5026--5033. IEEE, 2012.
+
+\bibitem{van2008visualizing}
+L.~Van~der Maaten and G.~Hinton.
+\newblock Visualizing data using {t-SNE}.
+\newblock {\em Journal of machine learning research}, 9(11), 2008.
+
+\bibitem{vetterli1992wavelets}
+M.~Vetterli and C.~Herley.
+\newblock Wavelets and filter banks: Theory and design.
+\newblock {\em IEEE transactions on signal processing}, 40(9):2207--2232, 1992.
+
+\bibitem{wang2015imaging}
+Z.~Wang and T.~Oates.
+\newblock Imaging time-series to improve classification and imputation.
+\newblock In {\em Proceedings of the Twenty-Fourth International Joint Conference on Artificial Intelligence, {IJCAI}}, pages 3939--3945. {AAAI} Press, 2015.
+
+\bibitem{yoon2019time}
+J.~Yoon, D.~Jarrett, and M.~Van~der Schaar.
+\newblock Time-series generative adversarial networks.
+\newblock {\em Advances in neural information processing systems}, 32, 2019.
+
+\bibitem{yuan2024diffusion}
+X.~Yuan and Y.~Qiao.
+\newblock {Diffusion-TS}: Interpretable diffusion for general time series generation.
+\newblock In {\em The Twelfth International Conference on Learning Representations, {ICLR}}, 2024.
+
+\bibitem{yue2022ts2vec}
+Z.~Yue, Y.~Wang, J.~Duan, T.~Yang, C.~Huang, Y.~Tong, and B.~Xu.
+\newblock {TS2Vec}: Towards universal representation of time series.
+\newblock In {\em Proceedings of the AAAI Conference on Artificial Intelligence}, volume~36, pages 8980--8987, 2022.
+
+\bibitem{zerveas2021transformer}
+G.~Zerveas, S.~Jayaraman, D.~Patel, A.~Bhamidipaty, and C.~Eickhoff.
+\newblock A transformer-based framework for multivariate time series representation learning.
+\newblock In {\em Proceedings of the 27th ACM SIGKDD conference on knowledge discovery \& data mining}, pages 2114--2124, 2021.
+
+\bibitem{zhou2021informer}
+H.~Zhou, S.~Zhang, J.~Peng, S.~Zhang, J.~Li, H.~Xiong, and W.~Zhang.
+\newblock Informer: Beyond efficient transformer for long sequence time-series forecasting.
+\newblock In {\em Proceedings of the AAAI conference on artificial intelligence}, volume~35, pages 11106--11115, 2021.
+
+\end{thebibliography}

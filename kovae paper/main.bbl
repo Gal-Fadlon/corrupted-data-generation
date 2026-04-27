@@ -1,0 +1,379 @@
+\begin{thebibliography}{74}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Alaa et~al.(2020)Alaa, Chan, and van~der Schaar]{alaa2020generative}
+Ahmed Alaa, Alex~James Chan, and Mihaela van~der Schaar.
+\newblock Generative time-series modeling with {F}ourier flows.
+\newblock In \emph{International Conference on Learning Representations}, 2020.
+
+\bibitem[Ang et~al.(2023)Ang, Huang, Bao, Tung, and Huang]{ang2023tsgbench}
+Yihao Ang, Qiang Huang, Yifan Bao, Anthony~KH Tung, and Zhiyong Huang.
+\newblock {TSGBench}: time series generation benchmark.
+\newblock \emph{arXiv preprint arXiv:2309.03755}, 2023.
+
+\bibitem[Arbabi \& Mezic(2017)Arbabi and Mezic]{arbabi2017ergodic}
+Hassan Arbabi and Igor Mezic.
+\newblock Ergodic theory, dynamic mode decomposition, and computation of spectral properties of the {Koopman} operator.
+\newblock \emph{SIAM Journal on Applied Dynamical Systems}, 16\penalty0 (4):\penalty0 2096--2126, 2017.
+
+\bibitem[Azencot et~al.(2013)Azencot, Ben-Chen, Chazal, and Ovsjanikov]{azencot2013operator}
+Omri Azencot, Mirela Ben-Chen, Fr{\'e}d{\'e}ric Chazal, and Maks Ovsjanikov.
+\newblock An operator approach to tangent vector field processing.
+\newblock In \emph{Computer Graphics Forum}, volume~32, pp.\  73--82. Wiley Online Library, 2013.
+
+\bibitem[Azencot et~al.(2014)Azencot, Wei{\ss}mann, Ovsjanikov, Wardetzky, and Ben-Chen]{azencot2014functional}
+Omri Azencot, Steffen Wei{\ss}mann, Maks Ovsjanikov, Max Wardetzky, and Mirela Ben-Chen.
+\newblock Functional fluids on surfaces.
+\newblock In \emph{Computer Graphics Forum}, volume~33, pp.\  237--246. Wiley Online Library, 2014.
+
+\bibitem[Azencot et~al.(2019)Azencot, Yin, and Bertozzi]{azencot2019consistent}
+Omri Azencot, Wotao Yin, and Andrea Bertozzi.
+\newblock Consistent dynamic mode decomposition.
+\newblock \emph{SIAM Journal on Applied Dynamical Systems}, 18\penalty0 (3):\penalty0 1565--1585, 2019.
+
+\bibitem[Azencot et~al.(2020)Azencot, Erichson, Lin, and Mahoney]{azencot2020forecasting}
+Omri Azencot, N~Benjamin Erichson, Vanessa Lin, and Michael Mahoney.
+\newblock Forecasting sequential data using consistent {K}oopman autoencoders.
+\newblock In \emph{International Conference on Machine Learning}, pp.\  475--485. PMLR, 2020.
+
+\bibitem[Berman et~al.(2023)Berman, Naiman, and Azencot]{berman2023multifactor}
+Nimrod Berman, Ilan Naiman, and Omri Azencot.
+\newblock Multifactor sequential disentanglement via structured {K}oopman autoencoders.
+\newblock In \emph{The Eleventh International Conference on Learning Representations, {ICLR}}, 2023.
+
+\bibitem[Brown et~al.(2020)Brown, Mann, Ryder, Subbiah, Kaplan, Dhariwal, Neelakantan, Shyam, Sastry, Askell, et~al.]{brown2020language}
+Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared~D Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et~al.
+\newblock Language models are few-shot learners.
+\newblock \emph{Advances in neural information processing systems}, 33:\penalty0 1877--1901, 2020.
+
+\bibitem[Brunton et~al.(2021)Brunton, Budi{\v{s}}i{\'c}, Kaiser, and Kutz]{brunton2021modern}
+Steven~L Brunton, Marko Budi{\v{s}}i{\'c}, Eurika Kaiser, and J~Nathan Kutz.
+\newblock Modern {K}oopman theory for dynamical systems.
+\newblock \emph{{SIAM} Rev.}, 2021.
+
+\bibitem[Budi{\v{s}}i{\'c} et~al.(2012)Budi{\v{s}}i{\'c}, Mohr, and Mezi{\'c}]{budivsic2012applied}
+Marko Budi{\v{s}}i{\'c}, Ryan Mohr, and Igor Mezi{\'c}.
+\newblock Applied koopmanism.
+\newblock \emph{Chaos: An Interdisciplinary Journal of Nonlinear Science}, 22\penalty0 (4), 2012.
+
+\bibitem[Candanedo(2017)]{misc_appliances_energy_prediction_374}
+Luis Candanedo.
+\newblock {Appliances energy prediction}.
+\newblock UCI Machine Learning Repository, 2017.
+
+\bibitem[Che et~al.(2018)Che, Purushotham, Cho, Sontag, and Liu]{che2018recurrent}
+Zhengping Che, Sanjay Purushotham, Kyunghyun Cho, David Sontag, and Yan Liu.
+\newblock Recurrent neural networks for multivariate time series with missing values.
+\newblock \emph{Scientific reports}, 8\penalty0 (1):\penalty0 6085, 2018.
+
+\bibitem[Chen et~al.(2018)Chen, Rubanova, Bettencourt, and Duvenaud]{chen2018neural}
+Ricky~TQ Chen, Yulia Rubanova, Jesse Bettencourt, and David~K Duvenaud.
+\newblock Neural ordinary differential equations.
+\newblock \emph{Advances in neural information processing systems}, 31, 2018.
+
+\bibitem[Cho et~al.(2014)Cho, van Merrienboer, G{\"{u}}l{\c{c}}ehre, Bahdanau, Bougares, Schwenk, and Bengio]{cho2014learning}
+Kyunghyun Cho, Bart van Merrienboer, {\c{C}}aglar G{\"{u}}l{\c{c}}ehre, Dzmitry Bahdanau, Fethi Bougares, Holger Schwenk, and Yoshua Bengio.
+\newblock Learning phrase representations using {RNN} encoder-decoder for statistical machine translation.
+\newblock In \emph{Proceedings of the 2014 Conference on Empirical Methods in Natural Language Processing, {EMNLP}}, pp.\  1724--1734. {ACL}, 2014.
+
+\bibitem[Chung et~al.(2015)Chung, Kastner, Dinh, Goel, Courville, and Bengio]{chung2015recurrent}
+Junyoung Chung, Kyle Kastner, Laurent Dinh, Kratarth Goel, Aaron~C Courville, and Yoshua Bengio.
+\newblock A recurrent latent variable model for sequential data.
+\newblock \emph{Advances in neural information processing systems}, 28, 2015.
+
+\bibitem[Coletta et~al.(2023)Coletta, Gopalakrishan, Borrajo, and Vyetrenko]{coletta2023constrained}
+Andrea Coletta, Sriram Gopalakrishan, Daniel Borrajo, and Svitlana Vyetrenko.
+\newblock On the constrained time-series generation problem.
+\newblock \emph{arXiv preprint arXiv:2307.01717}, 2023.
+
+\bibitem[Das \& Giannakis(2019)Das and Giannakis]{das2019delay}
+Suddhasattwa Das and Dimitrios Giannakis.
+\newblock Delay-coordinate maps and the spectra of {Koopman} operators.
+\newblock \emph{Journal of Statistical Physics}, 175\penalty0 (6):\penalty0 1107--1145, 2019.
+
+\bibitem[Desai et~al.(2021)Desai, Freeman, Wang, and Beaver]{desai2021timevae}
+Abhyuday Desai, Cynthia Freeman, Zuhui Wang, and Ian Beaver.
+\newblock {TimeVAE}: a variational auto-encoder for multivariate time series generation.
+\newblock \emph{arXiv preprint arXiv:2111.08095}, 2021.
+
+\bibitem[Doersch(2016)]{doersch2016tutorial}
+Carl Doersch.
+\newblock Tutorial on variational autoencoders.
+\newblock \emph{arXiv preprint arXiv:1606.05908}, 2016.
+
+\bibitem[Dogra \& Redman(2020)Dogra and Redman]{dogra2020optimizing}
+Akshunna~S Dogra and William Redman.
+\newblock Optimizing neural networks via {K}oopman operator theory.
+\newblock \emph{Advances in Neural Information Processing Systems}, 33:\penalty0 2087--2097, 2020.
+
+\bibitem[Donahue et~al.(2019)Donahue, McAuley, and Puckette]{donahue2018adversarial}
+Chris Donahue, Julian McAuley, and Miller Puckette.
+\newblock Adversarial audio synthesis.
+\newblock In \emph{International Conference on Learning Representations}, 2019.
+
+\bibitem[Eisner et~al.(2015)Eisner, Farkas, Haase, and Nagel]{eisner2015operator}
+Tanja Eisner, B{\'a}lint Farkas, Markus Haase, and Rainer Nagel.
+\newblock \emph{Operator theoretic aspects of ergodic theory}, volume 272.
+\newblock Springer, 2015.
+
+\bibitem[Erichson et~al.(2019)Erichson, Muehlebach, and Mahoney]{erichson2019physics}
+N~Benjamin Erichson, Michael Muehlebach, and Michael~W Mahoney.
+\newblock Physics-informed autoencoders for {L}yapunov-stable fluid flow prediction.
+\newblock \emph{arXiv preprint arXiv:1905.10866}, 2019.
+
+\bibitem[Esteban et~al.(2017)Esteban, Hyland, and R{\"a}tsch]{esteban2017real}
+Crist{\'o}bal Esteban, Stephanie~L Hyland, and Gunnar R{\"a}tsch.
+\newblock Real-valued (medical) time series generation with recurrent conditional {GAN}s.
+\newblock \emph{arXiv preprint arXiv:1706.02633}, 2017.
+
+\bibitem[Girin et~al.(2021)Girin, Leglaive, Bie, Diard, Hueber, and Alameda{-}Pineda]{girin2021dynamical}
+Laurent Girin, Simon Leglaive, Xiaoyu Bie, Julien Diard, Thomas Hueber, and Xavier Alameda{-}Pineda.
+\newblock Dynamical variational autoencoders: {A} comprehensive review.
+\newblock \emph{Found. Trends Mach. Learn.}, 15\penalty0 (1-2):\penalty0 1--175, 2021.
+
+\bibitem[Goodfellow(2016)]{goodfellow2016nips}
+Ian Goodfellow.
+\newblock Nips 2016 tutorial: Generative adversarial networks.
+\newblock \emph{arXiv preprint arXiv:1701.00160}, 2016.
+
+\bibitem[Goodfellow et~al.(2014)Goodfellow, Pouget-Abadie, Mirza, Xu, Warde-Farley, Ozair, Courville, and Bengio]{goodfellow2014generative}
+Ian Goodfellow, Jean Pouget-Abadie, Mehdi Mirza, Bing Xu, David Warde-Farley, Sherjil Ozair, Aaron Courville, and Yoshua Bengio.
+\newblock Generative adversarial networks.
+\newblock \emph{Advances in neural information processing systems}, 27, 2014.
+
+\bibitem[Goodfellow et~al.(2016)Goodfellow, Bengio, and Courville]{goodfellow2016deep}
+Ian Goodfellow, Yoshua Bengio, and Aaron Courville.
+\newblock \emph{Deep learning}.
+\newblock MIT press, 2016.
+
+\bibitem[Goyal et~al.(2016)Goyal, Lamb, Zhang, Zhang, Courville, and Bengio]{goyal2016professor}
+Anirudh Goyal, Alex Lamb, Ying Zhang, Saizheng Zhang, Aaron~C. Courville, and Yoshua Bengio.
+\newblock Professor forcing: a new algorithm for training recurrent networks.
+\newblock In \emph{Advances in Neural Information Processing Systems 29}, pp.\  4601--4609, 2016.
+
+\bibitem[Graves(2013)]{graves2013generating}
+Alex Graves.
+\newblock Generating sequences with recurrent neural networks.
+\newblock \emph{arXiv preprint arXiv:1308.0850}, 2013.
+
+\bibitem[Han et~al.(2022)Han, Euler{-}Rolle, and Katzschmann]{han2022desko}
+Minghao Han, Jacob Euler{-}Rolle, and Robert~K. Katzschmann.
+\newblock {DeSKO}: stability-assured robust control with a deep stochastic {K}oopman operator.
+\newblock In \emph{The Tenth International Conference on Learning Representations, {ICLR}}, 2022.
+
+\bibitem[Hersbach et~al.(2020)Hersbach, Bell, Berrisford, Hirahara, Hor{\'a}nyi, Mu{\~n}oz-Sabater, Nicolas, Peubey, Radu, Schepers, et~al.]{hersbach2020era5}
+Hans Hersbach, Bill Bell, Paul Berrisford, Shoji Hirahara, Andr{\'a}s Hor{\'a}nyi, Joaqu{\'\i}n Mu{\~n}oz-Sabater, Julien Nicolas, Carole Peubey, Raluca Radu, Dinand Schepers, et~al.
+\newblock {The ERA5 global reanalysis}.
+\newblock \emph{Quarterly Journal of the Royal Meteorological Society}, 146\penalty0 (730):\penalty0 1999--2049, 2020.
+
+\bibitem[Higgins et~al.(2016)Higgins, Matthey, Pal, Burgess, Glorot, Botvinick, Mohamed, and Lerchner]{higgins2016beta}
+Irina Higgins, Loic Matthey, Arka Pal, Christopher Burgess, Xavier Glorot, Matthew Botvinick, Shakir Mohamed, and Alexander Lerchner.
+\newblock beta-{VAE}: learning basic visual concepts with a constrained variational framework.
+\newblock In \emph{International conference on learning representations}, 2016.
+
+\bibitem[Husz{\'a}r(2017)]{huszar2017variational}
+Ferenc Husz{\'a}r.
+\newblock Variational inference using implicit distributions.
+\newblock \emph{arXiv preprint arXiv:1702.08235}, 2017.
+
+\bibitem[Jarrett et~al.(2021)Jarrett, Bica, and van~der Schaar]{jarrett2021time}
+Daniel Jarrett, Ioana Bica, and Mihaela van~der Schaar.
+\newblock Time-series generation by contrastive imitation.
+\newblock \emph{Advances in Neural Information Processing Systems}, 34:\penalty0 28968--28982, 2021.
+
+\bibitem[Jeon et~al.(2022)Jeon, Kim, Song, Cho, and Park]{jeon2022gt}
+Jinsung Jeon, Jeonghak Kim, Haryong Song, Seunghyeon Cho, and Noseong Park.
+\newblock {GT-GAN}: general purpose time series synthesis with generative adversarial networks.
+\newblock \emph{Advances in Neural Information Processing Systems}, 35:\penalty0 36999--37010, 2022.
+
+\bibitem[Kidger et~al.(2020)Kidger, Morrill, Foster, and Lyons]{kidger2020neural}
+Patrick Kidger, James Morrill, James Foster, and Terry Lyons.
+\newblock Neural controlled differential equations for irregular time series.
+\newblock \emph{Advances in Neural Information Processing Systems}, 33:\penalty0 6696--6707, 2020.
+
+\bibitem[Kingma \& Welling(2014)Kingma and Welling]{kingma14auto}
+Diederik~P. Kingma and Max Welling.
+\newblock Auto-encoding variational bayes.
+\newblock In \emph{2nd International Conference on Learning Representations, {ICLR}}, 2014.
+
+\bibitem[Koopman(1931)]{koopman1931hamiltonian}
+Bernard~O Koopman.
+\newblock Hamiltonian systems and transformation in {H}ilbert space.
+\newblock \emph{Proceedings of the National Academy of Sciences}, 17\penalty0 (5):\penalty0 315--318, 1931.
+
+\bibitem[Li et~al.(2023)Li, Yu, and Pr{\'{\i}}ncipe]{li2023causal}
+Hongming Li, Shujian Yu, and Jos{\'{e}}~C. Pr{\'{\i}}ncipe.
+\newblock Causal recurrent variational autoencoder for medical time series generation.
+\newblock In \emph{Thirty-Seventh {AAAI} Conference on Artificial Intelligence, {AAAI}}, pp.\  8562--8570, 2023.
+
+\bibitem[Li et~al.(2020)Li, Wong, Chen, and Duvenaud]{li2020scalable}
+Xuechen Li, Ting-Kam~Leonard Wong, Ricky~TQ Chen, and David Duvenaud.
+\newblock Scalable gradients for stochastic differential equations.
+\newblock In \emph{International Conference on Artificial Intelligence and Statistics}, pp.\  3870--3882. PMLR, 2020.
+
+\bibitem[Lucic et~al.(2018)Lucic, Kurach, Michalski, Gelly, and Bousquet]{lucic2018gans}
+Mario Lucic, Karol Kurach, Marcin Michalski, Sylvain Gelly, and Olivier Bousquet.
+\newblock Are {GAN}s created equal? a large-scale study.
+\newblock \emph{Advances in neural information processing systems}, 31, 2018.
+
+\bibitem[Lusch et~al.(2018)Lusch, Kutz, and Brunton]{lusch2018deep}
+Bethany Lusch, J~Nathan Kutz, and Steven~L Brunton.
+\newblock Deep learning for universal linear embeddings of nonlinear dynamics.
+\newblock \emph{Nature communications}, 9\penalty0 (1):\penalty0 4950, 2018.
+
+\bibitem[Mauroy \& Mezi{\'c}(2013)Mauroy and Mezi{\'c}]{mauroy2013spectral}
+Alexandre Mauroy and Igor Mezi{\'c}.
+\newblock A spectral operator-theoretic framework for global stability.
+\newblock In \emph{52nd IEEE Conference on Decision and Control}, pp.\  5234--5239. IEEE, 2013.
+
+\bibitem[Mauroy \& Mezi{\'c}(2016)Mauroy and Mezi{\'c}]{mauroy2016global}
+Alexandre Mauroy and Igor Mezi{\'c}.
+\newblock Global stability analysis using the eigenfunctions of the {Koopman} operator.
+\newblock \emph{IEEE Transactions on Automatic Control}, 61\penalty0 (11):\penalty0 3356--3369, 2016.
+
+\bibitem[Mezi{\'c}(2013)]{mezic2013analysis}
+Igor Mezi{\'c}.
+\newblock Analysis of fluid flows via spectral properties of the {Koopman} operator.
+\newblock \emph{Annual Review of Fluid Mechanics}, 45:\penalty0 357--378, 2013.
+
+\bibitem[Mezic(2017)]{mezic2017koopman}
+Igor Mezic.
+\newblock {Koopman} operator spectrum and data analysis.
+\newblock \emph{arXiv preprint arXiv:1702.07597}, 2017.
+
+\bibitem[Mogren(2016)]{mogren2016c}
+Olof Mogren.
+\newblock {C-RNN-GAN}: continuous recurrent neural networks with adversarial training.
+\newblock \emph{arXiv preprint arXiv:1611.09904}, 2016.
+
+\bibitem[Morton et~al.(2019)Morton, Witherden, and Kochenderfer]{morton2019deep}
+Jeremy Morton, Freddie~D. Witherden, and Mykel~J. Kochenderfer.
+\newblock Deep variational {K}oopman models: inferring {K}oopman observations for uncertainty-aware dynamics modeling and control.
+\newblock In \emph{Proceedings of the Twenty-Eighth International Joint Conference on Artificial Intelligence, {IJCAI}}, pp.\  3173--3179, 2019.
+
+\bibitem[Naiman \& Azencot(2023)Naiman and Azencot]{naiman2023operator}
+Ilan Naiman and Omri Azencot.
+\newblock An operator theoretic approach for analyzing sequence neural networks.
+\newblock In \emph{Proceedings of the AAAI conference on artificial intelligence}, volume~37, pp.\  9268--9276, 2023.
+
+\bibitem[Orvieto et~al.(2023)Orvieto, Smith, Gu, Fernando, G{\"{u}}l{\c{c}}ehre, Pascanu, and De]{orvieto2023resurrecting}
+Antonio Orvieto, Samuel~L. Smith, Albert Gu, Anushan Fernando, {\c{C}}aglar G{\"{u}}l{\c{c}}ehre, Razvan Pascanu, and Soham De.
+\newblock Resurrecting recurrent neural networks for long sequences.
+\newblock In \emph{International Conference on Machine Learning, {ICML}}, volume 202, pp.\  26670--26698, 2023.
+
+\bibitem[Pan \& Duraisamy(2020)Pan and Duraisamy]{pan2020physics}
+Shaowu Pan and Karthik Duraisamy.
+\newblock Physics-informed probabilistic learning of linear embeddings of nonlinear dynamics with guaranteed stability.
+\newblock \emph{SIAM Journal on Applied Dynamical Systems}, 19\penalty0 (1):\penalty0 480--509, 2020.
+
+\bibitem[Ramesh et~al.(2022)Ramesh, Dhariwal, Nichol, Chu, and Chen]{ramesh2022hierarchical}
+Aditya Ramesh, Prafulla Dhariwal, Alex Nichol, Casey Chu, and Mark Chen.
+\newblock Hierarchical text-conditional image generation with clip latents.
+\newblock \emph{arXiv preprint arXiv:2204.06125}, 1\penalty0 (2):\penalty0 3, 2022.
+
+\bibitem[Redman et~al.(2022)Redman, Fonoberova, Mohr, Kevrekidis, and Mezi{\'c}]{redman2021operator}
+William~T Redman, Maria Fonoberova, Ryan Mohr, Ioannis~G Kevrekidis, and Igor Mezi{\'c}.
+\newblock An operator theoretic view on pruning deep neural networks.
+\newblock In \emph{The Tenth International Conference on Learning Representations, {ICLR}}, 2022.
+
+\bibitem[Rombach et~al.(2022)Rombach, Blattmann, Lorenz, Esser, and Ommer]{rombach2022high}
+Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Bj{\"o}rn Ommer.
+\newblock High-resolution image synthesis with latent diffusion models.
+\newblock In \emph{Proceedings of the IEEE/CVF conference on computer vision and pattern recognition}, pp.\  10684--10695, 2022.
+
+\bibitem[Rowley et~al.(2009)Rowley, Mezi{\'c}, Bagheri, Schlatter, and Henningson]{rowley2009spectral}
+Clarence~W Rowley, Igor Mezi{\'c}, Shervin Bagheri, Philipp Schlatter, and Dan~S Henningson.
+\newblock Spectral analysis of nonlinear flows.
+\newblock \emph{Journal of fluid mechanics}, 641:\penalty0 115--127, 2009.
+
+\bibitem[Rubanova et~al.(2019)Rubanova, Chen, and Duvenaud]{rubanova2019latent}
+Yulia Rubanova, Ricky~TQ Chen, and David~K Duvenaud.
+\newblock Latent ordinary differential equations for irregularly-sampled time series.
+\newblock \emph{Advances in neural information processing systems}, 32, 2019.
+
+\bibitem[Saxena \& Cao(2021)Saxena and Cao]{saxena2021generative}
+Divya Saxena and Jiannong Cao.
+\newblock Generative adversarial networks ({GAN}s) challenges, solutions, and future directions.
+\newblock \emph{ACM Computing Surveys (CSUR)}, 54\penalty0 (3):\penalty0 1--42, 2021.
+
+\bibitem[Schmid(2010)]{schmid2010dynamic}
+Peter~J Schmid.
+\newblock Dynamic mode decomposition of numerical and experimental data.
+\newblock \emph{Journal of fluid mechanics}, 656:\penalty0 5--28, 2010.
+
+\bibitem[Sohl-Dickstein et~al.(2015)Sohl-Dickstein, Weiss, Maheswaranathan, and Ganguli]{sohl2015deep}
+Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli.
+\newblock Deep unsupervised learning using nonequilibrium thermodynamics.
+\newblock In \emph{International conference on machine learning}, pp.\  2256--2265. PMLR, 2015.
+
+\bibitem[Srinivasan \& Takeishi(2020)Srinivasan and Takeishi]{srinivasan2020mcmc}
+Anand Srinivasan and Naoya Takeishi.
+\newblock An {MCMC} method for uncertainty set generation via operator-theoretic metrics.
+\newblock In \emph{59th {IEEE} Conference on Decision and Control, {CDC}}, pp.\  2714--2719, 2020.
+
+\bibitem[Strogatz(2018)]{strogatz2018nonlinear}
+Steven~H Strogatz.
+\newblock \emph{Nonlinear dynamics and chaos with student solutions manual: With applications to physics, biology, chemistry, and engineering}.
+\newblock CRC press, 2018.
+
+\bibitem[Takeishi et~al.(2017)Takeishi, Kawahara, and Yairi]{takeishi2017learning}
+Naoya Takeishi, Yoshinobu Kawahara, and Takehisa Yairi.
+\newblock Learning {K}oopman invariant subspaces for dynamic mode decomposition.
+\newblock \emph{Advances in neural information processing systems}, 30, 2017.
+
+\bibitem[Tayal et~al.(2023)Tayal, Renganathan, Ghosh, Jia, and Kumar]{tayal2023koopman}
+Kshitij Tayal, Arvind Renganathan, Rahul Ghosh, Xiaowei Jia, and Vipin Kumar.
+\newblock Koopman invertible autoencoder: Leveraging forward and backward dynamics for temporal modeling.
+\newblock \emph{arXiv preprint arXiv:2309.10291}, 2023.
+
+\bibitem[Todorov et~al.(2012)Todorov, Erez, and Tassa]{todorov2012mujoco}
+Emanuel Todorov, Tom Erez, and Yuval Tassa.
+\newblock {MuJoCo}: a physics engine for model-based control.
+\newblock In \emph{2012 IEEE/RSJ International Conference on Intelligent Robots and Systems}, pp.\  5026--5033. IEEE, 2012.
+\newblock \doi{10.1109/IROS.2012.6386109}.
+
+\bibitem[van~den Oord et~al.(2016)van~den Oord, Dieleman, Zen, Simonyan, Vinyals, Graves, Kalchbrenner, Senior, and Kavukcuoglu]{oord2016wavenet}
+A{\"{a}}ron van~den Oord, Sander Dieleman, Heiga Zen, Karen Simonyan, Oriol Vinyals, Alex Graves, Nal Kalchbrenner, Andrew~W. Senior, and Koray Kavukcuoglu.
+\newblock Wave{N}et: a generative model for raw audio.
+\newblock In \emph{The 9th {ISCA} Speech Synthesis Workshop}, pp.\  125, 2016.
+
+\bibitem[Van~der Maaten \& Hinton(2008)Van~der Maaten and Hinton]{van2008visualizing}
+Laurens Van~der Maaten and Geoffrey Hinton.
+\newblock Visualizing data using t-sne.
+\newblock \emph{Journal of machine learning research}, 9\penalty0 (11), 2008.
+
+\bibitem[Wang et~al.(2023)Wang, Dong, Arik, and Yu]{wang2022koopman}
+Rui Wang, Yihe Dong, Sercan~{\"{O}}. Arik, and Rose Yu.
+\newblock Koopman neural forecaster for time series with temporal distribution shifts.
+\newblock In \emph{The Eleventh International Conference on Learning Representations, {ICLR}}, 2023.
+
+\bibitem[Xu et~al.(2020)Xu, Wenliang, Munn, and Acciaio]{xu2020cot}
+Tianlin Xu, Li~Kevin Wenliang, Michael Munn, and Beatrice Acciaio.
+\newblock {COT-GAN}: generating sequential data via causal optimal transport.
+\newblock \emph{Advances in neural information processing systems}, 33:\penalty0 8798--8809, 2020.
+
+\bibitem[Yoon et~al.(2019)Yoon, Jarrett, and Van~der Schaar]{yoon2019time}
+Jinsung Yoon, Daniel Jarrett, and Mihaela Van~der Schaar.
+\newblock Time-series generative adversarial networks.
+\newblock \emph{Advances in neural information processing systems}, 32, 2019.
+
+\bibitem[Zeng et~al.(2023)Zeng, Chen, Zhang, and Xu]{zeng2023transformers}
+Ailing Zeng, Muxi Chen, Lei Zhang, and Qiang Xu.
+\newblock Are transformers effective for time series forecasting?
+\newblock In \emph{Proceedings of the AAAI conference on artificial intelligence}, pp.\  11121--11128, 2023.
+
+\bibitem[Zhou et~al.(2023)Zhou, Poli, Xu, Massaroli, and Ermon]{zhou2023deep}
+Linqi Zhou, Michael Poli, Winnie Xu, Stefano Massaroli, and Stefano Ermon.
+\newblock Deep latent state space models for time-series generation.
+\newblock In \emph{International Conference on Machine Learning}, pp.\  42625--42643. PMLR, 2023.
+
+\bibitem[Zhu et~al.(2023)Zhu, Balsells-Rodas, and Li]{zhu2023markovian}
+Harrison Zhu, Carles Balsells-Rodas, and Yingzhen Li.
+\newblock Markovian {G}aussian process variational autoencoders.
+\newblock In \emph{International Conference on Machine Learning}, pp.\  42938--42961. PMLR, 2023.
+
+\end{thebibliography}

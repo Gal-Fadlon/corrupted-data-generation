@@ -171,15 +171,19 @@ def parse_args_irregular():
 
     # --- General corruption (run_diffem_mmps_general_corruption.py) ---
     parser.add_argument('--corruption_type', type=str, default='missing_observation',
-                        choices=['missing_observation', 'noisy_observations', 'combined_missing_noise'],
+                        choices=['missing_observation', 'noisy_observations', 'combined_missing_noise', 'continuous'],
                         help='Type of corruption: missing_observation (missing only), '
-                             'noisy_observations (Gaussian noise only), or combined_missing_noise (both).')
+                             'noisy_observations (Gaussian noise only), combined_missing_noise (both), '
+                             'or continuous (time-continuous irregular sampling via ContinuousResampleOperator).')
     parser.add_argument('--missing_type', type=str, default='fix_missing_rates',
-                        choices=['fix_missing_rates', 'block_start', 'block_end', 'block_random'],
+                        choices=['fix_missing_rates', 'block_start', 'block_end', 'block_random',
+                                 'cell_random'],
                         help='Missing pattern. Only applies when corruption_type involves missing. '
-                             'fix_missing_rates: global random missing before windowing. '
+                             'fix_missing_rates: global random row-level missing before windowing. '
                              'block_start/block_end: contiguous block at the start/end of each window. '
-                             'block_random: random-position contiguous block per window.')
+                             'block_random: random-position contiguous block per window. '
+                             'cell_random: global cell-level (per timestep × per feature) random missing — '
+                             'a single feature can be NaN while others at the same timestep are observed.')
     parser.add_argument('--method', type=str, default='our',
                         help='Name used as top-level dir under saved_models/ '
                              '(e.g., our, diffusion_ts, imagentime).')

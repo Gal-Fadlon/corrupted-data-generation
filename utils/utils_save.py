@@ -96,6 +96,15 @@ def target_parent_dir(args):
         parts.append(dataset)
         parts.append(f"seq_len_{seq_len}")
         parts.append(f"missing_{int(missing_rate * 100)}_noise_{noise_level}")
+    elif corruption == 'continuous':
+        # Time-continuous irregular sampling (ContinuousResampleOperator).
+        # Route by the sampling distribution and observation density rho.
+        t_distribution = getattr(args, 't_distribution', 'uniform')
+        n_obs_ratio = getattr(args, 'n_obs_ratio', 0.5)
+        parts.append(t_distribution)
+        parts.append(dataset)
+        parts.append(f"seq_len_{seq_len}")
+        parts.append(f"rho_{int(float(n_obs_ratio) * 100)}")
     else:
         parts.append(dataset)
         parts.append(f"seq_len_{seq_len}")

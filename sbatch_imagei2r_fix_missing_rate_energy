@@ -1,0 +1,33 @@
+#!/bin/bash
+
+################################################################################################
+### sbatch configuration parameters must start with #SBATCH and must precede any other commands.
+### To ignore, just add another # - like so: ##SBATCH
+################################################################################################
+
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name imagei2r_energy
+#SBATCH --output /home/galfad/corrupted-data-generation/slurm_logs/%J.out
+#SBATCH --error /home/galfad/corrupted-data-generation/slurm_logs/%J.err
+#SBATCH --gpus=rtx_3090:1
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --mem=32G
+#SBATCH --cpus-per-task=6
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+umask 0000
+module load anaconda
+source activate /home/galfad/.conda/envs/time_series_nev
+export PYTHONNOUSERSITE=1
+export LD_LIBRARY_PATH=""
+export WANDB_API_KEY="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"
+
+python run_irregular.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.3 --method imagei2r --corruption_type missing_observation --missing_type fix_missing_rates --wandb true --tags "imagei2r" "missing_observation" "fix_missing_rates" "energy" "30_missing_rate" "seq_len=24" 2>&1
+python run_irregular.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.5 --method imagei2r --corruption_type missing_observation --missing_type fix_missing_rates --wandb true --tags "imagei2r" "missing_observation" "fix_missing_rates" "energy" "50_missing_rate" "seq_len=24" 2>&1
+python run_irregular.py --config ./configs/seq_len_24/energy.yaml --missing_rate 0.7 --method imagei2r --corruption_type missing_observation --missing_type fix_missing_rates --wandb true --tags "imagei2r" "missing_observation" "fix_missing_rates" "energy" "70_missing_rate" "seq_len=24" 2>&1
+
+chmod 666 /home/galfad/corrupted-data-generation/slurm_logs/$SLURM_JOBID.out /home/galfad/corrupted-data-generation/slurm_logs/$SLURM_JOBID.err

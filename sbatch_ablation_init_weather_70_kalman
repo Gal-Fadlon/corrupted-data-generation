@@ -1,0 +1,34 @@
+#!/bin/bash
+
+################################################################################################
+### sbatch configuration parameters must start with #SBATCH and must precede any other commands.
+### To ignore, just add another # - like so: ##SBATCH
+################################################################################################
+
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name abl_init_weather_70_kalman
+#SBATCH --output /home/galfad/corrupted-data-generation/slurm_logs/%J.out
+#SBATCH --error /home/galfad/corrupted-data-generation/slurm_logs/%J.err
+#SBATCH --gpus=rtx_3090:1
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --mem=32G
+#SBATCH --cpus-per-task=6
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+umask 0000
+module load anaconda
+source activate /home/galfad/.conda/envs/time_series_nev
+export PYTHONNOUSERSITE=1
+export LD_LIBRARY_PATH=""
+export RECON_CACHE_DIR="./recon_cache_ablation_init"
+mkdir -p "$RECON_CACHE_DIR"
+chmod 777 "$RECON_CACHE_DIR"
+export WANDB_API_KEY="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"
+
+python run_co_evolving_em.py --config ./configs/seq_len_24/weather.yaml --missing_rate .7 --init_method kalman --recon_cache_dir "$RECON_CACHE_DIR" --wandb true --tags "our" "ablation" "stl_vs_kalman" "weather" "70_missing_rate" "init=kalman" "seq_len=24" 2>&1
+
+chmod 666 /home/galfad/corrupted-data-generation/slurm_logs/$SLURM_JOBID.out /home/galfad/corrupted-data-generation/slurm_logs/$SLURM_JOBID.err

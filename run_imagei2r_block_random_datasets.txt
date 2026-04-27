@@ -1,0 +1,4 @@
+sbatch sbatch_imagei2r_block_random_etth1 && \
+sbatch sbatch_imagei2r_block_random_energy && \
+sbatch sbatch_imagei2r_block_random_stock && \
+sbatch sbatch_imagei2r_block_random_weather

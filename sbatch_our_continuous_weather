@@ -1,0 +1,36 @@
+#!/bin/bash
+
+################################################################################################
+### sbatch configuration parameters must start with #SBATCH and must precede any other commands.
+### To ignore, just add another # - like so: ##SBATCH
+################################################################################################
+
+#SBATCH --time 7-00:00:00
+#SBATCH --job-name our_continuous_weather
+#SBATCH --output /home/galfad/corrupted-data-generation/slurm_logs/%J.out
+#SBATCH --error /home/galfad/corrupted-data-generation/slurm_logs/%J.err
+#SBATCH --gpus=rtx_4090:1
+#SBATCH --partition main
+#SBATCH --qos normal
+#SBATCH --mem=32G
+#SBATCH --cpus-per-task=6
+
+echo `date`
+echo -e "\nSLURM_JOBID:\t\t" $SLURM_JOBID
+echo -e "SLURM_JOB_NODELIST:\t" $SLURM_JOB_NODELIST "\n\n"
+
+umask 0000
+module load anaconda
+source activate /home/galfad/.conda/envs/time_series_nev
+export PYTHONNOUSERSITE=1
+export LD_LIBRARY_PATH=""
+export RECON_CACHE_DIR="./recon_cache_our_continuous_weather"
+mkdir -p "$RECON_CACHE_DIR"
+chmod 777 "$RECON_CACHE_DIR"
+export WANDB_API_KEY="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"
+
+# python run_co_evolving_em_continuous.py --config ./configs/seq_len_24/weather.yaml --method our --corruption_type continuous --n_obs_ratio 0.3 --t_distribution uniform --interp_kernel linear --missing_rate 0.0 --init_method kalman --recon_cache_dir "$RECON_CACHE_DIR" --wandb true --tags "our" "continuous" "uniform" "weather" "rho_30" "seq_len=24" 2>&1
+# python run_co_evolving_em_continuous.py --config ./configs/seq_len_24/weather.yaml --method our --corruption_type continuous --n_obs_ratio 0.5 --t_distribution uniform --interp_kernel linear --missing_rate 0.0 --init_method kalman --recon_cache_dir "$RECON_CACHE_DIR" --wandb true --tags "our" "continuous" "uniform" "weather" "rho_50" "seq_len=24" 2>&1
+python run_co_evolving_em_continuous.py --config ./configs/seq_len_24/weather.yaml --method our --corruption_type continuous --n_obs_ratio 0.7 --t_distribution uniform --interp_kernel linear --missing_rate 0.0 --init_method kalman --recon_cache_dir "$RECON_CACHE_DIR" --wandb true --tags "our" "continuous" "uniform" "weather" "rho_70" "seq_len=24" 2>&1
+
+chmod 666 /home/galfad/corrupted-data-generation/slurm_logs/$SLURM_JOBID.out /home/galfad/corrupted-data-generation/slurm_logs/$SLURM_JOBID.err

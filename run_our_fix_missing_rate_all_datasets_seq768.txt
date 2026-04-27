@@ -1,0 +1,8 @@
+sbatch sbatch_our_fix_missing_rate_etth1_seq768 && \
+sbatch sbatch_our_fix_missing_rate_etth2_seq768 && \
+sbatch sbatch_our_fix_missing_rate_ettm1_seq768 && \
+sbatch sbatch_our_fix_missing_rate_ettm2_seq768 && \
+sbatch sbatch_our_fix_missing_rate_energy_seq768 && \
+sbatch sbatch_our_fix_missing_rate_weather_seq768 && \
+sbatch sbatch_our_fix_missing_rate_sine_seq768
+sbatch sbatch_our_fix_missing_rate_stock_seq768 && \

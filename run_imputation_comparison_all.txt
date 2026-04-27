@@ -1,0 +1,16 @@
+sbatch sbatch_impute_tst_stock && \
+sbatch sbatch_impute_tst_energy && \
+sbatch sbatch_impute_tst_weather && \
+sbatch sbatch_impute_tst_etth1 && \
+sbatch sbatch_impute_ncde_stock && \
+sbatch sbatch_impute_ncde_energy && \
+sbatch sbatch_impute_ncde_weather && \
+sbatch sbatch_impute_ncde_etth1 && \
+sbatch sbatch_impute_our_stock && \
+sbatch sbatch_impute_our_energy && \
+sbatch sbatch_impute_our_weather && \
+sbatch sbatch_impute_our_etth1 && \
+sbatch sbatch_impute_csdi_stock && \
+sbatch sbatch_impute_csdi_energy && \
+sbatch sbatch_impute_csdi_weather && \
+sbatch sbatch_impute_csdi_etth1

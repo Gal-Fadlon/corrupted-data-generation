@@ -1,0 +1,6 @@
+sbatch sbatch_our_block_end_weather_sweep_em3 && \
+sbatch sbatch_our_block_end_weather_sweep_reg && \
+sbatch sbatch_our_block_end_weather_sweep_full && \
+sbatch sbatch_our_block_end_energy_sweep_em3 && \
+sbatch sbatch_our_block_end_energy_sweep_reg && \
+sbatch sbatch_our_block_end_energy_sweep_full

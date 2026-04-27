@@ -1,0 +1,11 @@
+sbatch sbatch_ablation_mstep_epochs_stock_50_ep10 && \
+sbatch sbatch_ablation_mstep_epochs_stock_70_ep10 && \
+sbatch sbatch_ablation_mstep_epochs_stock_50_ep20 && \
+sbatch sbatch_ablation_mstep_epochs_stock_30_ep30 && \
+sbatch sbatch_ablation_mstep_epochs_stock_30_ep40 && \
+sbatch sbatch_ablation_mstep_epochs_stock_30_ep50 && \
+sbatch sbatch_ablation_mstep_epochs_weather_30_ep20 && \
+sbatch sbatch_ablation_mstep_epochs_weather_30_ep30 && \
+sbatch sbatch_ablation_mstep_epochs_weather_70_ep30 && \
+sbatch sbatch_ablation_mstep_epochs_weather_70_ep40 && \
+sbatch sbatch_ablation_mstep_epochs_weather_70_ep50

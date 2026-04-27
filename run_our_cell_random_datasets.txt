@@ -1,0 +1,5 @@
+sbatch sbatch_our_cell_random_etth1 && \
+sbatch sbatch_our_cell_random_ettm1 && \
+sbatch sbatch_our_cell_random_stock && \
+sbatch sbatch_our_cell_random_energy && \
+sbatch sbatch_our_cell_random_weather

@@ -1,0 +1,4 @@
+sbatch sbatch_imagei2r_block_end_etth1 && \
+sbatch sbatch_imagei2r_block_end_energy && \
+sbatch sbatch_imagei2r_block_end_stock && \
+sbatch sbatch_imagei2r_block_end_weather

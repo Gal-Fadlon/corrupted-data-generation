@@ -133,6 +133,15 @@ def sine_data_generation(no, seq_len, dim, missing_rate,
                 removed_points = torch.randperm(temp.shape[0], generator=generator)[
                                  :int(temp.shape[0] * missing_rate)].sort().values
                 temp[removed_points] = float('nan')
+            elif missing_type == 'cell_random':
+                # Per-sample cell-level random missing.
+                n_cells = temp.shape[0] * temp.shape[1]
+                n_drop = int(n_cells * missing_rate)
+                if n_drop > 0:
+                    flat_idx = torch.randperm(n_cells, generator=generator)[:n_drop]
+                    rs = (flat_idx // temp.shape[1]).numpy()
+                    cs = (flat_idx % temp.shape[1]).numpy()
+                    temp[rs, cs] = float('nan')
             else:
                 block_size = int(missing_rate * seq_len)
                 if block_size > 0:
@@ -274,6 +283,17 @@ def real_data_loading(data_name, seq_len, missing_rate, gaussian_noise_level=0, 
         removed_points = torch.randperm(ori_data.shape[0], generator=generator)[
                          :int(ori_data.shape[0] * missing_rate)].sort().values
         irregular_dataset[removed_points] = float('nan')
+    elif apply_missing and missing_type == 'cell_random':
+        # Global per-cell random missing applied BEFORE windowing.
+        # Each (timestep, feature) cell is independently selectable; same physical cell
+        # is consistently NaN across every overlapping window that contains it (no leak).
+        n_cells = ori_data.shape[0] * ori_data.shape[1]
+        n_drop = int(n_cells * missing_rate)
+        if n_drop > 0:
+            flat_idx = torch.randperm(n_cells, generator=generator)[:n_drop]
+            rows = (flat_idx // ori_data.shape[1]).numpy()
+            cols = (flat_idx % ori_data.shape[1]).numpy()
+            irregular_dataset[rows, cols] = float('nan')
 
     total_length = len(ori_data)
     index = np.array(range(total_length)).reshape(-1, 1)

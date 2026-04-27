@@ -465,7 +465,8 @@ class ContinuousResampleOperator(ObservationOperator):
         and almost-surely full-rank; solving the N_obs x N_obs system with
         torch.linalg.solve is cheap at N_obs <= T (= 24 in our runs).  A small
         ridge (eps) absorbs the rare rank-deficient case (e.g. two obs at the
-        same continuous time) so the call never raises.
+        same continuous time).  For pathological batches that remain singular
+        in fp32 we fall back to lstsq (least-squares) which always succeeds.
         """
         S_ref = self._require_grid()
         dtype = x_ts.dtype
@@ -481,7 +482,15 @@ class ContinuousResampleOperator(ObservationOperator):
         M = M + 1e-8 * eye
 
         # Solve M z = residual per batch; PyTorch broadcasts the RHS features.
-        z = torch.linalg.solve(M, residual)                         # [B, N_obs, F]
+        # Fast path: torch.linalg.solve. If any batch element is singular it
+        # raises _LinAlgError, in which case we fall back to lstsq, which
+        # returns the minimum-norm least-squares solution and never raises.
+        # For the common (non-singular) batches lstsq and solve agree, so
+        # this preserves numerics on the existing happy path.
+        try:
+            z = torch.linalg.solve(M, residual)                     # [B, N_obs, F]
+        except (torch._C._LinAlgError, RuntimeError):
+            z = torch.linalg.lstsq(M, residual).solution            # [B, N_obs, F]
 
         # Correction = S^T z.
         correction = torch.einsum('bkt,bkf->btf', S, z)             # [B, T, F]

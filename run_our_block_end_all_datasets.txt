@@ -1,0 +1,16 @@
+sbatch sbatch_our_block_end_etth1 && \
+sbatch sbatch_our_block_end_etth2 && \
+sbatch sbatch_our_block_end_ettm1 && \
+sbatch sbatch_our_block_end_ettm2 && \
+sbatch sbatch_our_block_end_energy && \
+sbatch sbatch_our_block_end_weather && \
+
+sbatch sbatch_our_block_end_electricity && \
+
+
+sbatch sbatch_our_block_end_stock && \
+sbatch sbatch_our_block_start_stock && \
+sbatch sbatch_our_block_random_stock && \
+sbatch sbatch_our_block_start_sine && \
+sbatch sbatch_our_block_end_sine && \
+sbatch sbatch_our_block_random_sine

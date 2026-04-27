@@ -1,0 +1,19 @@
+sbatch sbatch_our_block_random_etth1 && \
+sbatch sbatch_our_block_random_etth2 && \
+sbatch sbatch_our_block_random_ettm1 && \
+sbatch sbatch_our_block_random_ettm2 && \
+sbatch sbatch_our_block_random_energy && \
+sbatch sbatch_our_block_random_weather && \
+
+sbatch sbatch_our_block_random_electricity
+sbatch sbatch_our_block_random_sine && \
+
+
+
+
+sbatch sbatch_our_block_random_energy && \
+sbatch sbatch_our_block_random_weather && \
+sbatch sbatch_our_block_start_energy && \
+sbatch sbatch_our_block_start_weather && \
+sbatch sbatch_our_block_end_energy && \
+sbatch sbatch_our_block_end_weather

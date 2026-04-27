@@ -1,0 +1,4 @@
+sbatch sbatch_kovae_block_start_etth1 && \
+sbatch sbatch_kovae_block_start_energy && \
+sbatch sbatch_kovae_block_start_stock && \
+sbatch sbatch_kovae_block_start_weather

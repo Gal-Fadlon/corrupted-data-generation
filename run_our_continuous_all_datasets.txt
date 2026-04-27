@@ -1,0 +1,4 @@
+sbatch sbatch_our_continuous_stock && \
+sbatch sbatch_our_continuous_etth1 && \
+sbatch sbatch_our_continuous_weather && \
+sbatch sbatch_our_continuous_energy

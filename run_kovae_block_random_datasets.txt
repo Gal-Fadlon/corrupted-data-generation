@@ -1,0 +1,4 @@
+sbatch sbatch_kovae_block_random_etth1 && \
+sbatch sbatch_kovae_block_random_energy && \
+sbatch sbatch_kovae_block_random_stock && \
+sbatch sbatch_kovae_block_random_weather
